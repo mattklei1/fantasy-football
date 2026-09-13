@@ -335,20 +335,30 @@ def render_sidebar() -> tuple[int, int | None]:
 
     # A key'd widget's session_state value persists across pages and
     # overrides the `index` param on every render after the first mount -
-    # so if the LAST run picked "All time" (which triggered switch_page
-    # below), this run's selectbox would otherwise re-render already
-    # showing "All time" again on whatever page we land on, feeding the
-    # literal string "All time" into that page's `season` variable
-    # instead of a real season int (broke Lineup Efficiency and anything
-    # else that uses it). Must reset it HERE, before the widget below is
-    # instantiated this run - Streamlit raises
-    # StreamlitWidgetAlreadyInstantiatedError if you try to write to a
-    # widget's key AFTER creating it in the same run (hit this in
-    # production, 2026-09-13), so the reset has to happen pre-emptively
-    # on the NEXT run, not right after switch_page on the run that
-    # triggered it.
-    if st.session_state.get("season_selectbox") == ALL_TIME:
+    # so once "All time" is picked, later pages' selectbox would otherwise
+    # re-render already showing "All time" again, feeding the literal
+    # string "All time" into that page's `season` variable instead of a
+    # real season int (broke Lineup Efficiency and anything else that
+    # uses it). Must reset the widget's state at some point - but NOT
+    # unconditionally at the top of this run, because THIS run is also
+    # the one where the user just now clicked "All time" for the first
+    # time: session_state["season_selectbox"] already equals "All time"
+    # from that very click, before the selectbox below has even re-run,
+    # so resetting unconditionally here clobbers the fresh click before
+    # it's ever acted on - it silently "snaps back" to the old season
+    # with no switch_page and no error (a real bug hit in production,
+    # 2026-09-13, caused by an earlier version of this exact fix).
+    # A one-shot flag distinguishes "reset needed because we're on the
+    # run immediately AFTER switch_page fired" from "the user just
+    # clicked it, still need to act on that." Also can't reset the key
+    # in the SAME run as detecting season_choice == ALL_TIME below - the
+    # widget's already been instantiated by then, and Streamlit raises
+    # StreamlitWidgetAlreadyInstantiatedError for writing to its key
+    # after creation (also hit in production) - so the reset has to wait
+    # for the NEXT run's top, before the widget exists yet.
+    if st.session_state.get("_reset_season_selectbox"):
         st.session_state["season_selectbox"] = st.session_state.selected_season
+        st.session_state["_reset_season_selectbox"] = False
 
     season_choice = st.sidebar.selectbox(
         "Season",
@@ -357,6 +367,7 @@ def render_sidebar() -> tuple[int, int | None]:
         key="season_selectbox",
     )
     if season_choice == ALL_TIME:
+        st.session_state["_reset_season_selectbox"] = True
         st.switch_page("pages/5_History.py")
     season = season_choice
     st.session_state.selected_season = season
