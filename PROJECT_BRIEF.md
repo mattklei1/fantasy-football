@@ -269,3 +269,20 @@ This is the next task.
    LEAGUE_ID/ESPN_S2/SWID again.
 2. Once the connection prints a clean summary, proceed to Phase 2 (SQLite
    schema + ingestion) per the implementation order above.
+
+**2026-09-13 retry:** Recreated venv, wrote `.env` with LEAGUE_ID=1025842,
+CURRENT_SEASON=2026, and fresh ESPN_S2/SWID cookies the user pasted
+in-chat. `python test_connection.py` still fails: the agent proxy
+explicitly rejects `lm-api-reads.fantasy.espn.com:443` with
+`connect_rejected` / gateway 403 to CONNECT ("policy denial"), confirmed
+via `curl $HTTPS_PROXY/__agentproxy/status` (`recentRelayFailures` shows
+the 403). This is the same restriction documented above - the
+environment's domain allowlist either doesn't yet include
+`fantasy.espn.com` + `lm-api-reads.fantasy.espn.com`, or it was updated
+after this container was created (the policy only applies to new
+sessions/containers). Credentials themselves are unverified either way -
+we get rejected at the proxy before any request reaches ESPN. Next new
+session should retry `python test_connection.py` first; if it still 403s,
+the allowlist needs to be (re)checked in claude.ai/code environment
+settings -> Capabilities -> domain allowlist, then a brand new session
+started.
