@@ -29,13 +29,16 @@ df["points_against_rank"] = df["points_against"].rank(ascending=True, method="mi
 df["luck_rank"] = df["luck_wins"].rank(ascending=False, method="min").astype(int)
 df = df.sort_values("luck_rank")
 
-df["Actual Record"] = df.apply(
-    lambda r: ui.format_record(
-        r["matchup_wins"] + (r["median_wins"] or 0),
-        r["matchup_losses"] + (r["median_losses"] or 0),
-        r["matchup_ties"] + (r["median_ties"] or 0),
-    ),
-    axis=1,
+# Matchup Record (NOT the combined actual/official record) - deliberately
+# apples-to-apples with Expected Record below, since Luck Wins itself
+# compares matchup-only wins to matchup-only expected wins (see
+# season_metrics.py's comment on why median is excluded from luck). Pairing
+# the OFFICIAL combined record against a matchup-only expectation here would
+# look like a huge, confusing gap for any median-scoring season even though
+# the underlying Luck Wins number is correct - that mismatch is exactly
+# what prompted this fix (2026-09-13).
+df["Matchup Record"] = df.apply(
+    lambda r: ui.format_record(r["matchup_wins"], r["matchup_losses"], r["matchup_ties"]), axis=1
 )
 # Expected record shown as expected wins out of games played (simpler, unambiguous
 # than trying to force it into a W-L string)
@@ -47,13 +50,20 @@ df["Fraud"] = df["fraud_index"].apply(lambda f: ui.badge_html(fraud_badge(f)))
 df["Luck Wins"] = df["luck_wins"].round(2)
 
 table = df[
-    ["luck_rank", "team_name", "Actual Record", "Expected Record", "Luck Wins",
+    ["luck_rank", "team_name", "Matchup Record", "Expected Record", "Luck Wins",
      "points_against_rank", "All-Play Record", "Fraud"]
 ].rename(columns={
     "luck_rank": "Luck Rank", "team_name": "Team", "points_against_rank": "Pts Against Rank",
 })
 
 st.markdown(table.to_html(escape=False, index=False, classes="ff-table"), unsafe_allow_html=True)
+if median_scoring:
+    st.caption(
+        "Matchup Record above excludes the median (top-half) bonus on purpose - it's what "
+        "Luck Wins is actually computed from. Your official standings record (which DOES "
+        "include the median bonus) is on the Home page; see the breakdown below for both "
+        "side by side."
+    )
 
 if median_scoring:
     with st.expander("Matchup record vs. Median (top-half) record breakdown"):
