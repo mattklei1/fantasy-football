@@ -717,24 +717,60 @@ not just internally consistent.
 **Phases 7-8:** Not started (Playoff simulation; Weekly recap + Claude
 commentary).
 
-**In progress (2026-09-13): FantasyPros API integration.** The user
-purchased FantasyPros API access (their real, licensed API - see the
-Roster Strength section above for why we declined to scrape their
-public pages without one). Asked the user to paste their API key next;
-once received, wire it in as `FANTASYPROS_API_KEY` in `.env` (same
-gitignored-credential pattern as `ESPN_S2`/`SWID`/the GroupMe token used
-earlier this session - store it, never commit it, never log it). Plan:
-do a live test call against `api.fantasypros.com/public/v2/json` first
-to confirm the actual response shape (don't assume the structure from
-the public webpage matches the API), THEN update Roster Strength's
-`SIGNAL_WEIGHTS` to reincorporate FantasyPros ROS rankings at the
-originally-designed ~40% weight (see the "Roster Strength" section
-above for the full original 4-source weighting rationale: FantasyPros
-40%, Yahoo 25% (still not pursuing - no generic API), ESPN weekly
-projection reduced from 20%, ESPN season rank reduced from 15%,
-reweighted proportionally now that a 3rd source is available). Yahoo
-remains out of scope (no generic ROS-rankings API endpoint exists,
-confirmed earlier this session).
+**FantasyPros API key received (2026-09-13), NOT yet integrated into
+Roster Strength.** The user purchased FantasyPros API access and pasted
+a real key, now stored as `FANTASYPROS_API_KEY` in `.env` (gitignored,
+same pattern as `ESPN_S2`/`SWID`). Confirmed working with a live test
+call against `api.fantasypros.com/public/v2/json/nfl/{year}/consensus-
+rankings?type=ROS&position={POS}` (auth via `x-api-key` header) -
+response includes `player_id`, `player_name`, `rank_ecr`, `pos_rank`
+(e.g. "QB1"), `r2p_pts` (rest-of-season projected points),
+`player_bye_week`, `player_owned_espn`/`player_owned_yahoo`.
+**Remaining work, not started:** wire this into Roster Strength as the
+3rd signal - per-position API calls, matching FantasyPros `player_id`
+to our ESPN `player_id` (nontrivial cross-platform ID matching, no
+shared key - will likely need name+team+position fuzzy matching), then
+reweight `SIGNAL_WEIGHTS` per the original design (FantasyPros 40%,
+ESPN weekly projection + season rank reduced/reweighted proportionally;
+Yahoo stays out of scope - no generic ROS-rankings API endpoint exists).
+Confirm with the user before starting given the ID-matching complexity.
+
+**Lineup Efficiency scope filter (DONE 2026-09-13, user-requested
+addition to Phase 5):** added a Regular Season / Playoffs / All radio
+filter to `pages/4_Lineup_Efficiency.py`. "Playoffs" means true
+championship-bracket weeks ONLY (`matchups.matchup_type =
+'WINNERS_BRACKET'`) - deliberately excludes `LOSERS_CONSOLATION_LADDER`/
+`WINNERS_CONSOLATION_LADDER` (never a shot at the title) and playoff bye
+weeks (a team with no matchup row that week is simply absent, not zero-
+filled). "All" = regular season + championship-bracket weeks combined,
+consolation still excluded. New: `_scope_matchup_type_filter()`,
+`load_matchups_by_scope()`, `load_roster_with_points_by_scope()` in
+`metrics/loaders.py` (the existing regular-season-only loaders used by
+the persisted `metrics_weekly` pipeline are untouched); extended
+`compute_lineup_efficiency()` to also output the real `matchup_wins/
+losses/ties` (previously only had the optimal-lineup record, missing
+the actual one); `dashboard_data.get_lineup_efficiency_by_scope()`
+reuses the persisted regular-season table for that scope and computes
+playoffs/all live (cheap - one season's data, no live ESPN calls).
+
+**User-confirmed design intent, don't "fix" this later:** under "All"
+scope, a team with fewer playoff appearances naturally contributes
+fewer weeks to its own Decision Accuracy numerator/denominator (e.g. a
+team that didn't make the playoffs stays at the regular-season total of
+154 decisions, while a team that advanced further accumulates more) -
+this is correct and intentional per the user's explicit instruction
+("less shots at it"), not a normalization bug to paper over.
+
+Validated against real 2025 season data: `regular` scope -> weeks 1-14;
+`playoffs` scope -> weeks 15-17 with team counts 4/4/2 per week
+(correctly isolating just the championship path); `all` -> weeks 1-17.
+Confirmed in-browser via Playwright for all 3 scopes, zero errors -
+e.g. "The Quest for Three" (made it deep into the 2025 playoffs) shows
+162/187 decisions under "All" vs. 130/154 for a team that didn't make
+the playoffs, exactly the expected effect. 29/29 unit tests passing
+(`tests/test_metrics.py`), including a strengthened
+`test_lineup_efficiency_flags_manager_caused_loss` that now also
+asserts the real `matchup_wins/losses/ties` output.
 Note: the user has begun gathering manager personality/context material
 from GroupMe (`Salted by Quincy` and `Pike Fantasy football` group chats)
 for eventual use in Phase 8 commentary - reviewed in chat, NOT yet

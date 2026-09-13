@@ -6,6 +6,7 @@ and DB-free so it's unit-testable with mock data).
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pandas as pd
@@ -218,6 +219,45 @@ def get_lineup_efficiency(season: int, through_week: int | None = None) -> pd.Da
         ORDER BY m.lineup_efficiency DESC
     """
     return pd.read_sql_query(query, conn, params=(season, through_week))
+
+
+@st.cache_data(ttl=60)
+def get_lineup_efficiency_by_scope(season: int, scope: str) -> pd.DataFrame:
+    """Regular season reuses the persisted metrics_weekly data via
+    get_lineup_efficiency. Playoffs/all are computed live (see
+    metrics/loaders.py's scope-aware loaders) - cheap enough for one
+    season, and keeps metrics_weekly's stored meaning ("regular season
+    season-to-date") from getting muddied by a scope that isn't that.
+    Returns the FINAL cumulative row per team for the selected scope."""
+    if scope == "regular":
+        return get_lineup_efficiency(season)
+
+    from .metrics import loaders as metric_loaders
+    from .metrics.lineup_efficiency import compute_lineup_efficiency
+
+    conn = get_connection()
+    roster_df = metric_loaders.load_roster_with_points_by_scope(conn, season, scope=scope)
+    if roster_df.empty:
+        return pd.DataFrame()
+    matchups_df = metric_loaders.load_matchups_by_scope(conn, season, scope=scope)
+    row = conn.execute("SELECT position_slot_counts FROM seasons WHERE season_id = ?", (season,)).fetchone()
+    if not row or not row[0]:
+        return pd.DataFrame()
+    position_slot_counts = json.loads(row[0])
+
+    result = compute_lineup_efficiency(roster_df, matchups_df, position_slot_counts)
+    if result.empty:
+        return result
+
+    final = result.sort_values("week").groupby("team_pk").tail(1).reset_index(drop=True)
+
+    teams_query = f"""
+        SELECT t.id AS team_pk, t.team_name, mgr.display_name AS manager_name
+        FROM teams t {_team_manager_join_sql()} WHERE t.season_id = ?
+    """
+    teams_df = pd.read_sql_query(teams_query, conn, params=(season,))
+    merged = final.merge(teams_df, on="team_pk", how="left")
+    return merged.sort_values("lineup_efficiency", ascending=False).reset_index(drop=True)
 
 
 @st.cache_data(ttl=60)

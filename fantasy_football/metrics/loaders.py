@@ -7,6 +7,26 @@ import sqlite3
 import pandas as pd
 
 
+def _scope_matchup_type_filter(scope: str) -> str:
+    """'regular' = matchup_type NONE only (the metrics/ package default
+    everywhere else). 'playoffs' = matchup_type WINNERS_BRACKET only -
+    deliberately excludes LOSERS_CONSOLATION_LADDER/
+    WINNERS_CONSOLATION_LADDER (consolation games don't have a
+    championship on the line) and any bye week (a team with no matchup
+    row that week is simply absent from the join, not zero-filled).
+    'all' = regular season + true championship playoff weeks, still
+    excluding consolation - a team with fewer playoff appearances
+    naturally contributes fewer weeks to its own numerator/denominator
+    under 'all', which is correct, not a bug to normalize away."""
+    if scope == "regular":
+        return "'NONE'"
+    if scope == "playoffs":
+        return "'WINNERS_BRACKET'"
+    if scope == "all":
+        return "'NONE', 'WINNERS_BRACKET'"
+    raise ValueError(f"unknown scope: {scope!r}")
+
+
 def load_weekly_scores(conn: sqlite3.Connection, season: int) -> pd.DataFrame:
     """One row per team per completed REGULAR SEASON week: week, team_pk,
     score. Playoff weeks are deliberately excluded here - see the
@@ -46,6 +66,22 @@ def load_matchups(conn: sqlite3.Connection, season: int) -> pd.DataFrame:
     )
 
 
+def load_matchups_by_scope(conn: sqlite3.Connection, season: int, scope: str = "regular") -> pd.DataFrame:
+    """Like load_matchups, but selectable by scope ('regular' matches
+    load_matchups exactly; 'playoffs'/'all' add championship-bracket
+    weeks - see _scope_matchup_type_filter). Used by the Lineup
+    Efficiency page's scope filter; load_matchups stays regular-season-
+    only for everything that persists into metrics_weekly."""
+    types = _scope_matchup_type_filter(scope)
+    return pd.read_sql_query(
+        f"SELECT week, home_team_pk, away_team_pk, home_score, away_score "
+        f"FROM matchups WHERE season_id = ? AND completed = 1 AND matchup_type IN ({types}) "
+        f"ORDER BY week",
+        conn,
+        params=(season,),
+    )
+
+
 def season_uses_median_scoring(conn: sqlite3.Connection, season: int) -> bool:
     row = conn.execute(
         "SELECT median_scoring FROM seasons WHERE season_id = ?", (season,)
@@ -72,6 +108,35 @@ def load_roster_with_points(conn: sqlite3.Connection, season: int) -> pd.DataFra
             ON pws.season_id = wr.season_id AND pws.week = wr.week AND pws.player_id = wr.player_id
         WHERE wr.season_id = ? AND wts.completed = 1 AND wts.is_playoff = 0
               AND wr.eligible_slots IS NOT NULL
+    """
+    df = pd.read_sql_query(query, conn, params=(season,))
+    if not df.empty:
+        df["eligible_slots"] = df["eligible_slots"].apply(lambda s: frozenset(json.loads(s)))
+    return df
+
+
+def load_roster_with_points_by_scope(conn: sqlite3.Connection, season: int, scope: str = "regular") -> pd.DataFrame:
+    """Like load_roster_with_points, but selectable by scope. weekly_rosters
+    doesn't carry matchup_type directly, so this joins through matchups
+    (unpivoted to one row per team-week) to determine it per team-week -
+    a team with no matchup row that week (a playoff bye) is simply absent
+    from the join, so bye weeks are excluded automatically."""
+    types = _scope_matchup_type_filter(scope)
+    query = f"""
+        WITH team_week_type AS (
+            SELECT season_id, week, home_team_pk AS team_pk, matchup_type FROM matchups WHERE completed = 1
+            UNION ALL
+            SELECT season_id, week, away_team_pk AS team_pk, matchup_type FROM matchups WHERE completed = 1
+        )
+        SELECT wr.week, wr.team_pk, wr.player_id, wr.is_starter, wr.eligible_slots,
+               COALESCE(pws.points, 0) AS points
+        FROM weekly_rosters wr
+        JOIN team_week_type twt
+            ON twt.season_id = wr.season_id AND twt.week = wr.week AND twt.team_pk = wr.team_pk
+        LEFT JOIN player_week_scores pws
+            ON pws.season_id = wr.season_id AND pws.week = wr.week AND pws.player_id = wr.player_id
+        WHERE wr.season_id = ? AND wr.eligible_slots IS NOT NULL
+              AND twt.matchup_type IN ({types})
     """
     df = pd.read_sql_query(query, conn, params=(season,))
     if not df.empty:

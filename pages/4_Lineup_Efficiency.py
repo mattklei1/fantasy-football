@@ -1,6 +1,6 @@
 """LINEUP EFFICIENCY page: Actual vs. Optimal starter points, and
-whether a different legal lineup would have won the matchup. Season-to-
-date through the selected week, matching the Home/Luck page convention."""
+whether a different legal lineup would have won the matchup. Filterable
+by Regular Season / Playoffs (championship-bracket weeks only) / All."""
 from __future__ import annotations
 
 import streamlit as st
@@ -15,17 +15,39 @@ season, week = ui.render_sidebar()
 
 st.title("Lineup Efficiency")
 
-df = dd.get_lineup_efficiency(season, through_week=week)
+scope_label_to_value = {"Regular Season": "regular", "Playoffs": "playoffs", "All": "all"}
+scope_label = st.radio("Scope", list(scope_label_to_value.keys()), horizontal=True)
+scope = scope_label_to_value[scope_label]
+
+if scope == "playoffs":
+    st.caption(
+        "Championship-bracket weeks only - consolation-ladder games and playoff bye weeks are "
+        "excluded (they were never a shot at the title)."
+    )
+elif scope == "all":
+    st.caption(
+        "Regular season + championship-bracket weeks combined (consolation games still "
+        "excluded). Teams with fewer playoff appearances naturally contribute fewer weeks to "
+        "their own numerator/denominator here - that's correct, not a bug: fewer shots at it."
+    )
+
+df = dd.get_lineup_efficiency_by_scope(season, scope)
 
 if df.empty:
-    st.info(
-        "No lineup efficiency data for this season/week. This requires per-player slot "
-        "eligibility data that's only available for 2019 onward, and only for weeks ingested "
-        "since this feature shipped (2026-09-13) - run a refresh to backfill."
-    )
+    if scope == "regular":
+        st.info(
+            "No lineup efficiency data for this season yet. This requires per-player slot "
+            "eligibility data that's only available for 2019 onward, and only for weeks "
+            "ingested since this feature shipped (2026-09-13) - run a refresh to backfill."
+        )
+    else:
+        st.info(f"No {scope_label.lower()} lineup data for this season (no qualifying weeks played yet).")
     st.stop()
 
-st.caption(f"Through week {week} (regular season) · ranked by season-to-date Lineup Efficiency")
+if scope == "regular":
+    st.caption(f"Through week {week} (regular season) · ranked by season-to-date Lineup Efficiency")
+else:
+    st.caption(f"Full-season {scope_label.lower()} totals · ranked by Lineup Efficiency")
 
 df = df.reset_index(drop=True)
 df.insert(0, "Rank", df.index + 1)
@@ -63,7 +85,13 @@ an exact maximum-weight assignment of rostered players to starting slots, respec
 player's real slot eligibility and the league's real roster settings pulled from ESPN
 (`league.settings.position_slot_counts` - never hardcoded).
 
-- **Lineup Efficiency** = season-to-date Actual Starter Points ÷ Optimal Starter Points
+- **Scope**: Regular Season (weeks with `matchup_type = NONE`), Playoffs (`WINNERS_BRACKET`
+  only - the championship path), or All (both combined). Consolation-ladder games and playoff
+  bye weeks are excluded from every scope - a bye week has no matchup row to draw a lineup
+  eligibility snapshot from in the first place, and a consolation game was never a shot at the
+  title, so it's deliberately left out of Playoffs/All rather than silently diluting the numbers.
+- **Lineup Efficiency** = Actual Starter Points ÷ Optimal Starter Points, summed over the
+  selected scope's weeks
 - **Decision Accuracy** = a points-BLIND companion metric: compares the SET of players you
   actually started against the SET the optimal lineup would have started, and counts how many
   of your N starting-slot decisions matched. A single boom/bust bench player dominates Lineup

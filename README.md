@@ -108,6 +108,12 @@ stats and optional Claude-generated commentary.
   as one wrong decision, regardless of how many points a boom/bust
   bench player was worth (which otherwise dominates the points-based
   efficiency number)
+- **Scope filter**: Regular Season / Playoffs / All. Playoffs means true
+  championship-bracket weeks only - consolation-ladder games and playoff
+  bye weeks are excluded, since they were never a shot at the title. A
+  team with fewer playoff appearances naturally contributes fewer weeks
+  to its own numerator/denominator under "All" - that's intentional, not
+  a bug (fewer shots at it).
 - Available for 2019+ seasons
 
 **History (done)**

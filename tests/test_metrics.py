@@ -307,6 +307,10 @@ def test_lineup_efficiency_flags_manager_caused_loss():
     assert row["lineup_efficiency"] == pytest.approx(15.0 / 25.0)
     assert row["manager_caused_losses"] == 1
     assert row["optimal_wins"] == 1
+    # actual record: team 1 scored 15, opponent scored 20 -> a real loss
+    assert row["matchup_wins"] == 0
+    assert row["matchup_losses"] == 1
+    assert row["matchup_ties"] == 0
 
 
 def test_decision_accuracy_survives_a_single_bench_blowup():

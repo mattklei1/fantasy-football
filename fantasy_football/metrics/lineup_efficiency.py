@@ -67,7 +67,7 @@ def compute_lineup_efficiency(
         return weekly
 
     matchup_df = compute_matchup_results(matchups_df)[
-        ["week", "team_pk", "matchup_win", "points_against"]
+        ["week", "team_pk", "matchup_win", "matchup_loss", "matchup_tie", "points_against"]
     ]
     df = weekly.merge(matchup_df, on=["week", "team_pk"], how="left")
 
@@ -90,6 +90,10 @@ def compute_lineup_efficiency(
     df["optimal_ties"] = grp["optimal_tie"].cumsum()
     df["manager_caused_losses"] = grp["manager_caused_loss"].cumsum()
 
+    df["matchup_wins"] = grp["matchup_win"].cumsum()
+    df["matchup_losses"] = grp["matchup_loss"].cumsum()
+    df["matchup_ties"] = grp["matchup_tie"].cumsum()
+
     df["correct_decisions_cum"] = grp["correct_decisions"].cumsum()
     df["total_decisions_cum"] = grp["total_decisions"].cumsum()
     df["decision_accuracy"] = df["correct_decisions_cum"] / df["total_decisions_cum"].replace(0, pd.NA)
@@ -100,6 +104,7 @@ def compute_lineup_efficiency(
             "actual_starter_points_cum", "optimal_starter_points_cum",
             "lineup_efficiency", "points_left_on_bench",
             "optimal_wins", "optimal_losses", "optimal_ties", "manager_caused_losses",
+            "matchup_wins", "matchup_losses", "matchup_ties",
             "correct_decisions_cum", "total_decisions_cum", "decision_accuracy",
         ]
     ].rename(
