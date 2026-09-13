@@ -1631,6 +1631,51 @@ BAD BEAT section renders sensibly (searches actually happen, no stray
 narration leaks through) before trusting it blindly, same as every other
 "can't test the real model locally" note in this file.
 
+**Real bug found doing a mobile-responsiveness pass (2026-09-13, same
+session): most of the app was showing raw ESPN usernames instead of real
+names.** Selected season 2025 in a mobile-width (390px) browser and
+screenshotted every page - the page layouts themselves were already fine
+(Streamlit's own `st.columns()` stacks to one column at narrow widths, no
+custom CSS needed; `st.dataframe` tables scroll horizontally within their
+own container rather than blowing out the page - confirmed 0px document-
+level horizontal overflow on every page at 390px). But the screenshots
+surfaced something real and unrelated to mobile at all: Lineup Efficiency
+and Playoff Odds showed "Manager" values like "Tmoskowitz007",
+"jeffreydriscoll", "yankeesjets247" - ESPN account usernames - while
+History (which visibly shows "Trent Moskowitz", "Jeffrey Driscoll") did
+not. Traced it to `dashboard_data._team_manager_join_sql()`: every caller
+(`get_standings`, `get_luck_page_extras`, `get_roster_strength`,
+`get_lineup_efficiency`/`get_lineup_efficiency_by_scope`,
+`get_playoff_simulation` - i.e. Home, Luck, Roster Strength, Lineup
+Efficiency, Playoff Odds) was selecting `mgr.display_name AS manager_name`
+directly - `.display_name` is ESPN's raw account name, per
+`db.manager_full_name_sql()`'s own docstring ("very often just a
+username"). History/Ask Me Anything/Matchups never had this bug because
+each built its own separate real-name lookup
+(`db.manager_full_name_sql()` / `hd.get_managers()`) rather than going
+through this shared helper - the fix in Phase 6 (tenure-based primary-
+owner resolution) never got applied to the NAME the shared helper
+exposes, only to WHICH manager it resolves to.
+
+Fixed at the shared root: added `dashboard_data._manager_name_sql()`
+(thin wrapper around `db.manager_full_name_sql("mgr")`) and replaced
+every `mgr.display_name AS manager_name` occurrence (5 total) with
+`{_manager_name_sql()} AS manager_name`. Verified directly against real
+2025 season data (not just "should work") - `get_standings`,
+`get_lineup_efficiency_by_scope`, and `get_playoff_simulation` all now
+return real names ("Trent Moskowitz", "Jeffrey Driscoll", "Nick
+Huebner"), then re-confirmed in the actual running app via a fresh
+Playwright screenshot after restarting the dev server (a stale
+`@st.cache_data`-backed process was still serving the old query on the
+first re-check - a plain browser refresh wasn't enough, a process
+restart was needed to be sure). 169/169 tests passing (no test needed
+changes - none of the existing fixtures asserted on the buggy
+`display_name` value, which is exactly why this went unnoticed until an
+unrelated visual review surfaced it). **Lesson worth repeating: a
+visual/manual pass on one page can surface a real correctness bug on a
+completely different page** - this was found while checking mobile
+CSS, not by looking for a manager-name bug.
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip

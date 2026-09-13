@@ -61,9 +61,26 @@ def get_latest_metrics_week(season: int) -> int | None:
 
 
 def _team_manager_join_sql() -> str:
-    """teams -> primary (most-tenured) manager display name. See
-    db.primary_owner_join_sql for why this isn't just an arbitrary pick."""
+    """teams -> primary (most-tenured) manager. See db.primary_owner_join_sql
+    for why this isn't just an arbitrary pick. Callers must select
+    `{_manager_name_sql()} AS manager_name`, NOT `mgr.display_name` - the
+    latter is ESPN's raw account display name/username (e.g.
+    "aaron0044"), not a real name; see _manager_name_sql()."""
     return db.primary_owner_join_sql("t", mgr_alias="mgr", owner_alias="primary_owner")
+
+
+def _manager_name_sql() -> str:
+    """Real full name (first+last) when available, falling back to the
+    ESPN display name/username otherwise - same expression History/Ask
+    Me Anything already use (db.manager_full_name_sql), now shared here
+    too. A real bug found 2026-09-13 via mobile review: every query below
+    was previously selecting the joined manager's raw `.display_name`
+    directly (e.g. "Tmoskowitz007", "jeffreydriscoll") instead of this,
+    so Home/Luck/Roster Strength/Lineup Efficiency/Playoff Odds showed
+    ESPN usernames while History/Matchups/Ask Me Anything (which built
+    their own separate real-name lookups) correctly showed real names -
+    an inconsistency nobody had normalized before."""
+    return db.manager_full_name_sql("mgr")
 
 
 @st.cache_data(ttl=60)
@@ -77,7 +94,7 @@ def get_standings(season: int, through_week: int | None = None) -> pd.DataFrame:
         return pd.DataFrame()
 
     query = f"""
-        SELECT t.id AS team_pk, t.team_name, mgr.display_name AS manager_name,
+        SELECT t.id AS team_pk, t.team_name, {_manager_name_sql()} AS manager_name,
                m.week, m.games_played, m.matchup_wins, m.matchup_losses, m.matchup_ties,
                m.median_wins, m.median_losses, m.median_ties,
                m.actual_win_pct, m.points_for, m.points_against, m.ppg, m.last3_ppg,
@@ -212,7 +229,7 @@ def get_lineup_efficiency(season: int, through_week: int | None = None) -> pd.Da
     if through_week is None:
         return pd.DataFrame()
     query = f"""
-        SELECT t.id AS team_pk, t.team_name, mgr.display_name AS manager_name,
+        SELECT t.id AS team_pk, t.team_name, {_manager_name_sql()} AS manager_name,
                m.week, m.games_played,
                m.actual_starter_points, m.optimal_starter_points, m.lineup_efficiency,
                m.points_left_on_bench, m.optimal_wins, m.optimal_losses, m.optimal_ties,
@@ -258,7 +275,7 @@ def get_lineup_efficiency_by_scope(season: int, scope: str) -> pd.DataFrame:
     final = result.sort_values("week").groupby("team_pk").tail(1).reset_index(drop=True)
 
     teams_query = f"""
-        SELECT t.id AS team_pk, t.team_name, mgr.display_name AS manager_name
+        SELECT t.id AS team_pk, t.team_name, {_manager_name_sql()} AS manager_name
         FROM teams t {_team_manager_join_sql()} WHERE t.season_id = ?
     """
     teams_df = pd.read_sql_query(teams_query, conn, params=(season,))
@@ -273,7 +290,7 @@ def get_roster_strength(season: int) -> pd.DataFrame:
     per team, or empty if it hasn't been computed yet this season."""
     conn = get_connection()
     query = f"""
-        SELECT rs.week, t.id AS team_pk, t.team_name, mgr.display_name AS manager_name,
+        SELECT rs.week, t.id AS team_pk, t.team_name, {_manager_name_sql()} AS manager_name,
                rs.starter_value, rs.bench_value, rs.starter_weight, rs.bench_weight, rs.roster_strength
         FROM roster_strength_weekly rs
         JOIN teams t ON t.id = rs.team_pk
@@ -314,7 +331,7 @@ def get_playoff_simulation(season: int) -> pd.DataFrame:
     )
 
     teams_query = f"""
-        SELECT t.id AS team_pk, t.team_name, mgr.display_name AS manager_name
+        SELECT t.id AS team_pk, t.team_name, {_manager_name_sql()} AS manager_name
         FROM teams t {_team_manager_join_sql()} WHERE t.season_id = ?
     """
     teams_df = pd.read_sql_query(teams_query, get_connection(), params=(season,))
