@@ -1,0 +1,228 @@
+"""SQLite persistence layer. Raw sqlite3 (no ORM) - schema is created
+idempotently via CREATE TABLE IF NOT EXISTS, and all writes go through the
+generic `upsert` helper so refreshes never create duplicate rows.
+"""
+from __future__ import annotations
+
+import sqlite3
+from typing import Iterable, Optional
+
+from .config import DB_PATH
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS seasons (
+    season_id INTEGER PRIMARY KEY,
+    league_id INTEGER NOT NULL,
+    league_name TEXT,
+    current_week INTEGER,
+    reg_season_count INTEGER,
+    playoff_team_count INTEGER,
+    scoring_type TEXT,
+    median_scoring INTEGER NOT NULL DEFAULT 0,
+    reception_points REAL,
+    position_slot_counts TEXT,
+    scoring_format_json TEXT,
+    is_current INTEGER NOT NULL DEFAULT 0,
+    last_ingested_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS managers (
+    manager_id TEXT PRIMARY KEY,
+    display_name TEXT,
+    first_name TEXT,
+    last_name TEXT
+);
+
+CREATE TABLE IF NOT EXISTS teams (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season_id INTEGER NOT NULL REFERENCES seasons(season_id),
+    espn_team_id INTEGER NOT NULL,
+    team_name TEXT,
+    team_abbrev TEXT,
+    division_id INTEGER,
+    division_name TEXT,
+    wins INTEGER,
+    losses INTEGER,
+    ties INTEGER,
+    points_for REAL,
+    points_against REAL,
+    standing INTEGER,
+    final_standing INTEGER,
+    streak_type TEXT,
+    streak_length INTEGER,
+    UNIQUE(season_id, espn_team_id)
+);
+
+CREATE TABLE IF NOT EXISTS team_owners (
+    team_pk INTEGER NOT NULL REFERENCES teams(id),
+    manager_id TEXT NOT NULL REFERENCES managers(manager_id),
+    PRIMARY KEY (team_pk, manager_id)
+);
+
+CREATE TABLE IF NOT EXISTS matchups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season_id INTEGER NOT NULL REFERENCES seasons(season_id),
+    week INTEGER NOT NULL,
+    home_team_pk INTEGER NOT NULL REFERENCES teams(id),
+    away_team_pk INTEGER NOT NULL REFERENCES teams(id),
+    home_score REAL,
+    away_score REAL,
+    is_playoff INTEGER NOT NULL DEFAULT 0,
+    matchup_type TEXT,
+    completed INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(season_id, week, home_team_pk, away_team_pk)
+);
+
+CREATE TABLE IF NOT EXISTS weekly_team_scores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season_id INTEGER NOT NULL REFERENCES seasons(season_id),
+    week INTEGER NOT NULL,
+    team_pk INTEGER NOT NULL REFERENCES teams(id),
+    score REAL,
+    projected_score REAL,
+    is_playoff INTEGER NOT NULL DEFAULT 0,
+    completed INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(season_id, week, team_pk)
+);
+
+CREATE TABLE IF NOT EXISTS players (
+    player_id INTEGER PRIMARY KEY,
+    player_name TEXT,
+    default_position TEXT
+);
+
+CREATE TABLE IF NOT EXISTS weekly_rosters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season_id INTEGER NOT NULL REFERENCES seasons(season_id),
+    week INTEGER NOT NULL,
+    team_pk INTEGER NOT NULL REFERENCES teams(id),
+    player_id INTEGER NOT NULL REFERENCES players(player_id),
+    slot_position TEXT,
+    pro_team TEXT,
+    is_starter INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(season_id, week, team_pk, player_id)
+);
+
+CREATE TABLE IF NOT EXISTS player_week_scores (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season_id INTEGER NOT NULL REFERENCES seasons(season_id),
+    week INTEGER NOT NULL,
+    player_id INTEGER NOT NULL REFERENCES players(player_id),
+    points REAL,
+    projected_points REAL,
+    UNIQUE(season_id, week, player_id)
+);
+
+CREATE TABLE IF NOT EXISTS draft_picks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season_id INTEGER NOT NULL REFERENCES seasons(season_id),
+    team_pk INTEGER REFERENCES teams(id),
+    nominating_team_pk INTEGER REFERENCES teams(id),
+    player_id INTEGER,
+    player_name TEXT,
+    round_num INTEGER,
+    round_pick INTEGER,
+    overall_pick INTEGER,
+    bid_amount INTEGER,
+    keeper_status INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(season_id, round_num, round_pick)
+);
+
+CREATE TABLE IF NOT EXISTS transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season_id INTEGER NOT NULL REFERENCES seasons(season_id),
+    activity_date TEXT,
+    team_pk INTEGER REFERENCES teams(id),
+    action_type TEXT,
+    player_id INTEGER,
+    player_name TEXT,
+    bid_amount INTEGER,
+    UNIQUE(season_id, activity_date, team_pk, action_type, player_id)
+);
+
+CREATE TABLE IF NOT EXISTS metrics_weekly (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season_id INTEGER NOT NULL REFERENCES seasons(season_id),
+    week INTEGER NOT NULL,
+    team_pk INTEGER NOT NULL REFERENCES teams(id),
+    power_score REAL,
+    all_play_wins INTEGER,
+    all_play_losses INTEGER,
+    expected_wins REAL,
+    luck_wins REAL,
+    actual_win_pct REAL,
+    all_play_win_pct REAL,
+    fraud_index REAL,
+    lineup_efficiency REAL,
+    actual_starter_points REAL,
+    optimal_starter_points REAL,
+    points_left_on_bench REAL,
+    UNIQUE(season_id, week, team_pk)
+);
+
+CREATE TABLE IF NOT EXISTS refresh_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    status TEXT NOT NULL,
+    seasons_refreshed TEXT,
+    detail TEXT
+);
+"""
+
+
+def get_connection() -> sqlite3.Connection:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def init_db(conn: sqlite3.Connection) -> None:
+    conn.executescript(SCHEMA_SQL)
+    conn.commit()
+
+
+def get_team_pk(conn: sqlite3.Connection, season_id: int, espn_team_id: int) -> Optional[int]:
+    row = conn.execute(
+        "SELECT id FROM teams WHERE season_id = ? AND espn_team_id = ?",
+        (season_id, espn_team_id),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def upsert(
+    conn: sqlite3.Connection,
+    table: str,
+    row: dict,
+    conflict_cols: Iterable[str],
+    update_cols: Optional[Iterable[str]] = None,
+) -> None:
+    """Insert `row` into `table`, updating in place on conflict with
+    `conflict_cols` (which must match a UNIQUE/PRIMARY KEY constraint).
+    This is what keeps refreshes idempotent - re-running ingestion never
+    creates duplicate rows, it just overwrites with the latest values.
+    """
+    cols = list(row.keys())
+    conflict_cols = list(conflict_cols)
+    if update_cols is None:
+        update_cols = [c for c in cols if c not in conflict_cols]
+    else:
+        update_cols = list(update_cols)
+
+    placeholders = ",".join("?" for _ in cols)
+    col_list = ",".join(cols)
+    conflict_list = ",".join(conflict_cols)
+
+    if update_cols:
+        update_clause = ",".join(f"{c}=excluded.{c}" for c in update_cols)
+        sql = (
+            f"INSERT INTO {table} ({col_list}) VALUES ({placeholders}) "
+            f"ON CONFLICT({conflict_list}) DO UPDATE SET {update_clause}"
+        )
+    else:
+        sql = (
+            f"INSERT INTO {table} ({col_list}) VALUES ({placeholders}) "
+            f"ON CONFLICT({conflict_list}) DO NOTHING"
+        )
+    conn.execute(sql, [row[c] for c in cols])
