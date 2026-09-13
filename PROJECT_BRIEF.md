@@ -1638,7 +1638,16 @@ screenshotted every page - the page layouts themselves were already fine
 (Streamlit's own `st.columns()` stacks to one column at narrow widths, no
 custom CSS needed; `st.dataframe` tables scroll horizontally within their
 own container rather than blowing out the page - confirmed 0px document-
-level horizontal overflow on every page at 390px). But the screenshots
+level horizontal overflow on every page at 390px). One real mobile-only
+observation, verified NOT to be something this app's code causes (this
+app's injected CSS in `ui_common.py` never touches sidebar position/
+transform/visibility at all - checked directly): Streamlit 1.63's
+built-in multipage sidebar drawer stays open after tapping a nav link at
+narrow widths, covering most of the 390px viewport until the user
+manually taps the collapse arrow - stock platform behavior, not
+something fixable from app code without fragile custom JS fighting
+Streamlit's own React sidebar controller, so left as a documented
+limitation rather than hacked around. But the screenshots
 surfaced something real and unrelated to mobile at all: Lineup Efficiency
 and Playoff Odds showed "Manager" values like "Tmoskowitz007",
 "jeffreydriscoll", "yankeesjets247" - ESPN account usernames - while
