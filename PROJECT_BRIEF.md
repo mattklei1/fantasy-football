@@ -1413,6 +1413,86 @@ calculator) - user described what they want but this is real feature
 work for its own phase, scoped as a roadmap list in the page for now
 rather than guessed at and half-built.
 
+**War Room tools DONE (2026-09-13, later session) - all 3 roadmap items
+built.** New: `fantasy_football/war_room_data.py` (the admin-only data
+layer - callers, i.e. the page, are responsible for the `ui.is_admin()`
+gate; this module doesn't check admin status itself), `tests/
+test_war_room_data.py`. `pages/9_War_Room.py` rewritten from scaffolding
+to 3 real tabs:
+
+1. **Rankings Browser** - live FantasyPros ROS rankings for ALL 6
+   positions' full ranked pool (not just this league's rostered players,
+   unlike Roster Strength's `fantasypros_rankings` table, which per
+   `ingest_fantasypros_rankings()`'s own docstring only ever stores rows
+   for players actually rostered here) - calls `fantasypros_client.
+   fetch_all_ros_rankings()` live instead of reading that table, cached
+   1hr (a real hit against a paid API; ROS consensus doesn't move
+   minute-to-minute). Cross-referenced against this league's current
+   rosters (via FantasyPros' own espn_id cross-reference,
+   `fetch_player_espn_id_map()`) to show a "Rostered By" column (team
+   name, or "Free Agent"). Filterable by position, searchable by name.
+2. **Waiver Board** - the exact `metrics/waiver_value.suggested_bid()`
+   heuristic that already powers the public GroupMe waiver report,
+   applied here to the LIVE free-agent pool (`league.free_agents(size=25,
+   position=...)` per position, 6 calls) instead of only after the fact
+   to claims that already happened - so the commissioner can see who's
+   worth a bid before Tuesday's claims lock, not just review last week's
+   results.
+3. **Trade Calculator** - value-based, superflex-aware, built entirely
+   from data already in `data/league.db` (no live calls): every rostered
+   player at the latest ingested week, joined to that week's stored
+   `fantasypros_rankings`/`player_rankings` rows, blended into a
+   `value_score` via a new pure `blend_trade_value()` function (FantasyPros
+   ROS rank weight 40, ESPN season rank weight 15 - proportional to Roster
+   Strength's own weights minus its weekly-projection signal, which isn't
+   meaningful for rest-of-season trade value) with the same superflex
+   QB-premium multiplier (`waiver_value.position_scarcity_multipliers()`)
+   the Waiver Board uses, so all 3 tools agree on how this league's `OP`
+   slot inflates QB value. Pick two teams, multi-select players from each
+   side, see each side's total value and a verdict (`Fair trade` within a
+   10% value gap, otherwise whichever team RECEIVES more than it sends).
+
+**Two real bugs caught by actually running the page (AppTest with
+`ui_common.is_admin` mocked to `True` - real Google OAuth can't be
+exercised in this sandbox, so this was the most direct way to execute the
+real admin-only render path end to end against live ESPN/FantasyPros
+data, not just the locked-teaser path the original scaffolding validated):**
+1. `Player.injuryStatus` from `league.free_agents()` is a bare string
+   ("ACTIVE", "INJURY_RESERVE", ...) for real players but an EMPTY LIST
+   (`[]`) for D/ST - not documented anywhere, found by a real Arrow
+   serialization crash the instant a D/ST free agent's row hit
+   `st.dataframe()`. Fixed by coercing anything that isn't a `str` to
+   `None` before it reaches the DataFrame.
+2. **The trade verdict had the winner backwards on first pass** - a team
+   WINS a trade by RECEIVING more value than it sends, but the first cut
+   declared whichever team's OUTGOING side had the higher raw value as
+   the "winner." Caught immediately by manually walking through a real
+   AppTest scenario (Team A sends a 96-value player, Team B sends a
+   138-value player - Team A is clearly getting the better end of that,
+   but the code said Team B "wins"). Fixed: winner is `team_a if value_b
+   > value_a else team_b` (team_a receives team_b's side), not the
+   sent-value comparison. Worth flagging for any future trade/value
+   feature on this project - "who sent more" and "who won" are opposite
+   questions, easy to swap by accident, and a plausible-looking number
+   won't tip you off; only tracing a concrete example will.
+
+**Design decision: "Rostered By" shows TEAM name, not manager name** -
+deliberate, since a commissioner cross-referencing a player against
+rosters is asking "which roster," and team names are what shows up
+everywhere else this app cross-references a roster (Matchups, Lineup
+Efficiency), not manager identity (that's a History-page concern).
+
+**Not exercised against a real Google OAuth login in this sandbox** (same
+limitation as the original scaffolding pass) - validated instead via
+AppTest with `is_admin()` mocked, against REAL live ESPN + FantasyPros
+data (484 real FantasyPros-ranked players, 143 real live free agents
+across 6 positions, real 2026-season rosters for the trade calculator) -
+not synthetic fixtures. The locked-teaser path (everyone without a
+mocked admin override) was re-screenshotted after this change and is
+unaffected. If a future session has real OAuth configured, spot-check the
+live admin path once, same as every other "can't test OAuth locally" note
+in this file.
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip
