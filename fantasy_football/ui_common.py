@@ -332,6 +332,24 @@ def render_sidebar() -> tuple[int, int | None]:
     # already covers all seasons on its own and ignores this selector.
     ALL_TIME = "All time"
     options = seasons + [ALL_TIME]
+
+    # A key'd widget's session_state value persists across pages and
+    # overrides the `index` param on every render after the first mount -
+    # so if the LAST run picked "All time" (which triggered switch_page
+    # below), this run's selectbox would otherwise re-render already
+    # showing "All time" again on whatever page we land on, feeding the
+    # literal string "All time" into that page's `season` variable
+    # instead of a real season int (broke Lineup Efficiency and anything
+    # else that uses it). Must reset it HERE, before the widget below is
+    # instantiated this run - Streamlit raises
+    # StreamlitWidgetAlreadyInstantiatedError if you try to write to a
+    # widget's key AFTER creating it in the same run (hit this in
+    # production, 2026-09-13), so the reset has to happen pre-emptively
+    # on the NEXT run, not right after switch_page on the run that
+    # triggered it.
+    if st.session_state.get("season_selectbox") == ALL_TIME:
+        st.session_state["season_selectbox"] = st.session_state.selected_season
+
     season_choice = st.sidebar.selectbox(
         "Season",
         options,
@@ -339,15 +357,6 @@ def render_sidebar() -> tuple[int, int | None]:
         key="season_selectbox",
     )
     if season_choice == ALL_TIME:
-        # Streamlit widgets with a `key` persist their OWN value in
-        # session_state and that persisted value overrides the `index`
-        # param on every future render (index only seeds the very first
-        # mount) - without this reset, the selectbox stayed stuck showing
-        # "All time" forever on every subsequent page, silently feeding
-        # the literal string "All time" into every page's `season`
-        # variable instead of a real season int (broke Lineup Efficiency
-        # and anything else that actually uses it - found 2026-09-13).
-        st.session_state["season_selectbox"] = st.session_state.selected_season
         st.switch_page("pages/5_History.py")
     season = season_choice
     st.session_state.selected_season = season
