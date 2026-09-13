@@ -176,23 +176,32 @@ stats and optional Claude-generated commentary.
 
 ## Scheduled GroupMe posts
 
-Three recurring in-season messages, sent via a GroupMe Bot (not the app itself - these run on
+Four recurring in-season messages, sent via a GroupMe Bot (not the app itself - these run on
 GitHub Actions, independent of whether the Streamlit app is deployed or awake):
 
 - **Early Slate Update** (~1:30pm Pacific Sundays): live scores so far, closest games, top scorers
 - **Afternoon Slate Update** (~5:00pm Pacific Sundays): same, later in the day
-- **Waiver Wire Report** (~9:00am Pacific Wednesdays, unverified guess at this league's actual
-  waiver day - adjust if wrong): every contested claim with all real bids placed (not just the
-  winner), and winning bids that looked like overpays against our own suggested-value estimate
+- **Weekly Recap** (~6:00am Pacific Tuesdays, after Monday Night Football wraps): the full
+  HEADLINE / GAME OF THE WEEK / BEATDOWN OF THE WEEK / BAD BEAT / MANAGER OF THE WEEK / COACHING
+  DISASTER / FRAUD WATCH / POWER RANKING MOVERS / NEXT WEEK'S GAME TO WATCH recap - Claude-written
+  if `ANTHROPIC_API_KEY` is set, a deterministic placeholder otherwise (same recap logic as the
+  Weekly Recap page, reused as-is)
+- **Waiver Wire Report** (~9:00am Pacific Wednesdays, confirmed correct day): every contested
+  claim with all real bids placed (not just the winner), winning bids that looked like overpays
+  against our own suggested-value estimate ("PAID TOO MUCH"), and winning bids that looked like
+  bargains ("STEALS") - both compared against the same suggested-value heuristic
 
 **Setup:**
 1. Create a Bot for your GroupMe group at [dev.groupme.com](https://dev.groupme.com/bots) - takes
    its `bot_id`, no other access.
 2. Add these as **GitHub Actions repository secrets** (Settings → Secrets and variables → Actions),
    matching your `.env` values: `LEAGUE_ID`, `ESPN_S2`, `SWID`, `CURRENT_SEASON`, `GROUPME_BOT_ID`,
-   and `FANTASYPROS_API_KEY` (optional - powers the waiver report's suggested bid values).
-3. That's it - `.github/workflows/slate-updates.yml` and `waiver-recap.yml` pick up from there.
-   Use each workflow's "Run workflow" button (Actions tab) to test on demand instead of waiting
+   `FANTASYPROS_API_KEY` (optional - powers the waiver report's suggested bid values), and
+   `ANTHROPIC_API_KEY` (optional - powers real Claude-written Weekly Recap text instead of the
+   placeholder; get one at [console.anthropic.com](https://console.anthropic.com) → Settings →
+   API Keys → Create Key - a card on file is required to generate real traffic).
+3. That's it - the workflows under `.github/workflows/` pick up from there. Use each workflow's
+   "Run workflow" button (Actions tab) to test on demand instead of waiting
    for the schedule.
 
 No suggested-bid number exists anywhere to pull from (checked FantasyPros' full API, ESPN, and

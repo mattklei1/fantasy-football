@@ -884,30 +884,99 @@ bootstrap at the top of both scripts. **Lesson reaffirmed: run the code,
 don't just review it** - same lesson as every "validated in-browser"
 note elsewhere in this file.
 
-**Known open items, not yet resolved:**
-- **No GroupMe Bot created yet** - user is still deciding on a bot name
-  (USC Pike-themed - the league's original 2015-2021 name before
-  "Salted by Quincy" - candidates discussed: "The Pike Dream", "Fines
-  Committee", others). Once created, the `bot_id` needs to go into both
-  `.env` (local testing) and the repo's GitHub Actions secrets (for the
-  real scheduled runs) alongside the existing `LEAGUE_ID`/`ESPN_S2`/
-  `SWID`/`CURRENT_SEASON`/`FANTASYPROS_API_KEY` secrets.
-- **Waiver-processing day is a GUESS (Wednesday ~9am Pacific)**, not
-  verified - `espn_api`'s `LeagueSettings` has no waiver-day field to
-  check against. Confirm this league's actual pattern and adjust
-  `waiver-recap.yml`'s cron day-of-week + `post_waiver_recap.py`'s
-  `DEFAULT_TARGET_HOUR` if it's off.
-- **"Sneaky good pickups" was deliberately NOT built** - it's inherently
-  hindsight (can't know a pickup was good until they've played), so it
+**GroupMe Bot created and live-tested (2026-09-13, later same day).**
+`bot_id` confirmed working with a real posted test message to the real
+group (user approved sending it first - posting to a real group chat is
+a "visible to others" action, not something to do silently). Stored in
+local `.env` only (confirmed clean: `git log --all` and `git grep`
+across the full history both show zero trace of the bot_id or the
+separate/unrelated personal access token used earlier this project for
+one-off GroupMe research - that token was never persisted to this repo
+at all, only used interactively in an earlier chat session).
+**Still needs the same `bot_id` added as a GitHub Actions repository
+secret** - the user's local `.env` has no effect on the real scheduled
+workflows, only on local testing.
+
+**Security question the user asked, worth preserving the answer to:**
+confirmed directly against GroupMe's own API docs (not assumed) that a
+Bot has exactly four operations - create, post, list, destroy - no read
+endpoint exists at all. A Bot cannot read group messages, ever, unless
+a `callback_url` webhook is explicitly configured (we never set one).
+Reading message history requires an entirely different, more powerful
+credential (a full user access token) that this project's bot_id is not
+and cannot become.
+
+**Weekly Recap added as a 4th scheduled message (DONE), reusing Phase 8
+as-is.** New: `scripts/post_weekly_recap.py`, `.github/workflows/
+weekly-recap.yml`, `groupme_client.to_groupme_text()` (strips Markdown
+bold before posting - GroupMe shows literal asterisks otherwise, and the
+Weekly Recap's underlying commentary.py output is written for the
+Streamlit page's Markdown rendering, not GroupMe). Targets ~6:00am
+Pacific Tuesdays (after Monday Night Football wraps). Builds a
+throwaway SQLite DB in a temp directory per run (single-season ingest
+only, not the full historical backfill) rather than touching data/
+league.db, same reasoning as the other two scripts - GitHub Actions is
+a separate ephemeral environment with no access to the deployed app's
+disk regardless. Live-validated end-to-end against real 2025 week 14
+data: full ingest + metrics + recap generation completed in ~26s,
+correctly produced all 9 recap sections with Markdown bold cleanly
+stripped for GroupMe. "Latest completed week" is derived from a live
+`MAX(week) WHERE completed=1` query against the freshly-ingested temp
+DB, not from `league.current_week` (whose exact semantics around
+Tuesday-morning rollover weren't worth relying on when a robust
+alternative - the same pattern `dashboard_data.get_latest_metrics_week`
+already uses elsewhere in this project - was available instead).
+
+**Waiver report: added STEALS, symmetric to the existing PAID TOO MUCH
+section (DONE).** `PlayerClaimResult.steal` flags a winning bid at
+<=50% of suggested value AND at least $5 under (mirrors `.overspent`'s
+>=1.5x/$5-over thresholds exactly, just inverted) - both live in
+`waiver_report.py`. Live-validated against real 2025 week 5 data: 2
+overspends and 6 steals surfaced from real bids in the same week,
+confirming both paths fire correctly off real data, not just synthetic
+test cases.
+
+**Known limitation surfaced by that same live validation, flagged to
+the user, not yet addressed:** D/ST suggested values look inflated
+(~$30-40 for a streaming defense) - the model doesn't currently
+discount low-ceiling/low-real-world-FAAB-spend positions (D/ST, K)
+the way actual league bidding behavior would. `rank_to_score` +
+`percent_owned` alone don't capture that a well-owned matchup D/ST
+simply isn't worth what a similarly-ranked RB/WR is, regardless of
+rank. A position-specific ceiling dampener for D/ST/K would fix this -
+not built yet, offered to the user, waiting on their call before
+touching the formula further (the same "heuristic, not gospel"
+caveat is already printed in every waiver message, so this isn't
+silently wrong to end users, just worth tightening).
+
+**Anthropic API key**: user wants Claude-generated Weekly Recap
+personality eventually but is holding off adding the key for now - key
+retrieval instructions (console.anthropic.com → Settings → API Keys)
+given in README's GitHub Actions secrets setup step. No code changes
+needed when they do add it - `commentary.get_or_generate_weekly_recap()`
+already auto-detects `ANTHROPIC_API_KEY` and switches from the
+placeholder to Claude with zero other changes, same as it's worked
+since Phase 8.
+
+**Still-open items:**
+- **Waiver-processing day CONFIRMED correct** (Wednesday ~9am Pacific) -
+  user confirmed directly, no longer a guess.
+- **"Sneaky good pickups" (hindsight-based) still deliberately NOT
+  built** - inherently needs a few weeks of played games to evaluate,
   doesn't fit an immediate post-waiver message. Would need a separate,
-  later "look back N weeks" job if the user wants this - not scoped yet.
-- Not live-tested against a real GroupMe bot yet (none exists) - the
-  full pipeline was validated against real ESPN data end-to-end (real
-  contested claims, real suggested-bid math, real live matchup scores)
-  with the final `send_long_message()` call itself unit-tested via a
-  mocked `requests.post`, same "validated everything short of the one
-  external credential we don't have yet" pattern as the Claude/Gemini
-  integrations before it.
+  later "look back N weeks" job if the user wants this - not scoped.
+- **D/ST/K suggested-bid dampening** - see above, not built, needs the
+  user's go-ahead.
+- Slate updates and waiver recap are STILL not live-tested against the
+  real bot specifically (only the Weekly Recap and one manual "[Test]"
+  message have actually posted) - the other two were validated against
+  real ESPN data end-to-end with the final send call unit-tested via a
+  mocked `requests.post`, same pattern as before, just not a live post
+  yet. Low risk (identical `send_long_message()` call path, already
+  proven live via the test message and the Weekly Recap's real posting
+  path being architecturally the same), but worth a manual "Run
+  workflow" trigger from the Actions tab once convenient, rather than
+  assuming.
 
 **Deployment hardening for Streamlit Community Cloud (DONE 2026-09-13).**
 The user decided to actually deploy this for the league rather than keep

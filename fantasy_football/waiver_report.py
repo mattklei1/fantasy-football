@@ -25,6 +25,8 @@ from .metrics.waiver_value import position_scarcity_multipliers, suggested_bid
 
 OVERSPEND_RATIO = 1.5  # flag a winning bid at >=1.5x our suggested value
 OVERSPEND_MIN_GAP = 5.0  # ...and at least $5 over, so $1-vs-$2 noise doesn't get flagged
+STEAL_RATIO = 0.5  # flag a winning bid at <=50% of our suggested value
+STEAL_MIN_GAP = 5.0  # ...and at least $5 under, so $1-vs-$2 noise doesn't get flagged
 
 
 @dataclass
@@ -48,6 +50,15 @@ class PlayerClaimResult:
         return (
             self.winning_bid >= self.suggested_bid * OVERSPEND_RATIO
             and self.winning_bid - self.suggested_bid >= OVERSPEND_MIN_GAP
+        )
+
+    @property
+    def steal(self) -> bool:
+        if self.winning_bid is None or self.suggested_bid is None:
+            return False
+        return (
+            self.winning_bid <= self.suggested_bid * STEAL_RATIO
+            and self.suggested_bid - self.winning_bid >= STEAL_MIN_GAP
         )
 
 
@@ -147,6 +158,16 @@ def build_message(claims: list[PlayerClaimResult], week: int) -> str:
         for c in overspent:
             lines.append(
                 f"- {c.winner_team} spent ${c.winning_bid:.0f} on {c.player_name} "
+                f"(we'd have suggested ~${c.suggested_bid:.0f})"
+            )
+        lines.append("")
+
+    steals = [c for c in executed if c.steal]
+    if steals:
+        lines.append("STEALS (we had them pegged for way more):")
+        for c in steals:
+            lines.append(
+                f"- {c.winner_team} got {c.player_name} for just ${c.winning_bid:.0f} "
                 f"(we'd have suggested ~${c.suggested_bid:.0f})"
             )
         lines.append("")

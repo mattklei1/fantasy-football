@@ -7,11 +7,24 @@ project for one-off read-only GroupMe research.
 """
 from __future__ import annotations
 
+import re
+
 import requests
 
 POST_URL = "https://api.groupme.com/v3/bots/post"
 MAX_MESSAGE_LENGTH = 1000  # GroupMe's documented per-message limit
 TIMEOUT_SECONDS = 15
+
+_MARKDOWN_BOLD = re.compile(r"\*\*(.+?)\*\*")
+
+
+def to_groupme_text(markdown_text: str) -> str:
+    """Strips Markdown bold (**word**) down to plain text - GroupMe
+    doesn't render Markdown, so unstripped asterisks show up literally.
+    Used for content shared with the Streamlit page (which DOES want
+    Markdown, e.g. the weekly recap) before it's posted here - see
+    scripts/post_weekly_recap.py."""
+    return _MARKDOWN_BOLD.sub(r"\1", markdown_text)
 
 
 def send_message(bot_id: str, text: str) -> None:

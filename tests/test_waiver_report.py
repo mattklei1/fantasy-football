@@ -81,6 +81,27 @@ def test_overspent_requires_both_ratio_and_dollar_floor():
     assert ratio_ok.overspent is False
 
 
+def test_steal_requires_both_ratio_and_dollar_floor():
+    # ratio triggers (bid is half of suggested) but under the $5 floor - should NOT flag
+    small = PlayerClaimResult(1, "Cheap Guy", "RB", "Team A", 4.0, suggested_bid=8.0)
+    assert small.steal is False
+
+    # both ratio and floor cleared - should flag
+    big = PlayerClaimResult(2, "Bargain Guy", "RB", "Team A", 3.0, suggested_bid=20.0)
+    assert big.steal is True
+
+    # under the ratio (more than half of suggested) even with a big dollar gap - should NOT flag
+    ratio_ok = PlayerClaimResult(3, "Fine Guy", "RB", "Team A", 15.0, suggested_bid=20.0)
+    assert ratio_ok.steal is False
+
+
+def test_overspent_and_steal_are_mutually_exclusive():
+    # sanity check: no single bid can be both an overpay and a steal
+    for winning_bid, suggested in [(30.0, 10.0), (2.0, 10.0), (10.0, 10.0)]:
+        c = PlayerClaimResult(1, "P", "RB", "Team A", winning_bid, suggested_bid=suggested)
+        assert not (c.overspent and c.steal)
+
+
 def test_build_message_empty_week():
     msg = build_message([], week=3)
     assert "quiet week" in msg.lower()
@@ -92,14 +113,17 @@ def test_build_message_highlights_contested_and_overspent():
         all_bids=[("Doody Guac Boys", 12.0), ("Team B", 5.0), ("Team C", 2.0)], suggested_bid=8.0,
     )
     overspent = PlayerClaimResult(2, "Panic Pickup", "RB", "Hammer Time", 40.0, suggested_bid=5.0)
-    quiet = PlayerClaimResult(3, "Nobody Cares", "K", "Roses to Flowers", 1.0, suggested_bid=1.0)
+    bargain = PlayerClaimResult(3, "Bargain Bin Bijan", "RB", "Roses to Flowers", 2.0, suggested_bid=25.0)
+    quiet = PlayerClaimResult(4, "Nobody Cares", "K", "Roses to Flowers", 1.0, suggested_bid=1.0)
 
-    msg = build_message([contested, overspent, quiet], week=5)
+    msg = build_message([contested, overspent, bargain, quiet], week=5)
 
     assert "WEEK 5 WAIVER WIRE REPORT" in msg
     assert "CONTESTED CLAIMS" in msg
     assert "Daniel Jones" in msg
     assert "PAID TOO MUCH" in msg
     assert "Panic Pickup" in msg
+    assert "STEALS" in msg
+    assert "Bargain Bin Bijan" in msg
     assert "Nobody Cares" in msg  # still listed under all executed claims
     assert "**" not in msg  # GroupMe doesn't render markdown - must never leak into messages

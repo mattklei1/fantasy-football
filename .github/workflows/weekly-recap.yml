@@ -1,0 +1,29 @@
+name: GroupMe Weekly Recap
+
+# Fires across a DST-safety window (see slate-updates.yml and
+# fantasy_football/schedule_guard.py for the full reasoning) targeting
+# ~6:00am Pacific Tuesdays - after Monday Night Football has wrapped, so
+# the just-finished week's recap can include it.
+on:
+  schedule:
+    - cron: "7,22,37,52 13,14 * * 2"
+  workflow_dispatch: {}
+
+jobs:
+  post-recap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Post weekly recap
+        env:
+          LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          SWID: ${{ secrets.SWID }}
+          CURRENT_SEASON: ${{ secrets.CURRENT_SEASON }}
+          GROUPME_BOT_ID: ${{ secrets.GROUPME_BOT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/post_weekly_recap.py

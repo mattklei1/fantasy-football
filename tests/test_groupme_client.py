@@ -52,6 +52,16 @@ def test_send_long_message_splits_on_paragraph_boundaries(monkeypatch):
         assert p in rejoined
 
 
+def test_to_groupme_text_strips_markdown_bold():
+    text = "**HEADLINE**\n\nWeek 6 is in the books."
+    assert groupme_client.to_groupme_text(text) == "HEADLINE\n\nWeek 6 is in the books."
+
+
+def test_to_groupme_text_leaves_plain_text_unchanged():
+    text = "No markdown here at all."
+    assert groupme_client.to_groupme_text(text) == text
+
+
 def test_send_long_message_hard_cuts_a_single_oversized_paragraph(monkeypatch):
     calls = []
     monkeypatch.setattr(groupme_client.requests, "post", lambda url, json, timeout: calls.append(json["text"]) or _FakeResponse())
