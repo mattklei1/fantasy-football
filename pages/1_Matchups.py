@@ -214,7 +214,15 @@ for _, m in matchups.iterrows():
         else:
             home_live, away_live = live_by_team[home_pk], live_by_team[away_pk]
             home_proj, away_proj = home_live["projected"], away_live["projected"]
-            home_snap, away_snap = snapshots.get(home_pk), snapshots.get(away_pk)
+            # Week 1 has no real "start of week" snapshot to compare against -
+            # any snapshot on record for week 1 was captured mid-week (this
+            # feature didn't exist before week 1 started), so showing a delta
+            # against it would be misleading. Only show "vs wk start" for
+            # week 2+, where the snapshot is genuinely from before kickoff.
+            if week == 1:
+                home_snap = away_snap = None
+            else:
+                home_snap, away_snap = snapshots.get(home_pk), snapshots.get(away_pk)
 
             col_home.metric(
                 "Score", f"{home_live['score']:.1f}",
@@ -255,12 +263,17 @@ for _, m in matchups.iterrows():
 if is_future_week:
     st.caption("Future week - no live data available yet (ESPN doesn't publish box scores this far ahead).")
 elif not is_final_week:
+    vs_wk_start_sentence = (
+        " \"vs wk start\" compares that to the first projection this app ever saw for the week."
+        if week != 1
+        else ""
+    )
     st.caption(
         "Score/projection update live from ESPN (refreshes about once a minute). \"proj\" is each "
         "team's CURRENT projected total - points scored so far plus the rest of the lineup's "
         "projections - not just the raw score, so a big early lead from one team's players simply "
-        "having played first doesn't look like a bigger edge than it is. \"vs wk start\" compares "
-        "that to the first projection this app ever saw for the week. FAVORED/UNDERDOG is based "
+        "having played first doesn't look like a bigger edge than it is."
+        f"{vs_wk_start_sentence} FAVORED/UNDERDOG is based "
         "on Power Rank (this season's overall team strength) - win probability % is a separate, "
         "live signal based on this week's projected totals and scoring variance (ESPN publishes "
         "no win probability of its own) - the two can disagree, e.g. a strong team can still be "
