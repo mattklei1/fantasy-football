@@ -251,37 +251,26 @@ git history): `LEAGUE_ID=1025842`, `CURRENT_SEASON=2026`. Ask the user to
 re-supply `ESPN_S2`/`SWID` if a fresh clone doesn't have `.env` (it's
 gitignored, so a fresh clone/session won't have it).
 
-**BLOCKER as of 2026-09-13: ESPN is rejecting the current ESPN_S2/SWID
-cookie pair.** Confirmed via a direct `requests.get` to
-`https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{2024,
-2025,2026}/segments/0/leagues/1025842` - ESPN returns HTTP 401
-`AUTH_LEAGUE_NOT_VISIBLE` ("You are not authorized to view this League.")
-for all three season years, both with and without the cookies attached
-(same error either way, which is itself suspicious - normally a bad-but-
-present cookie pair still gets a *different* error than no cookies at
-all, but ESPN collapses several distinct auth failures into this one
-message so it isn't conclusive on its own). This means either:
-1. The ESPN_S2/SWID values are stale/expired (ESPN session cookies do
-   expire and need re-extraction from a logged-in browser periodically).
-2. The cookies belong to an ESPN account that does not have access to
-   league 1025842 (wrong account/browser profile).
-3. The league ID itself is wrong (less likely - user-provided).
-Network reachability is NOT the issue this time - ESPN's server actively
-responded with a real auth-rejection JSON payload. Next session should
-ask the user to log into fantasy.espn.com in a browser (the account with
-access to league 1025842 / teamId=1), open dev tools -> Application/
-Storage -> Cookies -> https://fantasy.espn.com, and re-copy fresh `espn_s2`
-and `SWID` cookie values (SWID including the curly braces). Also worth
-double-checking the value isn't accidentally double-encoded or truncated
-during copy/paste - a valid `espn_s2` is normally ~300+ characters.
+**RESOLVED (2026-09-13):** the first cookie pair the user pasted was stale
+and got HTTP 401 `AUTH_LEAGUE_NOT_VISIBLE` from ESPN across 2024-2026 (and
+even with no cookies at all, which is why the error alone wasn't
+conclusive). Root cause: the user pasted the browser DevTools cookie value
+still **URL-encoded** (`%2F`, `%2B`, `%3D` in place of `/`, `+`, `=`).
+ESPN's DevTools Application > Cookies panel has a "Show URL-decoded"
+toggle - the raw/default view is URL-encoded, and `espn_s2` must be
+stored in `.env` in its **decoded** form (the one with literal `/`, `+`,
+`=` characters) for `espn-api`/`requests` to send the correct Cookie
+header. Always use the decoded value going forward.
 
-**Phase 1 (DONE, code only):** `fantasy_football/config.py` (env var
-loading), `fantasy_football/espn_client.py` (ESPN client wrapper w/
-per-season caching), `test_connection.py` (prints league validation
-summary). Code confirmed working end-to-end (network + parsing), but a
-live successful connection is still NOT confirmed due to the credential
-rejection above - this is the first thing to verify in a new session once
-fresh cookies are supplied.
+**Phase 1 (DONE) - LIVE CONNECTION CONFIRMED 2026-09-13.**
+`fantasy_football/config.py` (env var loading), `fantasy_football/
+espn_client.py` (ESPN client wrapper w/ per-season caching),
+`test_connection.py` (prints league validation summary) all working
+end-to-end against the real league:
+- League Name: "Salted by Quincy", League ID 1025842, Season 2026
+- 12 teams, current week 1 (season not yet underway / week 1 in progress)
+- Previous seasons available via ESPN: 2015-2025 (11 prior seasons) -
+  this is a lot of history to backfill in Phase 2's historical ingestion.
 
 **Phase 2 (NOT STARTED):** SQLite schema + ingestion + refresh workflow.
 This is the next task.
@@ -295,6 +284,10 @@ This is the next task.
    present - note venv/ is not gitignored-safe to assume persists across
    sessions, check first). Confirm the .env file is present and has real
    values before running - if missing, ask the user for
-   LEAGUE_ID/ESPN_S2/SWID again.
-2. Once the connection prints a clean summary, proceed to Phase 2 (SQLite
-   schema + ingestion) per the implementation order above.
+   LEAGUE_ID/ESPN_S2/SWID again. If asking the user to paste cookie values
+   from browser DevTools, tell them explicitly to check "Show URL-decoded"
+   in the Cookies panel first (see RESOLVED note above) - otherwise
+   they'll paste a `%2F`/`%2B`/`%3D`-encoded value that gets rejected with
+   a misleading 401 `AUTH_LEAGUE_NOT_VISIBLE`.
+2. Connection is confirmed working as of 2026-09-13 - proceed straight to
+   Phase 2 (SQLite schema + ingestion) per the implementation order above.
