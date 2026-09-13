@@ -272,12 +272,22 @@ def render_sidebar() -> tuple[int, int | None]:
     if "selected_season" not in st.session_state or st.session_state.selected_season not in seasons:
         st.session_state.selected_season = seasons[0]
 
-    season = st.sidebar.selectbox(
+    # "All time" is a one-shot shortcut to the History page, NOT a real
+    # selectable value - it's never written to session_state.selected_season
+    # (that stays a real season int always), so every other page's season
+    # handling is unaffected. Picking it jumps straight to History, which
+    # already covers all seasons on its own and ignores this selector.
+    ALL_TIME = "All time"
+    options = seasons + [ALL_TIME]
+    season_choice = st.sidebar.selectbox(
         "Season",
-        seasons,
-        index=seasons.index(st.session_state.selected_season),
+        options,
+        index=options.index(st.session_state.selected_season),
         key="season_selectbox",
     )
+    if season_choice == ALL_TIME:
+        st.switch_page("pages/5_History.py")
+    season = season_choice
     st.session_state.selected_season = season
 
     meta = dd.get_season_meta(season)

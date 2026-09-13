@@ -340,6 +340,20 @@ def primary_manager_ids_sql() -> str:
     return f"SELECT DISTINCT manager_id FROM ({_ranked_owners_sql()}) WHERE rn = 1"
 
 
+def manager_full_name_sql(mgr_alias: str) -> str:
+    """SQL expression: `{mgr_alias}`'s real full name (first + last, as
+    ESPN has them on file) when available, falling back to `display_name`
+    (ESPN's account display name, which is very often just a username,
+    e.g. "aaron0044") only when first/last are missing. Used on the
+    History page specifically - Hall of Fame and Head-to-Head want real
+    names, not usernames."""
+    return (
+        f"CASE WHEN TRIM(COALESCE({mgr_alias}.first_name, '') || ' ' || COALESCE({mgr_alias}.last_name, '')) != '' "
+        f"THEN TRIM({mgr_alias}.first_name || ' ' || {mgr_alias}.last_name) "
+        f"ELSE {mgr_alias}.display_name END"
+    )
+
+
 def primary_owner_join_sql(team_alias: str, mgr_alias: Optional[str] = None, owner_alias: Optional[str] = None) -> str:
     """SQL fragment: resolve team `{team_alias}` to its PRIMARY manager -
     the most-tenured co-owner (ranked by total team_owners rows across

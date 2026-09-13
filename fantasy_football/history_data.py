@@ -23,10 +23,12 @@ def get_managers() -> pd.DataFrame:
     """Only PRIMARY manager identities - excludes secondary co-owner
     aliases (see db.primary_owner_join_sql) that would otherwise show up
     as a selectable "manager" that can never actually match a matchup,
-    since matchup resolution always uses the primary identity."""
+    since matchup resolution always uses the primary identity. Name shown
+    is the real full name when ESPN has it on file, not the account
+    display name/username (see db.manager_full_name_sql)."""
     conn = dd.get_connection()
     return pd.read_sql_query(
-        f"SELECT manager_id, display_name FROM managers "
+        f"SELECT manager_id, {db.manager_full_name_sql('managers')} AS display_name FROM managers "
         f"WHERE manager_id IN ({db.primary_manager_ids_sql()}) "
         f"ORDER BY display_name",
         conn,
@@ -41,8 +43,10 @@ def get_all_matchups_by_manager() -> pd.DataFrame:
     conn = dd.get_connection()
     query = f"""
         SELECT m.season_id, m.week, m.is_playoff, m.home_score, m.away_score,
-               ht_mgr.manager_id AS home_manager_id, ht_mgr.display_name AS home_manager_name,
-               at_mgr.manager_id AS away_manager_id, at_mgr.display_name AS away_manager_name
+               ht_mgr.manager_id AS home_manager_id,
+               {db.manager_full_name_sql('ht_mgr')} AS home_manager_name,
+               at_mgr.manager_id AS away_manager_id,
+               {db.manager_full_name_sql('at_mgr')} AS away_manager_name
         FROM matchups m
         JOIN teams ht ON ht.id = m.home_team_pk
         JOIN teams at ON at.id = m.away_team_pk
@@ -72,20 +76,38 @@ def get_all_team_weeks() -> pd.DataFrame:
     return pd.read_sql_query(query, conn)
 
 
+#: The ONLY matchup_type values that represent a real playoff berth. ESPN
+#: flags every post-regular-season game as is_playoff=1, including
+#: LOSERS_CONSOLATION_LADDER - the placement bracket for teams that did NOT
+#: make the playoffs (the "toilet bowl"). Counting those as "playoff
+#: appearances" was a real bug: it inflated every manager's total to
+#: (almost) their season count. WINNERS_BRACKET is the actual championship
+#: bracket; WINNERS_CONSOLATION_LADDER is the placement bracket for teams
+#: that DID qualify for the playoffs but lost early - still real playoff
+#: participants, unlike the losers' ladder. Verified against every season's
+#: real playoff_team_count (2026-09-13): the distinct-team count under
+#: these two values matches playoff_team_count exactly for all 11 completed
+#: seasons in this league's history.
+REAL_PLAYOFF_MATCHUP_TYPES = ("WINNERS_BRACKET", "WINNERS_CONSOLATION_LADDER")
+
+
 @st.cache_data(ttl=300)
 def get_hall_of_fame() -> pd.DataFrame:
     """One row per manager: championships, finals/playoff appearances,
-    career record (ESPN's official combined record, summed across every
-    season owned), career points (raw - informational only, NOT a fair
-    cross-era ranking basis), and best/worst season by season-relative
-    PPG percentile (metrics_weekly.ppg_percentile at each season's final
-    week - THIS is the fair, era-normalized comparison, per the
-    cross-season design note in ingest.py/season_metrics.py)."""
+    career record split into regular-season vs. playoff (see
+    REAL_PLAYOFF_MATCHUP_TYPES above), career points for/against (raw -
+    informational only, NOT a fair cross-era ranking basis - AND
+    normalized as each season's percentile-within-field, averaged across
+    a career, which IS fair cross-era since every era is only ever
+    compared to its own season's field), and best/worst season by
+    season-relative PPG percentile (metrics_weekly.ppg_percentile at each
+    season's final week - the same cross-season design note in
+    ingest.py/season_metrics.py)."""
     conn = dd.get_connection()
 
     teams_query = f"""
-        SELECT t.season_id, t.team_name, t.wins, t.losses, t.ties, t.points_for,
-               t.final_standing, t_mgr.manager_id, t_mgr.display_name AS manager_name
+        SELECT t.season_id, t.team_name, t.points_for, t.points_against,
+               t.final_standing, t_mgr.manager_id, {db.manager_full_name_sql('t_mgr')} AS manager_name
         FROM teams t
         {_primary_manager_sql('t')}
         WHERE t_mgr.manager_id IS NOT NULL
@@ -94,17 +116,42 @@ def get_hall_of_fame() -> pd.DataFrame:
     if teams.empty:
         return teams
 
-    playoff_seasons = pd.read_sql_query(
+    # Career record, split regular-season vs. playoff, derived directly
+    # from actual matchup scores (NOT teams.wins/losses/ties, which is
+    # ESPN's own combined season record and doesn't cleanly separate the
+    # two) - one row per team per completed matchup, win/loss/tie computed
+    # from score vs. opponent score, same approach season_metrics.py uses
+    # for a single season.
+    team_weeks = pd.read_sql_query(
         f"""
-        SELECT DISTINCT m.season_id, t_mgr.manager_id
+        SELECT m.season_id, m.is_playoff, m.matchup_type, t_mgr.manager_id,
+               CASE WHEN t.id = m.home_team_pk THEN m.home_score ELSE m.away_score END AS score,
+               CASE WHEN t.id = m.home_team_pk THEN m.away_score ELSE m.home_score END AS opp_score
         FROM matchups m
         JOIN teams t ON t.id IN (m.home_team_pk, m.away_team_pk)
         {_primary_manager_sql('t')}
-        WHERE m.is_playoff = 1 AND t_mgr.manager_id IS NOT NULL
+        WHERE m.completed = 1 AND t_mgr.manager_id IS NOT NULL
         """,
         conn,
     )
-    playoff_counts = playoff_seasons.groupby("manager_id").size().rename("playoff_appearances")
+    team_weeks["win"] = (team_weeks["score"] > team_weeks["opp_score"]).astype(int)
+    team_weeks["loss"] = (team_weeks["score"] < team_weeks["opp_score"]).astype(int)
+    team_weeks["tie"] = (team_weeks["score"] == team_weeks["opp_score"]).astype(int)
+
+    reg_weeks = team_weeks[team_weeks["is_playoff"] == 0]
+    playoff_weeks = team_weeks[team_weeks["matchup_type"].isin(REAL_PLAYOFF_MATCHUP_TYPES)]
+
+    reg_record = reg_weeks.groupby("manager_id")[["win", "loss", "tie"]].sum().rename(
+        columns={"win": "reg_wins", "loss": "reg_losses", "tie": "reg_ties"}
+    )
+    playoff_record = playoff_weeks.groupby("manager_id")[["win", "loss", "tie"]].sum().rename(
+        columns={"win": "playoff_wins", "loss": "playoff_losses", "tie": "playoff_ties"}
+    )
+
+    playoff_counts = (
+        playoff_weeks.groupby(["season_id", "manager_id"]).size().reset_index()
+        .groupby("manager_id").size().rename("playoff_appearances")
+    )
 
     best_worst = pd.read_sql_query(
         f"""
@@ -118,18 +165,32 @@ def get_hall_of_fame() -> pd.DataFrame:
         conn,
     )
 
+    # Normalized points for/against: each team-season's percentile WITHIN
+    # that season's field (era-normalized, same reasoning as ppg_percentile
+    # below), then averaged across every season a manager played - so a
+    # manager's normalized score answers "on average, how did my scoring
+    # compare to that year's league," not a raw-points era-biased number.
+    teams["points_for_pct"] = teams.groupby("season_id")["points_for"].rank(pct=True)
+    teams["points_against_pct"] = teams.groupby("season_id")["points_against"].rank(pct=True)
+
     agg = teams.groupby(["manager_id", "manager_name"]).agg(
         seasons_played=("season_id", "nunique"),
         championships=("final_standing", lambda s: int((s == 1).sum())),
         finals_appearances=("final_standing", lambda s: int((s <= 2).sum())),
-        career_wins=("wins", "sum"),
-        career_losses=("losses", "sum"),
-        career_ties=("ties", "sum"),
-        career_points=("points_for", "sum"),
+        career_points_for=("points_for", "sum"),
+        career_points_against=("points_against", "sum"),
+        career_points_for_pct=("points_for_pct", "mean"),
+        career_points_against_pct=("points_against_pct", "mean"),
     ).reset_index()
 
+    agg = agg.merge(reg_record, on="manager_id", how="left")
+    agg = agg.merge(playoff_record, on="manager_id", how="left")
     agg = agg.merge(playoff_counts, on="manager_id", how="left")
-    agg["playoff_appearances"] = agg["playoff_appearances"].fillna(0).astype(int)
+    for col in (
+        "reg_wins", "reg_losses", "reg_ties", "playoff_wins", "playoff_losses", "playoff_ties",
+        "playoff_appearances",
+    ):
+        agg[col] = agg[col].fillna(0).astype(int)
 
     if not best_worst.empty:
         season_end = best_worst.sort_values("week").groupby(["manager_id", "season_id"]).tail(1)

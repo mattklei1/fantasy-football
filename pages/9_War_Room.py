@@ -21,8 +21,8 @@ if not ui.is_admin():
     st.markdown(
         "### Commissioner-only tools\n"
         "This page is locked. Here's what you're missing:\n\n"
-        "- 🔒 **Full FantasyPros data** - every ranking/projection cut, not just what powers the "
-        "public pages\n"
+        "- 🔒 **Full third-party rankings data** - every ranking/projection cut, not just what "
+        "powers the public pages\n"
         "- 🔒 **Sharper waiver suggestions** - the same model everyone else's report uses, with "
         "more signal\n"
         "- 🔒 **Trade calculator** - value-based trade analysis and suggestions\n\n"
@@ -35,13 +35,13 @@ st.caption("Commissioner-only - not visible to anyone else on this deployment.")
 
 st.info(
     "Scaffolding only right now: the access gate is live, but the actual tools below aren't "
-    "built yet. Roadmap - full FantasyPros data browser, an upgraded waiver-value model with "
+    "built yet. Roadmap - full third-party rankings browser, an upgraded waiver-value model with "
     "more inputs than the public report uses, and a trade calculator."
 )
 
 st.markdown("#### Coming soon")
 st.markdown(
-    "- Full FantasyPros rankings/projections browser (every position, every scoring format)\n"
+    "- Full third-party rankings/projections browser (every position, every scoring format)\n"
     "- Advanced waiver suggestions (beyond `metrics/waiver_value.py`'s public-facing model)\n"
     "- Trade calculator (value-based, superflex-aware)\n"
 )

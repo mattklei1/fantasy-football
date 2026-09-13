@@ -21,7 +21,7 @@ season, _ = ui.render_sidebar()
 st.title("Ask Me Anything")
 st.caption(
     "Ask anything about league history, standings, rosters, or past weeks - answered by Gemini "
-    "from this dashboard's own data. It cannot see FantasyPros rankings or any credentials."
+    "from this dashboard's own data. It cannot see third-party rankings data or any credentials."
 )
 
 api_key = config.gemini_api_key()
@@ -32,9 +32,17 @@ if not api_key:
     )
     st.stop()
 
-teams = dd.get_standings(season)
+from fantasy_football import history_data as hd
+
+# Manager list comes from ALL seasons (not dd.get_standings(season), which
+# is scoped to whatever season the sidebar currently has selected - that's
+# often the CURRENT season, which has zero completed weeks early on and
+# returned an empty team list, leaving only "Just browsing" with no
+# explanation. "Asking as" is a persistent identity, not a single-season
+# snapshot, and this page already answers cross-season questions anyway.
+managers = hd.get_managers()
 team_options = ["Just browsing"] + (
-    teams["manager_name"].dropna().unique().tolist() if not teams.empty else []
+    managers["display_name"].dropna().unique().tolist() if not managers.empty else []
 )
 asking_as = st.selectbox(
     "Ask as",
@@ -96,7 +104,7 @@ with st.expander("What can I ask?"):
 - **Rosters & drafts**: "Who did I draft in the first round?", "What's on my bench right now?"
 - **Weekly recaps**: "What happened in week 5?", "Summarize the closest game this season."
 
-**Not available**: FantasyPros rest-of-season rankings (kept private on purpose), and anything not
+**Not available**: third-party rest-of-season rankings (kept private on purpose), and anything not
 already tracked elsewhere in this dashboard - Ask Me Anything answers from the same data you can
 already see on the other pages, it doesn't have outside information.
         """
