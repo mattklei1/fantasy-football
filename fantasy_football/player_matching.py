@@ -2,8 +2,18 @@
 network, no sqlite) so it's unit-testable like fantasy_football/metrics/ -
 callers (ingest.py) do the DB reads/writes around this.
 
-FantasyPros and ESPN don't share a player id, so matching is by name
-(normalized) within position, except D/ST which matches far more
+PRIMARY strategy: FantasyPros supports importing/syncing ESPN leagues
+directly, and their public API exposes the cross-reference mapping they
+maintain for that (`GET /{sport}/players?external_ids=espn` -> an
+`espn_id` field per player - see fantasypros_client.fetch_player_
+espn_id_map()). This is FantasyPros' OWN mapping, confirmed 2026-09-13
+to be exact for this league (207/207 rostered players matched by ID,
+including D/ST), so it's used whenever available rather than
+reconstructing the mapping ourselves.
+
+FALLBACK strategy (only for a FantasyPros player with no espn_id in
+their cross-reference, or if the caller doesn't pass one at all): match
+by normalized name within position, except D/ST which matches far more
 reliably by NFL team abbreviation than by name (ESPN "Texans D/ST" vs
 FantasyPros "Houston Texans" share no common name tokens at all).
 """
@@ -73,11 +83,40 @@ def _match_by_name(espn_players: list[dict], fp_players: list[dict]) -> dict[int
     return matches
 
 
-def match_players_for_position(espn_players: list[dict], fp_players: list[dict], espn_position: str) -> dict[int, int]:
+def match_players_for_position(
+    espn_players: list[dict],
+    fp_players: list[dict],
+    espn_position: str,
+    espn_id_map: dict[int, int] | None = None,
+) -> dict[int, int]:
     """espn_players/fp_players: dicts with at least player_id, player_name
     (and pro_team for D/ST, player_team_id for FantasyPros D/ST). Returns
     fp_player_id -> our espn player_id, for whichever fp_players could be
-    confidently matched to a currently-rostered ESPN player."""
-    if espn_position == "D/ST":
-        return _match_dst(espn_players, fp_players)
-    return _match_by_name(espn_players, fp_players)
+    confidently matched to a currently-rostered ESPN player.
+
+    espn_id_map: FantasyPros' own fp_player_id -> espn_player_id cross-
+    reference (fantasypros_client.fetch_player_espn_id_map()), used first
+    when given - it's authoritative, not a guess. Only players it doesn't
+    cover fall through to name/team matching, so this function still
+    behaves exactly as before (pure fallback matching) when called
+    without it."""
+    espn_ids_this_position = {p["player_id"] for p in espn_players}
+
+    matches = {}
+    still_unmatched = []
+    for fp in fp_players:
+        mapped_espn_id = (espn_id_map or {}).get(fp["player_id"])
+        if mapped_espn_id is not None and mapped_espn_id in espn_ids_this_position:
+            matches[fp["player_id"]] = mapped_espn_id
+        else:
+            still_unmatched.append(fp)
+
+    if still_unmatched:
+        fallback = (
+            _match_dst(espn_players, still_unmatched)
+            if espn_position == "D/ST"
+            else _match_by_name(espn_players, still_unmatched)
+        )
+        matches.update(fallback)
+
+    return matches

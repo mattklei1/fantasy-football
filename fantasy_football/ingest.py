@@ -433,13 +433,17 @@ def ingest_player_rankings(conn, league, season: int, week: int, log=print) -> N
 
 def ingest_fantasypros_rankings(conn, season: int, week: int, api_key: str, log=print) -> None:
     """Rest-of-season consensus rankings from FantasyPros' licensed API,
-    matched to our ESPN player_id (no shared id between the two sources -
-    see player_matching.py) and stored only for players actually rostered
-    this season/week (FantasyPros' own lists cover the whole league-wide
-    player pool per position, most of which nobody in this league has
-    rostered). Same "current week only" limitation as
-    ingest_player_rankings - FantasyPros' ROS endpoint has no history
-    either, so this can't be backfilled to past weeks."""
+    matched to our ESPN player_id and stored only for players actually
+    rostered this season/week (FantasyPros' own lists cover the whole
+    league-wide player pool per position, most of which nobody in this
+    league has rostered). Matching prefers FantasyPros' OWN espn_id
+    cross-reference (they support ESPN league sync, so they maintain
+    this mapping themselves - see fantasypros_client.fetch_player_
+    espn_id_map()), falling back to name/team matching only for anyone
+    that cross-reference doesn't cover (player_matching.py). Same
+    "current week only" limitation as ingest_player_rankings -
+    FantasyPros' ROS endpoint has no history either, so this can't be
+    backfilled to past weeks."""
     from . import fantasypros_client, player_matching
 
     rows = conn.execute(
@@ -460,6 +464,7 @@ def ingest_fantasypros_rankings(conn, season: int, week: int, api_key: str, log=
 
     try:
         fp_by_position = fantasypros_client.fetch_all_ros_rankings(api_key, season)
+        espn_id_map = fantasypros_client.fetch_player_espn_id_map(api_key)
     except Exception as exc:  # noqa: BLE001
         log(f"[warn] season {season} week {week} fantasypros rankings: {exc}")
         return
@@ -468,7 +473,9 @@ def ingest_fantasypros_rankings(conn, season: int, week: int, api_key: str, log=
     for fp_position, fp_players in fp_by_position.items():
         espn_position = player_matching.POSITION_MAP.get(fp_position, fp_position)
         espn_players = espn_players_by_position.get(espn_position, [])
-        id_map = player_matching.match_players_for_position(espn_players, fp_players, espn_position)
+        id_map = player_matching.match_players_for_position(
+            espn_players, fp_players, espn_position, espn_id_map=espn_id_map
+        )
         fp_by_id = {p["player_id"]: p for p in fp_players}
         for fp_id, espn_id in id_map.items():
             fp = fp_by_id[fp_id]

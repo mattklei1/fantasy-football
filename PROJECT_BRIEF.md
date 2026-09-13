@@ -728,27 +728,41 @@ all 6 standard positions: QB/RB/WR/TE/K/DST), `fantasy_football/
 player_matching.py` (+ unit tests - pure, no network/DB), new
 `fantasypros_rankings` table, `ingest.py:ingest_fantasypros_rankings()`.
 
-**Cross-platform player ID matching** (the hard part of this task,
-since FantasyPros and ESPN share no common player id): matches by
-normalized name within position for QB/RB/WR/TE/K (`normalize_name()`
-lowercases, drops apostrophes, turns hyphens/periods into spaces, and
-strips a trailing Jr/Sr/II/III/IV/V suffix, so "Kenneth Walker III"
-collides with "Kenneth Walker"), and by NFL team abbreviation for D/ST
-specifically - name matching doesn't work there at all (ESPN stores
-"Texans D/ST", FantasyPros returns "Houston Texans", zero shared name
-tokens). Confirmed ESPN's `pro_team` and FantasyPros' `player_team_id`
-agree on 30 of 32 team abbreviations; the 2 that differ (`JAX`/`JAC`,
-`WSH`/`WAS`) are hardcoded in `TEAM_ABBREV_FP_TO_ESPN`. An ambiguous
-name (2+ currently-rostered players sharing a normalized name at the
-same position) is deliberately left unmatched rather than guessed -
-hasn't happened in this league's real rosters yet, but the logic
-handles it safely if it ever does. Matching only runs against players
-actually on a roster this season/week (not FantasyPros' full league-
-wide player pool per position), which also keeps the false-collision
-search space small. **Validated against real 2026 week-1 data: 207/207
-rostered players matched (100%), including all 14 rostered D/ST units**
-- see `_match_dst`/`_match_by_name` in `player_matching.py` for the two
-matching strategies and their respective unit tests.
+**Cross-platform player ID matching - CORRECTED 2026-09-13 to use
+FantasyPros' own cross-reference instead of reconstructing one.** The
+first version of this feature matched by normalized name (+ NFL team
+abbreviation for D/ST) since FantasyPros and ESPN don't share a player
+id. The user then pointed out FantasyPros supports importing/syncing
+ESPN leagues directly, so they likely already maintain (and might
+expose) that exact mapping - worth checking before recreating it.
+Checked their real API docs (`api.fantasypros.com/public/v2/docs`,
+fetched the underlying ReDoc OpenAPI spec directly since the docs page
+is JS-rendered) and found it: `GET /{sport}/players` takes an
+`external_ids` query param (e.g. `espn`, or colon-delimited like
+`yahoo:espn:cbs`) that adds an `espn_id` field to each player object -
+FantasyPros' OWN id cross-reference, not something we're inferring.
+`fantasypros_client.fetch_player_espn_id_map()` calls this once per
+ingestion run (`/nfl/players?external_ids=espn`, ~8500 players
+league-wide, ~3770 with an `espn_id` populated - retired/irrelevant
+players don't have one, which is fine, we only need currently-rostered
+ones) and returns `{fp_player_id: espn_player_id}`.
+`player_matching.match_players_for_position()` now tries this direct id
+lookup FIRST and only falls back to the original name/team matching for
+any FantasyPros player the cross-reference doesn't cover - so the
+original matching logic (`normalize_name()`, `_match_dst`'s NFL-team-
+abbreviation approach, `TEAM_ABBREV_FP_TO_ESPN` for the 2 team
+abbreviations that differ between the two sources) is kept as a
+fallback, not deleted, and is still independently unit tested.
+**Re-validated against real 2026 week-1 data with the id-based path:
+still 207/207 rostered players matched (100%) - identical coverage to
+the name-based version, but now via an authoritative source-of-truth
+mapping rather than a heuristic reconstruction of it, which should be
+materially more robust for edge cases the heuristic would eventually
+hit (rookies with unusual name formatting, a future ambiguous-name
+collision, etc.).** Recomputed `roster_strength_weekly` afterward -
+values were bit-for-bit identical to the pre-correction run, confirming
+this was a robustness improvement with no behavior regression, not a
+bug fix.
 
 **Reweighted `SIGNAL_WEIGHTS`** in `roster_strength.py` per the
 original 4-source design: FantasyPros ROS rank 40, ESPN weekly

@@ -57,6 +57,36 @@ def test_match_by_name_skips_ambiguous_duplicates():
     assert matches == {}
 
 
+def test_match_prefers_fantasypros_espn_id_map_over_name_matching():
+    # deliberately mismatched names (as if FantasyPros hadn't updated a
+    # display name yet) - the espn_id cross-reference should still win
+    espn_players = [{"player_id": 101, "player_name": "Josh Allen"}]
+    fp_players = [{"player_id": 55, "player_name": "Joshua Allen"}]
+    espn_id_map = {55: 101}
+    matches = match_players_for_position(espn_players, fp_players, "QB", espn_id_map=espn_id_map)
+    assert matches == {55: 101}
+
+
+def test_match_falls_back_to_name_when_not_in_espn_id_map():
+    espn_players = [{"player_id": 101, "player_name": "Josh Allen"}]
+    fp_players = [{"player_id": 55, "player_name": "Josh Allen"}]
+    # espn_id_map has entries for OTHER players, but not this one
+    espn_id_map = {999: 888}
+    matches = match_players_for_position(espn_players, fp_players, "QB", espn_id_map=espn_id_map)
+    assert matches == {55: 101}
+
+
+def test_match_ignores_espn_id_map_entry_pointing_outside_this_position():
+    # a stale/irrelevant cross-reference entry pointing at a player who
+    # isn't in this position's rostered pool at all must not be trusted
+    espn_players = [{"player_id": 101, "player_name": "Josh Allen"}]
+    fp_players = [{"player_id": 55, "player_name": "Josh Allen"}]
+    espn_id_map = {55: 999999}  # not in espn_players
+    matches = match_players_for_position(espn_players, fp_players, "QB", espn_id_map=espn_id_map)
+    # falls through to name matching and still finds the right player
+    assert matches == {55: 101}
+
+
 def test_match_dst_by_team_abbreviation():
     espn_players = [
         {"player_id": 101, "player_name": "Texans D/ST", "pro_team": "HOU"},
