@@ -19,14 +19,8 @@ season, week = ui.render_sidebar()
 if not ui.is_admin():
     st.title("🔒 War Room")
     st.markdown(
-        "### Commissioner-only tools\n"
-        "This page is locked. Here's what you're missing:\n\n"
-        "- 🔒 **Full third-party rankings data** - every ranking/projection cut, not just what "
-        "powers the public pages\n"
-        "- 🔒 **Sharper waiver suggestions** - the same model everyone else's report uses, with "
-        "more signal\n"
-        "- 🔒 **Trade calculator** - value-based trade analysis and suggestions\n\n"
-        "Ask the commissioner nicely."
+        "### Commissioner-only\n"
+        "This page is locked. Ask the commissioner nicely."
     )
     st.stop()
 
