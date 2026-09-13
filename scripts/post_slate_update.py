@@ -19,7 +19,14 @@ from fantasy_football import config
 from fantasy_football.espn_client import ESPNClient
 from fantasy_football.groupme_client import send_long_message
 from fantasy_football.schedule_guard import is_target_time_now
-from fantasy_football.slate_report import build_message, fetch_live_matchups, top_individual_scores
+from fantasy_football.slate_report import (
+    bench_would_be_winning,
+    build_matchup_snapshots,
+    build_message,
+    fetch_box_scores,
+    median_cutline,
+    top_individual_scores,
+)
 
 
 def main() -> int:
@@ -45,7 +52,8 @@ def main() -> int:
     league = client.get_league(client.credentials.current_season)
     week = league.current_week
 
-    matchups = fetch_live_matchups(league, week)
+    box_scores = fetch_box_scores(league, week)
+    matchups = build_matchup_snapshots(box_scores)
     if not matchups:
         # off-season, bye week, or nothing has kicked off yet - skip
         # silently rather than post a "nothing happening" message every
@@ -53,8 +61,10 @@ def main() -> int:
         print(f"No in-progress matchups for week {week} - skipping post.")
         return 0
 
-    tops = top_individual_scores(league, week, limit=3)
-    message = build_message(args.label, matchups, tops)
+    tops = top_individual_scores(box_scores, limit=3)
+    bench_flips = bench_would_be_winning(box_scores)
+    cutline = median_cutline(league, box_scores)
+    message = build_message(args.label, matchups, tops, bench_flips=bench_flips, cutline=cutline)
     send_long_message(bot_id, message)
     print(f"Posted: {args.label}")
     return 0

@@ -1816,6 +1816,48 @@ go-ahead for one supervised first real submission (a general
 "yes, submit THIS SPECIFIC claim right now") before ever calling it for
 real, per this session's own risky-action-confirmation policy.
 
+**Sunday slate updates: 3 new fun sections, DONE 2026-09-13 (same
+session).** User asked for "a little more flare" on the live GroupMe
+slate updates specifically (not the Weekly Recap - confirmed by asking,
+since "recap" language was ambiguous between the two). Brainstormed
+several ideas, user picked 3 to build together:
+
+1. **Biggest Blowout Right Now** - mirror of the existing Closest Games
+   section, sorted by RAW current margin descending instead of
+   projected-margin ascending (deliberately raw, not projected - this
+   section is about the scoreboard right now, not where it's heading).
+2. **Bench Would Be Winning** - every team currently losing whose bench
+   total alone would flip the result if added to their actual score - a
+   live version of the Weekly Recap's Coaching Disaster.
+3. **On the Bubble** - this league's real top-half-of-the-league scoring
+   bonus cutline (rank 6/7/8 of 12 by CURRENT PROJECTED total), mirrored
+   exactly from the Matchups page's existing Median Cutline panel so the
+   two never disagree. Returns nothing (section omitted, not an empty
+   placeholder) for any season that doesn't use this format.
+
+**Refactored `slate_report.py` to fetch `box_scores` ONCE and share it
+across every section** (`fetch_box_scores()` + `build_matchup_snapshots()`
+replacing the old `fetch_live_matchups()` that made its own call) rather
+than each section hitting ESPN separately - matches the project's "don't
+over-query ESPN" principle and guarantees every section reflects the
+exact same instant, not scores from moments apart. `scripts/
+post_slate_update.py` updated to match.
+
+14 new unit tests (`tests/test_slate_report.py`) - `biggest_blowouts()`
+is pure and tested directly on `MatchupSnapshot`s; `bench_would_be_
+winning()`/`median_cutline()` needed small hand-built stand-ins for
+espn_api's BoxScore/Team/Player/League shapes (just the attributes each
+function reads) since real ones aren't constructible outside a live
+call - same category of "can't unit test the live-data path directly"
+as `top_individual_scores()`, which this project has always instead
+validated against real live objects. Did exactly that here too: dry-run
+against real live week-1 2026 data showed all 3 sections firing with
+real, correct numbers - the median cutline correctly picked the actual
+6th/7th/8th-ranked teams by projected total (verified by hand against
+the raw list), and Bench Would Be Winning correctly found 3 real teams
+losing on the actual scoreboard whose bench would flip it. 186/186 tests
+passing.
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip
