@@ -173,3 +173,45 @@ stats and optional Claude-generated commentary.
   re-triggers a Claude call; use the "Regenerate" button to force a fresh one
 - An "Underlying facts" expander shows the exact structured JSON the recap was written from
 - Requires a completed regular-season week to recap - no partial-week recaps
+
+## Deploying (Streamlit Community Cloud)
+
+Vercel/Next.js-style hosts don't work for this app - Streamlit needs one persistent Python
+process holding a live connection per user, not a short-lived serverless function, so use a host
+built for that. **Streamlit Community Cloud** is the right (free) choice: purpose-built for
+Streamlit, and it comes with private-app access control built in.
+
+1. **Push this repo to GitHub** (already done if you're reading this from the repo).
+2. **Deploy**: at [share.streamlit.io](https://share.streamlit.io), connect your GitHub account,
+   pick this repo/branch, and set `Home.py` as the main file.
+3. **Set secrets**: in the app's *Advanced settings → Secrets*, paste your real values in the same
+   flat `KEY = "value"` format as `.env.example` (NOT nested under a `[section]` - root-level
+   secrets are what Streamlit exposes as real environment variables, which is what this app's
+   `config.py` reads via `os.getenv()`):
+   ```toml
+   LEAGUE_ID = "1025842"
+   ESPN_S2 = "..."
+   SWID = "{...}"
+   CURRENT_SEASON = "2026"
+   ANTHROPIC_API_KEY = "..."
+   FANTASYPROS_API_KEY = "..."
+   GEMINI_API_KEY = "..."
+   APP_PASSWORD = "pick-something-simple"
+   ```
+   Only `LEAGUE_ID`/`ESPN_S2`/`SWID` are required - everything else is optional and that feature
+   just shows a setup message without it.
+4. **Make it private**: in the repo's visibility / the app's sharing settings, keep the app
+   private and add each league member's email as a viewer (Share button → enter email → Invite).
+   Only people you've explicitly added can open the URL at all - it won't be listed or searchable.
+5. **Set `APP_PASSWORD`** (step 3, above) as a second layer on top of the viewer allowlist - cheap
+   insurance, and lets you share access more casually (e.g. a GroupMe message) without adding
+   every single person as a named Streamlit viewer.
+
+**Two things specific to this host, both already handled in code:**
+- **Secrets → env vars**: confirmed Streamlit Cloud auto-exposes root-level secrets as real
+  environment variables, so `config.py` needed zero changes.
+- **The local filesystem isn't reliably persistent** - a redeploy, and possibly the 12-hour idle
+  sleep/wake cycle, can wipe `data/league.db`. The app detects an empty database on load and
+  automatically rebuilds it from ESPN (the same thing the "Refresh ESPN Data" button does) before
+  showing any page - the first load after a restart takes a few minutes, every load after that is
+  normal speed until the next wipe. No action needed, just don't be alarmed by a slow first load.

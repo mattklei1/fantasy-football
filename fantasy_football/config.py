@@ -77,6 +77,15 @@ def gemini_api_key() -> str | None:
     return key or None
 
 
+def app_password() -> str | None:
+    """Optional shared password gate (see ui_common.require_password()) -
+    for a hosted deployment reachable by more than just the developer.
+    Unset locally on purpose: local dev shouldn't need a password prompt
+    on every run."""
+    pw = os.getenv("APP_PASSWORD", "").strip()
+    return pw or None
+
+
 def gemini_model() -> str:
     """Configurable rather than hardcoded - Gemini model names change
     fast (verified 'gemini-2.5-flash' is real and current as of

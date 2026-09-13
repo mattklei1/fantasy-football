@@ -788,6 +788,55 @@ than guessing if a season ever used a different format (none has, but
 per the spec's "document the limitation, don't guess" instruction this
 isn't assumed away).
 
+**Deployment hardening for Streamlit Community Cloud (DONE 2026-09-13).**
+The user decided to actually deploy this for the league rather than keep
+it local-only, which surfaced two real gaps checked and fixed before
+deploying rather than discovered after:
+
+1. **Access control.** Confirmed (Streamlit's own docs, not assumed):
+   Community Cloud's private-app + email-viewer-allowlist feature is
+   real, free, works via Google OAuth or a one-time emailed link, and
+   isn't geo-restricted (identity-based, not location-based). Layered a
+   second, app-level gate on top since the exact session/cookie duration
+   for that platform feature isn't documented anywhere findable (a
+   *different*, unrelated Streamlit feature - `st.login()` - does have a
+   documented 30-day cookie; don't conflate the two, they're not the
+   same mechanism). New: `config.app_password()` (`APP_PASSWORD` env
+   var, unset = disabled, so local dev never sees a prompt) +
+   `ui_common.require_password()`, wired into `render_sidebar()` so
+   every page goes through it with a single edit point rather than
+   pasting a gate into all 9 page files. Verified in-browser: blocks a
+   direct deep-link to a non-Home page (not just the entry point),
+   rejects a wrong password with a clear message, grants access to the
+   originally-requested page on a correct one.
+2. **Non-persistent filesystem.** Streamlit Community Cloud's local disk
+   is only "semi-persistent" (confirmed via Streamlit's own community
+   forum - real, repeatedly-reported data loss on redeploy and possibly
+   on the 12-hour idle sleep/wake cycle too) - a serious problem for an
+   app whose entire value is an incrementally-built, 12-season SQLite
+   file. Rather than switch hosts or add external persistent storage
+   (Postgres/Turso/S3-synced SQLite - real options, but more
+   infrastructure than a 12-person league's stakes justify right now),
+   added `ui_common.ensure_data_bootstrapped()`: a cheap `SELECT
+   COUNT(*) FROM seasons` check on every page load, and if empty,
+   transparently runs the exact same full-history `refresh_all()` the
+   manual "Refresh ESPN Data" button already does, before rendering
+   anything. First load after any restart takes the same few minutes
+   the original historical backfill took (Phase 2); every load after
+   that is instant until the next wipe. Revisit with real persistent
+   storage only if the multi-minute-first-load-after-restart pattern
+   actually annoys the league in practice - not pre-optimized for a
+   problem that may not matter at this scale.
+
+Both are called from the top of `render_sidebar()` (require_password()
+before ensure_data_bootstrapped(), so an unauthenticated visitor can't
+trigger a bootstrap rebuild by merely loading the page) - one call site,
+not touched in every page file. New `tests/test_ui_common.py` covers the
+pure branching logic (skip vs. act) for both; the actual widget
+interaction (typing a password, clicking Enter) isn't meaningfully
+testable outside a real `streamlit run` session, so that was validated
+directly in a real browser instead, not skipped.
+
 **Ask Me Anything (DONE 2026-09-13, out-of-sequence addition after Phase 8).**
 A natural-language Q&A search bar for league members, powered by Gemini
 Flash (`gemini-2.5-flash` by default, configurable via `GEMINI_MODEL` -

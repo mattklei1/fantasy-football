@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from . import dashboard_data as dd
+from . import config, dashboard_data as dd, db
 from .badges import fraud_badge
 
 BADGE_COLORS = {
@@ -133,8 +133,66 @@ def format_record(wins, losses, ties=0) -> str:
     return f"{wins}-{losses}"
 
 
+def require_password() -> None:
+    """Optional shared-password gate for a hosted deployment reachable by
+    more than just the developer - a deliberately simple, no-accounts
+    access control for a small private league (see config.app_password()),
+    not a replacement for real per-user auth. No-ops entirely when
+    APP_PASSWORD isn't set, so local dev never sees a password prompt.
+    Called from render_sidebar() (every page goes through it) rather than
+    needing to be pasted into every pages/*.py file individually."""
+    password = config.app_password()
+    if not password or st.session_state.get("authenticated"):
+        return
+
+    st.title("🏈 Fantasy Dashboard")
+    entered = st.text_input("Password", type="password", key="app_password_input")
+    if st.button("Enter"):
+        if entered == password:
+            st.session_state.authenticated = True
+            st.rerun()
+        else:
+            st.error("Wrong password.")
+    st.stop()
+
+
+def ensure_data_bootstrapped() -> None:
+    """Streamlit Community Cloud's local filesystem isn't reliably
+    persistent - a redeploy, and possibly the 12-hour idle sleep/wake
+    cycle, can wipe data/league.db (confirmed via Streamlit's own
+    community forum, not assumed). Rather than surface a confusing "no
+    data" dead end to a league member who just wanted to check
+    standings, detect an empty DB and transparently rebuild it from ESPN
+    before rendering anything - the same full-history refresh the manual
+    "Refresh ESPN Data" button already runs, just triggered
+    automatically on the first page load after a restart. The presence
+    check itself is one cheap COUNT query on every other page load, not
+    a repeated cost."""
+    conn = dd.get_connection()
+    db.init_db(conn)
+    has_data = conn.execute("SELECT COUNT(*) FROM seasons").fetchone()[0] > 0
+    if has_data:
+        return
+
+    from .espn_client import ESPNClient
+    from .ingest import refresh_all
+    from .metrics.pipeline import compute_and_store_all_seasons
+
+    with st.spinner(
+        "First load after a restart - rebuilding league history from ESPN "
+        "(a few minutes, only happens once per restart)..."
+    ):
+        client = ESPNClient()
+        refresh_all(client=client)
+        compute_and_store_all_seasons(conn)
+        dd.clear_all_caches()
+
+
 def render_sidebar() -> tuple[int, int | None]:
     """Returns (selected_season, selected_week)."""
+    require_password()
+    ensure_data_bootstrapped()
+
     st.sidebar.title("🏈 Fantasy Dashboard")
 
     seasons = dd.get_available_seasons()
