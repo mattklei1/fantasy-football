@@ -13,6 +13,9 @@ BADGE_COLORS = {
     "SLIGHTLY SUSPICIOUS": "#b8860b",
     "FRAUD WATCH": "#c9622a",
     "GENERATIONAL FRAUD": "#b71c1c",
+    "SLIGHTLY UNLUCKY": "#5b7fb5",
+    "UNLUCKY": "#3454a0",
+    "SNAKEBIT": "#1e3a8a",
 }
 
 CSS = """

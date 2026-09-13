@@ -46,12 +46,27 @@ df["Expected Record"] = df.apply(lambda r: f"{r['expected_wins']:.1f} exp. wins 
 df["All-Play Record"] = df.apply(
     lambda r: ui.format_record(r["all_play_wins"], r["all_play_losses"], r["all_play_ties"]), axis=1
 )
+# Official Record (matchup + median combined) - the SAME record shown on
+# Home's standings table. Fraud Index is computed from this combined
+# record (actual_win_pct includes the median bonus when applicable - see
+# season_metrics.py), so it needs to be visible here too, not just the
+# matchup-only record above (which Luck Wins/Expected Record use instead) -
+# otherwise the Fraud badge looks like it's based on nothing shown on this
+# page at all.
+df["Official Record"] = df.apply(
+    lambda r: ui.format_record(
+        r["matchup_wins"] + (r["median_wins"] or 0),
+        r["matchup_losses"] + (r["median_losses"] or 0),
+        r["matchup_ties"] + (r["median_ties"] or 0),
+    ),
+    axis=1,
+)
 df["Fraud"] = df["fraud_index"].apply(lambda f: ui.badge_html(fraud_badge(f)))
 df["Luck Wins"] = df["luck_wins"].round(2)
 
 table = df[
     ["luck_rank", "team_name", "Matchup Record", "Expected Record", "Luck Wins",
-     "points_against_rank", "All-Play Record", "Fraud"]
+     "points_against_rank", "All-Play Record", "Official Record", "Fraud"]
 ].rename(columns={
     "luck_rank": "Luck Rank", "team_name": "Team", "points_against_rank": "Pts Against Rank",
 })
@@ -59,10 +74,11 @@ table = df[
 st.markdown(table.to_html(escape=False, index=False, classes="ff-table"), unsafe_allow_html=True)
 if median_scoring:
     st.caption(
-        "Matchup Record above excludes the median (top-half) bonus on purpose - it's what "
-        "Luck Wins is actually computed from. Your official standings record (which DOES "
-        "include the median bonus) is on the Home page; see the breakdown below for both "
-        "side by side."
+        "Matchup Record excludes the median (top-half) bonus on purpose - it's what Luck "
+        "Wins/Expected Record are actually computed from. Official Record (matchup + median "
+        "combined, matching Home's standings) is what Fraud Index and the Fraud badge are "
+        "computed from instead - the two records intentionally feed different metrics, see "
+        "the breakdown below for both side by side."
     )
 
 if median_scoring:
