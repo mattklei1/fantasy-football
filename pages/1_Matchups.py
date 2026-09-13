@@ -126,6 +126,44 @@ if not is_final_week and not is_future_week:
     except Exception:  # noqa: BLE001 - ESPN hiccup shouldn't take the whole page down
         live_error = True
 
+team_name_by_pk = {}
+for _, m in matchups.iterrows():
+    team_name_by_pk[m["home_team_pk"]] = m["home_team_name"].strip()
+    team_name_by_pk[m["away_team_pk"]] = m["away_team_name"].strip()
+
+if meta.get("median_scoring") and not is_final_week and not is_future_week and not live_error and live_by_team:
+    # Median (top-half) bonus cutline: rank every team by CURRENT
+    # projected score (not raw score-so-far, same reasoning as the rest
+    # of this page) - with an even team count the median sits between
+    # ranks 6 and 7, so #6 is the last team currently getting the median
+    # win and #7/#8 are the closest teams currently missing it.
+    ranked = sorted(
+        ((pk, team_name_by_pk.get(pk, "?"), manager_name_for(pk), v["projected"]) for pk, v in live_by_team.items()),
+        key=lambda t: t[3], reverse=True,
+    )
+    if len(ranked) >= 8:
+        sixth, seventh, eighth = ranked[5], ranked[6], ranked[7]
+        with st.container(border=True):
+            st.markdown("#### Median Cutline (projected)")
+            cut_cols = st.columns(3)
+            with cut_cols[0]:
+                st.markdown(ui.status_bubble_html("#6 - MAKING IT", "win"), unsafe_allow_html=True)
+                st.markdown(f"**{sixth[1]}**")
+                st.caption(f"{sixth[2]} · {sixth[3]:.1f} proj")
+            with cut_cols[1]:
+                st.markdown(ui.status_bubble_html("#7 - MISSING IT", "loss"), unsafe_allow_html=True)
+                st.markdown(f"**{seventh[1]}**")
+                st.caption(f"{seventh[2]} · {seventh[3]:.1f} proj ({sixth[3]-seventh[3]:.1f} back)")
+            with cut_cols[2]:
+                st.markdown(ui.status_bubble_html("#8 - MISSING IT", "loss"), unsafe_allow_html=True)
+                st.markdown(f"**{eighth[1]}**")
+                st.caption(f"{eighth[2]} · {eighth[3]:.1f} proj ({sixth[3]-eighth[3]:.1f} back)")
+            st.caption(
+                "Based on current PROJECTED totals, not scores-so-far - this will keep moving "
+                "as games finish. Median bonus = top-half of the league that week wins an extra "
+                "half-game in the standings."
+            )
+
 for _, m in matchups.iterrows():
     with st.container(border=True):
         col_home, col_vs, col_away = st.columns([5, 1, 5])
