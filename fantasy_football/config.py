@@ -70,3 +70,18 @@ def anthropic_api_key() -> str | None:
 def fantasypros_api_key() -> str | None:
     key = os.getenv("FANTASYPROS_API_KEY", "").strip()
     return key or None
+
+
+def gemini_api_key() -> str | None:
+    key = os.getenv("GEMINI_API_KEY", "").strip()
+    return key or None
+
+
+def gemini_model() -> str:
+    """Configurable rather than hardcoded - Gemini model names change
+    fast (verified 'gemini-2.5-flash' is real and current as of
+    2026-09-13, cross-checked against the google-genai SDK's own PyPI/
+    GitHub examples, but by the time you're reading this a newer Flash
+    model may be preferred - check https://ai.google.dev/gemini-api/docs/models
+    and set GEMINI_MODEL in .env rather than editing code)."""
+    return os.getenv("GEMINI_MODEL", "").strip() or "gemini-2.5-flash"

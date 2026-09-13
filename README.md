@@ -35,6 +35,9 @@ stats and optional Claude-generated commentary.
      copy the `espn_s2` and `SWID` values (SWID includes the curly braces).
    - `ANTHROPIC_API_KEY` is optional. Without it, weekly recaps use
      deterministic placeholder commentary instead of Claude-generated text.
+   - `FANTASYPROS_API_KEY` is optional (a licensed key - see Roster Strength above).
+   - `GEMINI_API_KEY` is optional. Without it, the Ask Me Anything page shows a setup message
+     instead of crashing.
 
    `.env` is gitignored - never commit real credentials.
 
@@ -145,6 +148,20 @@ stats and optional Claude-generated commentary.
 - Manager identity persists across team name changes AND across ESPN
   account id changes (a real thing that happened for 2 managers in
   2026 - see `db.primary_owner_join_sql`)
+
+**Ask Me Anything (done)**
+- `pages/8_Ask_Me_Anything.py`: a natural-language search bar over league history, standings,
+  rosters, and past weeks, powered by Gemini Flash
+- FantasyPros rankings are STRUCTURALLY unreachable, not just prompted against - Gemini's
+  generated SQL runs through 3 independent layers (text validation, a genuinely read-only SQLite
+  connection, and SQLite's own `set_authorizer` access control) that deny the
+  `fantasypros_rankings` table outright. No credentials (FantasyPros/GroupMe/etc.) are ever at
+  risk either way - they live only in `.env`, never in the database
+- No login required - pick your name from an "Ask as" dropdown so "my roster"-style questions
+  resolve, same trust model as the rest of the app
+- Requires `GEMINI_API_KEY` in `.env` (get one at https://aistudio.google.com/apikey) - without
+  it, the page shows a setup message rather than crashing
+- A simple 20-questions-per-hour session rate limit keeps API spend bounded
 
 **Weekly Recap (done)**
 - `pages/7_Weekly_Recap.py`: a recap of the selected week, built ONLY from stats already

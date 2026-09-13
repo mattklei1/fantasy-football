@@ -788,6 +788,106 @@ than guessing if a season ever used a different format (none has, but
 per the spec's "document the limitation, don't guess" instruction this
 isn't assumed away).
 
+**Ask Me Anything (DONE 2026-09-13, out-of-sequence addition after Phase 8).**
+A natural-language Q&A search bar for league members, powered by Gemini
+Flash (`gemini-2.5-flash` by default, configurable via `GEMINI_MODEL` -
+this project doesn't otherwise use Google's API, so unlike the Claude
+model table this one wasn't cross-checked against a maintained skill;
+verify against https://ai.google.dev/gemini-api/docs/models before
+assuming it's still current). New: `fantasy_football/ama_query.py` (the
+actual security boundary, + a large dedicated test suite -
+`tests/test_ama_query.py`), `fantasy_football/ama.py` (Gemini
+orchestration, + `tests/test_ama.py`), `pages/8_Ask_Me_Anything.py`, 10
+new `ama_*` SQL views (`db.py:_create_ama_views()`).
+
+**The core requirement was "keep FantasyPros rankings private, and never
+leak the FantasyPros/GroupMe API keys."** The key insight: API keys were
+never at risk in the first place - they live only in `.env`, never
+ingested into any DB table, so no DB-querying feature can reach them
+regardless of design. The real work was making `fantasypros_rankings`
+(the paid data, still worth ~$X/year and the user's own competitive
+edge) STRUCTURALLY unreachable by a natural-language interface a
+lucky/adversarial phrasing could otherwise trick into surfacing it -
+"tell Gemini not to" is not that, so this was NOT implemented as a
+prompt instruction alone (though the prompt also never mentions the
+table, as one more layer). Three independent, defense-in-depth
+enforcement layers, all verified working in this exact environment
+before being relied on (not assumed from docs):
+1. Text-level validation on the LLM-generated SQL: single statement
+   only (rejects `;`-stacked injection), must start with SELECT/WITH,
+   denylists write/schema keywords (INSERT/UPDATE/DELETE/DROP/ALTER/
+   ATTACH/PRAGMA/CREATE/VACUUM/etc.) and the literal string
+   "fantasypros" via regex.
+2. The connection Gemini's SQL executes against is opened via a SQLite
+   `file:...?mode=ro` URI - genuinely read-only at the OS/SQLite level,
+   confirmed with a direct write-attempt test (raises
+   `sqlite3.OperationalError: attempt to write a readonly database`)
+   BEFORE building anything on top of it.
+3. `sqlite3.Connection.set_authorizer()` - SQLite's own query-
+   compilation-time access-control callback (Python 3.11+). Denies
+   `SQLITE_READ` on `fantasypros_rankings` by name and denies every
+   non-SELECT action by default (fail-closed catch-all), confirmed
+   directly against a real SQLite connection (denied reads/writes/
+   ATTACH/PRAGMA all raised as expected) before being wired into the
+   real query path.
+
+**A subtlety caught by the test suite itself, not designed in up
+front:** the authorizer's own denial exception text ("access to
+fantasypros_rankings.foo is prohibited") would, if ever shown to an end
+user, literally leak the hidden table's name/existence - defeating the
+whole point even though the query itself was correctly blocked. Fixed
+by collapsing EVERY rejection path in `ama_query.py` (malformed query,
+denied table, a genuine SQL syntax error, a nonexistent table) to raise
+the exact same generic message (`GENERIC_MESSAGE`) - a differentiated
+error surface is itself an information-disclosure vector, not just a UX
+nicety. A dedicated test (`test_error_message_is_identical_whether_
+denied_or_just_malformed`) locks this in.
+
+**Query quality/scope:** 10 `ama_*` SQL views (not raw tables) are what
+Gemini is told about and steered toward - they pre-bake the primary-
+manager-identity join (`db.primary_owner_join_sql`) so generated SQL
+doesn't have to reconstruct that window-function logic itself, span ALL
+seasons (2015-present, unlike most of the season-scoped dashboard
+pages), and expose `roster_strength_weekly`'s already-blended
+`roster_strength` score (fine - it's the same number already shown
+publicly on the Roster Strength page) while never exposing the raw
+FantasyPros signal that feeds into it. `SCHEMA_DESCRIPTION` in `ama.py`
+documents each view's semantics for Gemini, including the cross-season
+normalization guidance (use `ppg_percentile`, not raw `ppg`, to compare
+scoring across eras) established back in Phase 3.
+
+**No login (per user decision - team selector instead):** an "Ask as"
+dropdown lets a user pick their manager identity for THIS season so
+"my roster" pronouns resolve - same trust model as the rest of this
+app (anyone can already browse anyone's data on every other page; this
+doesn't change that). A simple session-based rate limit (20 questions/
+hour per browser session, tracked in `st.session_state`) bounds Gemini
+spend now that the user is planning to deploy this somewhere the whole
+league can reach - not full abuse-prevention infrastructure, but
+enough for a private ~12-person league.
+
+**Not live-tested against the real Gemini API** (no `GEMINI_API_KEY` in
+this environment) - the exact same situation as Phase 8's Claude path.
+Validated instead: (1) the full pipeline up through the actual network
+call, using a deliberately-invalid key - confirmed a clean, generic
+error surface (`ClientError`, caught and shown without a stack trace or
+crash) rather than assuming a real key would "just work," (2) the
+`google-genai` SDK's actual installed API surface via local
+introspection (`inspect.signature`, `model_fields`) rather than trusting
+web-fetched docs alone - a live docs fetch for this SDK surfaced a
+suspicious, uncorroborated "Interactions API"/"gemini-3.8-flash" claim
+that contradicted three independent other sources (PyPI README, GitHub
+README, a search-result blog example) and the actually-installed
+package's own introspected signature; treated as an unreliable outlier
+and didn't build on it - `client.models.generate_content(model=...,
+contents=..., config=types.GenerateContentConfig(response_mime_type=
+"application/json", response_schema=SomeBaseModel))` is what's
+implemented, cross-confirmed by 3 sources plus direct package
+introspection. If a future session has a real key, sanity-check this
+still matches the installed SDK version before trusting it blindly -
+the same "AI model API surfaces drift fast, verify don't assume" lesson
+as every other model-facing integration in this project.
+
 **Phase 8 (DONE 2026-09-13):** Weekly recap + Claude commentary. New:
 `fantasy_football/metrics/weekly_awards.py` (+ unit tests - pure,
 single-WEEK, not cumulative: Manager of the Week, Highest/Lowest Score,
