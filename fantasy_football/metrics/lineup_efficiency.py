@@ -14,23 +14,44 @@ def compute_weekly_lineup_values(roster_df: pd.DataFrame, position_slot_counts: 
     """roster_df: one row per team-week-player - week, team_pk, player_id,
     points, is_starter, eligible_slots (a frozenset/set of slot names).
     Returns one row per team-week: actual_starter_points,
-    optimal_starter_points."""
+    optimal_starter_points, correct_decisions, total_decisions.
+
+    correct_decisions/total_decisions is a POINTS-BLIND companion to the
+    points-based efficiency above: it counts start/sit decisions, not
+    points. Points-based efficiency gets dominated by a single boom/bust
+    bench player (one huge outlier game makes the gap look enormous even
+    though it's one wrong call) - decision accuracy instead compares the
+    SET of players actually started against the SET the optimal lineup
+    would have started. One wrong swap = exactly one wrong decision,
+    however many points that swap was worth."""
     rows = []
     for (week, team_pk), g in roster_df.groupby(["week", "team_pk"]):
         actual_starter_points = float(g.loc[g["is_starter"] == 1, "points"].sum())
+        actual_starter_ids = set(g.loc[g["is_starter"] == 1, "player_id"])
         players = [
             RosterPlayer(row.player_id, row.points, row.eligible_slots) for row in g.itertuples()
         ]
-        optimal_points, _assignment = optimal_lineup(players, position_slot_counts)
+        optimal_points, assignment = optimal_lineup(players, position_slot_counts)
+        optimal_starter_ids = set(assignment.values())
+        total_decisions = len(optimal_starter_ids)
+        correct_decisions = len(actual_starter_ids & optimal_starter_ids)
         rows.append(
             {
                 "week": week,
                 "team_pk": team_pk,
                 "actual_starter_points": actual_starter_points,
                 "optimal_starter_points": optimal_points,
+                "correct_decisions": correct_decisions,
+                "total_decisions": total_decisions,
             }
         )
-    return pd.DataFrame(rows, columns=["week", "team_pk", "actual_starter_points", "optimal_starter_points"])
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "week", "team_pk", "actual_starter_points", "optimal_starter_points",
+            "correct_decisions", "total_decisions",
+        ],
+    )
 
 
 def compute_lineup_efficiency(
@@ -69,16 +90,23 @@ def compute_lineup_efficiency(
     df["optimal_ties"] = grp["optimal_tie"].cumsum()
     df["manager_caused_losses"] = grp["manager_caused_loss"].cumsum()
 
+    df["correct_decisions_cum"] = grp["correct_decisions"].cumsum()
+    df["total_decisions_cum"] = grp["total_decisions"].cumsum()
+    df["decision_accuracy"] = df["correct_decisions_cum"] / df["total_decisions_cum"].replace(0, pd.NA)
+
     return df[
         [
             "week", "team_pk",
             "actual_starter_points_cum", "optimal_starter_points_cum",
             "lineup_efficiency", "points_left_on_bench",
             "optimal_wins", "optimal_losses", "optimal_ties", "manager_caused_losses",
+            "correct_decisions_cum", "total_decisions_cum", "decision_accuracy",
         ]
     ].rename(
         columns={
             "actual_starter_points_cum": "actual_starter_points",
             "optimal_starter_points_cum": "optimal_starter_points",
+            "correct_decisions_cum": "correct_decisions",
+            "total_decisions_cum": "total_decisions",
         }
     )

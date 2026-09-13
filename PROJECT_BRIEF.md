@@ -614,6 +614,33 @@ enforces this ordering already, don't call
 `compute_and_store_lineup_efficiency()` standalone without checking
 that dependency still holds.
 
+**Decision Accuracy (DONE 2026-09-13, user-requested addition to Phase 5):**
+a points-BLIND companion to Lineup Efficiency. The user's insight: a
+single boom/bust bench player dominates the POINTS-based efficiency
+metric (one huge outlier game makes the gap look enormous) even though
+it only represents ONE wrong start/sit call. Decision Accuracy instead
+compares the SET of players actually started against the SET the
+optimal lineup would have started (`len(actual ∩ optimal) /
+len(optimal)`), so one wrong swap always reads as exactly one wrong
+decision regardless of how many points it was worth. New columns on
+`metrics_weekly`: `correct_decisions`, `total_decisions`,
+`decision_accuracy` (added via the same `db.py` migration pattern as
+the rest of Phase 5, since the table already had data again).
+
+Validated with a dedicated unit test constructing exactly this
+scenario (4 correctly-started players + 1 wrong swap worth a 45-point
+swing) - lineup_efficiency reads a misleadingly bad 50%, decision_
+accuracy correctly reads 80% (4/5). Also validated against real 2025
+season data: range 55-91% across all team-weeks, `total_decisions` for
+a full season = 154 (11 starting slots × 14 weeks, confirms the
+denominator is right), and per the 2025-week-14 standings the two
+metrics visibly reorder teams relative to each other (not just a
+linear rescaling of the same signal) - e.g. "Thankful for Coffeys Team"
+ranks #1 by points-efficiency but only #4 by decision accuracy.
+Recomputing this needed no re-ingest, only a metrics recompute
+(`compute_and_store_all_seasons`), since it's derived entirely from
+data already captured in the Phase 5 backfill.
+
 **Phases 6-8:** Not started (History/Hall of Fame/head-to-head; Playoff
 simulation; Weekly recap + Claude commentary).
 

@@ -102,6 +102,12 @@ stats and optional Claude-generated commentary.
   an exact optimal-lineup solver (scipy Hungarian algorithm, not a
   greedy heuristic), lineup efficiency %, points left on bench, an
   optimal-lineup win/loss record, and manager-caused-loss counts
+- **Decision Accuracy**: a points-blind companion metric - compares the
+  set of players you actually started against the set the optimal
+  lineup would have started, so one wrong start/sit swap always counts
+  as one wrong decision, regardless of how many points a boom/bust
+  bench player was worth (which otherwise dominates the points-based
+  efficiency number)
 - Available for 2019+ seasons
 
 Later phases (lineup efficiency, History/Hall of Fame, playoff

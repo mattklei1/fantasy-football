@@ -201,6 +201,13 @@ CREATE TABLE IF NOT EXISTS metrics_weekly (
     -- weeks where the optimal lineup would have won but the actual
     -- lineup lost/tied - a loss the manager caused, not bad luck
     manager_caused_losses INTEGER,
+    -- POINTS-BLIND companion to lineup_efficiency: counts start/sit
+    -- decisions right vs. wrong (set overlap of actual vs. optimal
+    -- starters), not points. Keeps a single boom/bust bench outlier from
+    -- dominating the read on decision quality - see lineup_efficiency.py.
+    correct_decisions INTEGER,
+    total_decisions INTEGER,
+    decision_accuracy REAL,
     UNIQUE(season_id, week, team_pk)
 );
 
@@ -259,6 +266,9 @@ MIGRATIONS = {
         "optimal_losses": "INTEGER",
         "optimal_ties": "INTEGER",
         "manager_caused_losses": "INTEGER",
+        "correct_decisions": "INTEGER",
+        "total_decisions": "INTEGER",
+        "decision_accuracy": "REAL",
     },
 }
 

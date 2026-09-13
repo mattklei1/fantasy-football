@@ -308,6 +308,38 @@ def test_lineup_efficiency_flags_manager_caused_loss():
     assert row["optimal_wins"] == 1
 
 
+def test_decision_accuracy_survives_a_single_bench_blowup():
+    # 5 starting slots. 4 players are correctly started either way. The
+    # 5th slot: actual started a 5pt scrub over a bench player who
+    # blows up for 50 - a single wrong swap, but it wrecks points-based
+    # efficiency while decision accuracy correctly shows "4/5 right."
+    correct_ids = [1, 2, 3, 4]
+    roster = pd.DataFrame(
+        {
+            "week": [1] * 6,
+            "team_pk": [1] * 6,
+            "player_id": correct_ids + [5, 6],
+            "points": [10.0, 10.0, 10.0, 10.0, 5.0, 50.0],
+            "is_starter": [1, 1, 1, 1, 1, 0],  # player 5 started (wrong), player 6 benched (should've started)
+            "eligible_slots": [frozenset({"QB", "BE"})] * 6,
+        }
+    )
+    matchups = pd.DataFrame(
+        {"week": [1], "home_team_pk": [1], "away_team_pk": [2], "home_score": [45.0], "away_score": [30.0]}
+    )
+    result = compute_lineup_efficiency(roster, matchups, {"QB": 5, "BE": 1})
+    row = result.iloc[0]
+
+    assert row["actual_starter_points"] == pytest.approx(45.0)   # 40 + 5
+    assert row["optimal_starter_points"] == pytest.approx(90.0)  # 40 + 50
+    assert row["lineup_efficiency"] == pytest.approx(45.0 / 90.0)  # looks like a disastrous 50% week
+
+    # but only ONE of the five decisions was actually wrong
+    assert row["correct_decisions"] == 4
+    assert row["total_decisions"] == 5
+    assert row["decision_accuracy"] == pytest.approx(0.8)
+
+
 def test_compute_season_metrics_empty_input_returns_empty():
     empty_scores = pd.DataFrame(columns=["week", "team_pk", "score"])
     empty_matchups = pd.DataFrame(columns=["week", "home_team_pk", "away_team_pk", "home_score", "away_score"])

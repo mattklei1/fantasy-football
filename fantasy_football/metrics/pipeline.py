@@ -26,7 +26,7 @@ METRICS_WEEKLY_COLUMNS = [
 LINEUP_EFFICIENCY_COLUMNS = [
     "actual_starter_points", "optimal_starter_points", "lineup_efficiency",
     "points_left_on_bench", "optimal_wins", "optimal_losses", "optimal_ties",
-    "manager_caused_losses",
+    "manager_caused_losses", "correct_decisions", "total_decisions", "decision_accuracy",
 ]
 
 

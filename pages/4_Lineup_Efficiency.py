@@ -42,10 +42,15 @@ display["Actual Pts"] = display["actual_starter_points"].round(1)
 display["Optimal Pts"] = display["optimal_starter_points"].round(1)
 display["Left on Bench"] = display["points_left_on_bench"].round(1)
 display["Manager-Caused Losses"] = display["manager_caused_losses"].astype(int)
+display["Decision Accuracy"] = (display["decision_accuracy"] * 100).round(1).astype(str) + "%"
+display["Decisions"] = (
+    display["correct_decisions"].astype(int).astype(str) + "/" + display["total_decisions"].astype(int).astype(str)
+)
 
 table = display[
-    ["Rank", "team_name", "manager_name", "Efficiency", "Actual Pts", "Optimal Pts",
-     "Left on Bench", "Actual Record", "Optimal-Lineup Record", "Manager-Caused Losses"]
+    ["Rank", "team_name", "manager_name", "Efficiency", "Decision Accuracy", "Decisions",
+     "Actual Pts", "Optimal Pts", "Left on Bench", "Actual Record", "Optimal-Lineup Record",
+     "Manager-Caused Losses"]
 ].rename(columns={"team_name": "Team", "manager_name": "Manager"})
 
 st.markdown(table.to_html(escape=False, index=False, classes="ff-table"), unsafe_allow_html=True)
@@ -59,6 +64,13 @@ player's real slot eligibility and the league's real roster settings pulled from
 (`league.settings.position_slot_counts` - never hardcoded).
 
 - **Lineup Efficiency** = season-to-date Actual Starter Points ÷ Optimal Starter Points
+- **Decision Accuracy** = a points-BLIND companion metric: compares the SET of players you
+  actually started against the SET the optimal lineup would have started, and counts how many
+  of your N starting-slot decisions matched. A single boom/bust bench player dominates Lineup
+  Efficiency (one huge outlier game makes the points gap look enormous) but is still just ONE
+  wrong swap - Decision Accuracy reflects that correctly regardless of how many points that
+  swap was worth. Read the two together: low efficiency + high decision accuracy usually means
+  "one bad beat," not "bad process."
 - **Optimal-Lineup Record** recomputes each week's result using the optimal lineup's points
   against the opponent's real actual score, then aggregates to a record just like the real one
 - **Manager-Caused Losses** counts weeks where the optimal lineup would have won, but the

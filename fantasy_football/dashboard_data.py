@@ -215,7 +215,8 @@ def get_lineup_efficiency(season: int, through_week: int | None = None) -> pd.Da
                m.week, m.games_played,
                m.actual_starter_points, m.optimal_starter_points, m.lineup_efficiency,
                m.points_left_on_bench, m.optimal_wins, m.optimal_losses, m.optimal_ties,
-               m.manager_caused_losses, m.matchup_wins, m.matchup_losses, m.matchup_ties
+               m.manager_caused_losses, m.matchup_wins, m.matchup_losses, m.matchup_ties,
+               m.correct_decisions, m.total_decisions, m.decision_accuracy
         FROM metrics_weekly m
         JOIN teams t ON t.id = m.team_pk
         {_team_manager_join_sql()}
