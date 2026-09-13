@@ -15,7 +15,7 @@ ui.inject_css()
 
 # History spans all seasons, so it doesn't need the season/week selector -
 # just render the league info sidebar without capturing its return values.
-ui.render_sidebar()
+ui.render_sidebar(support_all_time=True)
 
 st.title("History")
 

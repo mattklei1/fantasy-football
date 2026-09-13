@@ -241,3 +241,55 @@ def get_league_records() -> dict:
 def get_head_to_head(manager_a: str, manager_b: str) -> dict:
     matchups = get_all_matchups_by_manager()
     return compute_head_to_head(matchups, manager_a, manager_b)
+
+
+@st.cache_data(ttl=300)
+def get_all_time_lineup_efficiency(scope: str) -> pd.DataFrame:
+    """All-time Lineup Efficiency, aggregated by MANAGER (not team_pk,
+    which resets every season) across every season with eligibility data
+    (2019+ - see dashboard_data.get_lineup_efficiency_by_scope, which
+    this reuses per-season rather than re-deriving the computation).
+    Efficiency/Decision Accuracy are recomputed from the SUMMED raw
+    totals (actual/optimal, correct/total), not averaged across seasons
+    - same as how a single season's own cumulative number works, so a
+    heavy-minutes career isn't diluted by a single lopsided season the
+    same way a simple average of percentages would."""
+    frames = []
+    for season in dd.get_available_seasons():
+        df = dd.get_lineup_efficiency_by_scope(season, scope)
+        if df.empty:
+            continue
+        df = df.copy()
+        df["season_id"] = season
+        frames.append(df)
+    if not frames:
+        return pd.DataFrame()
+
+    all_df = pd.concat(frames, ignore_index=True)
+    all_df["manager_id"] = all_df["team_pk"].apply(get_primary_manager_id)
+    all_df = all_df[all_df["manager_id"].notna()]
+    if all_df.empty:
+        return pd.DataFrame()
+
+    name_by_manager_id = dict(zip(get_managers()["manager_id"], get_managers()["display_name"]))
+    all_df["manager_name"] = all_df["manager_id"].map(name_by_manager_id)
+
+    agg = all_df.groupby(["manager_id", "manager_name"]).agg(
+        seasons_played=("season_id", "nunique"),
+        actual_starter_points=("actual_starter_points", "sum"),
+        optimal_starter_points=("optimal_starter_points", "sum"),
+        points_left_on_bench=("points_left_on_bench", "sum"),
+        matchup_wins=("matchup_wins", "sum"),
+        matchup_losses=("matchup_losses", "sum"),
+        matchup_ties=("matchup_ties", "sum"),
+        optimal_wins=("optimal_wins", "sum"),
+        optimal_losses=("optimal_losses", "sum"),
+        optimal_ties=("optimal_ties", "sum"),
+        manager_caused_losses=("manager_caused_losses", "sum"),
+        correct_decisions=("correct_decisions", "sum"),
+        total_decisions=("total_decisions", "sum"),
+    ).reset_index()
+
+    agg["lineup_efficiency"] = agg["actual_starter_points"] / agg["optimal_starter_points"]
+    agg["decision_accuracy"] = agg["correct_decisions"] / agg["total_decisions"]
+    return agg.sort_values("lineup_efficiency", ascending=False).reset_index(drop=True)

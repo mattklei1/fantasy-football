@@ -1,17 +1,21 @@
 """LINEUP EFFICIENCY page: Actual vs. Optimal starter points, and
 whether a different legal lineup would have won the matchup. Filterable
-by Regular Season / Playoffs (championship-bracket weeks only) / All."""
+by Regular Season / Playoffs (championship-bracket weeks only) / All.
+Supports "All time" (every season combined, aggregated by manager
+identity since team_pk resets every season) alongside a single season."""
 from __future__ import annotations
 
 import streamlit as st
 
 from fantasy_football import dashboard_data as dd
+from fantasy_football import history_data as hd
 from fantasy_football import ui_common as ui
 
 st.set_page_config(page_title="Lineup Efficiency", page_icon="🧠", layout="wide")
 ui.inject_css()
 
-season, week = ui.render_sidebar()
+season, week = ui.render_sidebar(support_all_time=True)
+all_time = season == "All time"
 
 st.title("Lineup Efficiency")
 
@@ -31,10 +35,15 @@ elif scope == "all":
         "their own numerator/denominator here - that's correct, not a bug: fewer shots at it."
     )
 
-df = dd.get_lineup_efficiency_by_scope(season, scope)
+df = hd.get_all_time_lineup_efficiency(scope) if all_time else dd.get_lineup_efficiency_by_scope(season, scope)
 
 if df.empty:
-    if scope == "regular":
+    if all_time:
+        st.info(
+            "No lineup efficiency data available yet across any season. This requires per-player "
+            "slot eligibility data that's only available for 2019 onward."
+        )
+    elif scope == "regular":
         st.info(
             "No lineup efficiency data for this season yet. This requires per-player slot "
             "eligibility data that's only available for 2019 onward, and only for weeks "
@@ -44,7 +53,9 @@ if df.empty:
         st.info(f"No {scope_label.lower()} lineup data for this season (no qualifying weeks played yet).")
     st.stop()
 
-if scope == "regular":
+if all_time:
+    st.caption(f"Every season combined (2019+) · {scope_label.lower()} · ranked by career Lineup Efficiency")
+elif scope == "regular":
     st.caption(f"Through week {week} (regular season) · ranked by season-to-date Lineup Efficiency")
 else:
     st.caption(f"Full-season {scope_label.lower()} totals · ranked by Lineup Efficiency")
@@ -69,11 +80,21 @@ display["Decisions"] = (
     display["correct_decisions"].astype(int).astype(str) + "/" + display["total_decisions"].astype(int).astype(str)
 )
 
-table = display[
-    ["Rank", "team_name", "manager_name", "Efficiency", "Decision Accuracy", "Decisions",
-     "Actual Pts", "Optimal Pts", "Left on Bench", "Actual Record", "Optimal-Lineup Record",
-     "Manager-Caused Losses"]
-].rename(columns={"team_name": "Team", "manager_name": "Manager"})
+if all_time:
+    display["Seasons"] = display["seasons_played"].astype(int)
+    columns = [
+        "Rank", "manager_name", "Seasons", "Efficiency", "Decision Accuracy", "Decisions",
+        "Actual Pts", "Optimal Pts", "Left on Bench", "Actual Record", "Optimal-Lineup Record",
+        "Manager-Caused Losses",
+    ]
+else:
+    columns = [
+        "Rank", "team_name", "manager_name", "Efficiency", "Decision Accuracy", "Decisions",
+        "Actual Pts", "Optimal Pts", "Left on Bench", "Actual Record", "Optimal-Lineup Record",
+        "Manager-Caused Losses",
+    ]
+
+table = display[columns].rename(columns={"team_name": "Team", "manager_name": "Manager"})
 
 st.markdown(table.to_html(escape=False, index=False, classes="ff-table"), unsafe_allow_html=True)
 
