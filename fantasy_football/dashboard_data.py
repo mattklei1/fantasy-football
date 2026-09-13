@@ -60,15 +60,9 @@ def get_latest_metrics_week(season: int) -> int | None:
 
 
 def _team_manager_join_sql() -> str:
-    """teams -> primary manager display name (first owner alphabetically
-    by manager_id if co-owned - rare, just needs to be deterministic)."""
-    return """
-        LEFT JOIN (
-            SELECT team_pk, MIN(manager_id) AS manager_id
-            FROM team_owners GROUP BY team_pk
-        ) primary_owner ON primary_owner.team_pk = t.id
-        LEFT JOIN managers mgr ON mgr.manager_id = primary_owner.manager_id
-    """
+    """teams -> primary (most-tenured) manager display name. See
+    db.primary_owner_join_sql for why this isn't just an arbitrary pick."""
+    return db.primary_owner_join_sql("t", mgr_alias="mgr", owner_alias="primary_owner")
 
 
 @st.cache_data(ttl=60)

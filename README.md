@@ -110,5 +110,17 @@ stats and optional Claude-generated commentary.
   efficiency number)
 - Available for 2019+ seasons
 
+**History (done)**
+- `pages/5_History.py`: Hall of Fame (championships, finals/playoff
+  appearances, career record, best/worst season by era-normalized PPG
+  percentile), League Records (highest/lowest score, biggest blowout,
+  closest game, etc. - raw record-book facts spanning every season), and
+  a Head-to-Head rivalry explorer (pick any two managers, see their
+  all-time series, points, playoff record, current streak, and full
+  matchup history)
+- Manager identity persists across team name changes AND across ESPN
+  account id changes (a real thing that happened for 2 managers in
+  2026 - see `db.primary_owner_join_sql`)
+
 Later phases (lineup efficiency, History/Hall of Fame, playoff
 simulation, Claude commentary) will be documented here as they land.

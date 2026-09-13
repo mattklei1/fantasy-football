@@ -12,6 +12,7 @@ from fantasy_football.metrics.season_metrics import (
     compute_season_metrics,
 )
 from fantasy_football.metrics.win_probability import TeamProjection, win_probability
+from fantasy_football.metrics.history import compute_head_to_head, compute_league_records, compute_streaks
 from fantasy_football.metrics.lineup_optimizer import RosterPlayer, optimal_lineup, starting_slots
 from fantasy_football.metrics.lineup_efficiency import compute_lineup_efficiency
 from fantasy_football.metrics.roster_strength import (
@@ -338,6 +339,100 @@ def test_decision_accuracy_survives_a_single_bench_blowup():
     assert row["correct_decisions"] == 4
     assert row["total_decisions"] == 5
     assert row["decision_accuracy"] == pytest.approx(0.8)
+
+
+def test_compute_streaks_finds_longest_and_current():
+    results = pd.Series(["W", "W", "L", "W", "W", "W", "L"])
+    streaks = compute_streaks(results)
+    assert streaks["longest_win_streak"] == 3
+    assert streaks["longest_loss_streak"] == 1
+    assert streaks["current_streak_result"] == "L"
+    assert streaks["current_streak_length"] == 1
+
+
+def test_compute_streaks_all_wins():
+    streaks = compute_streaks(pd.Series(["W", "W", "W"]))
+    assert streaks["longest_win_streak"] == 3
+    assert streaks["current_streak_result"] == "W"
+    assert streaks["current_streak_length"] == 3
+
+
+def _mock_h2h_matchups():
+    # Manager A vs Manager B across 2 seasons: A wins big in S1 wk1,
+    # loses close in S1 wk2, A wins the S2 playoff game
+    return pd.DataFrame(
+        {
+            "season_id": [2023, 2023, 2024],
+            "week": [1, 2, 15],
+            "is_playoff": [0, 0, 1],
+            "home_manager_id": ["A", "B", "A"],
+            "away_manager_id": ["B", "A", "B"],
+            "home_score": [130.0, 102.0, 110.0],
+            "away_score": [80.0, 100.0, 105.0],
+        }
+    )
+
+
+def test_head_to_head_record_and_points():
+    result = compute_head_to_head(_mock_h2h_matchups(), "A", "B")
+    assert result["games_played"] == 3
+    assert result["a_wins"] == 2
+    assert result["b_wins"] == 1
+    assert result["a_total_points"] == pytest.approx(130.0 + 100.0 + 110.0)
+    assert result["b_total_points"] == pytest.approx(80.0 + 102.0 + 105.0)
+    assert result["playoff_games"] == 1
+    assert result["a_playoff_wins"] == 1
+    assert result["b_playoff_wins"] == 0
+
+
+def test_head_to_head_largest_margin_and_closest_game():
+    result = compute_head_to_head(_mock_h2h_matchups(), "A", "B")
+    assert result["largest_margin"] == pytest.approx(50.0)  # 130-80 in week 1
+    assert result["largest_margin_winner"] == "A"
+    assert result["closest_margin"] == pytest.approx(2.0)  # 102-100 in week 2
+
+
+def test_head_to_head_current_streak():
+    # A's chronological results: W (wk1), L (wk2), W (wk playoff) -> current streak is W x1
+    result = compute_head_to_head(_mock_h2h_matchups(), "A", "B")
+    assert result["current_streak_manager"] == "A"
+    assert result["current_streak_length"] == 1
+
+
+def test_head_to_head_no_games_played():
+    result = compute_head_to_head(_mock_h2h_matchups(), "A", "C")
+    assert result["games_played"] == 0
+
+
+def test_league_records_identifies_extremes():
+    records = pd.DataFrame(
+        {
+            "season_id": [2020, 2020, 2021, 2021, 2022, 2022],
+            "week": [1, 1, 5, 5, 3, 3],
+            "team_pk": [1, 2, 1, 2, 4, 3],
+            "team_name": [
+                "Blowout Team", "Loser Team", "Bad Beat Team", "Sneaky Winner",
+                "Nailbiter B", "Nailbiter A",
+            ],
+            "score": [200.0, 50.0, 90.0, 60.0, 99.0, 100.0],
+            "opp_score": [50.0, 200.0, 60.0, 90.0, 100.0, 99.0],
+            "is_playoff": [0, 0, 0, 0, 0, 0],
+        }
+    )
+    result = compute_league_records(records)
+    assert result["highest_score"]["team_name"] == "Blowout Team"
+    assert result["lowest_score"]["team_name"] == "Loser Team"
+    assert result["biggest_blowout"]["team_name"] == "Blowout Team"
+    assert result["biggest_blowout"]["margin"] == pytest.approx(150.0)
+    # "Nailbiter B" (the LOSING side, margin=-1) sorts first on ties - this
+    # specifically catches a real bug where the raw signed margin was
+    # displayed instead of the absolute value (showed -1 instead of 1)
+    assert result["closest_game"]["margin"] == pytest.approx(1.0)
+    assert result["closest_game"]["margin"] >= 0
+    # week 5: "Bad Beat Team" won 90-60, "Sneaky Winner" lost 60-90
+    # "Nailbiter B" lost 99-100 - the highest score of any loss in this set
+    assert result["most_points_in_loss"]["team_name"] == "Nailbiter B"
+    assert result["lowest_score_in_win"]["team_name"] == "Bad Beat Team"  # won with only 90, the least of any win
 
 
 def test_compute_season_metrics_empty_input_returns_empty():

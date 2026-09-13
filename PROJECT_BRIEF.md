@@ -641,8 +641,81 @@ Recomputing this needed no re-ingest, only a metrics recompute
 (`compute_and_store_all_seasons`), since it's derived entirely from
 data already captured in the Phase 5 backfill.
 
-**Phases 6-8:** Not started (History/Hall of Fame/head-to-head; Playoff
-simulation; Weekly recap + Claude commentary).
+**Phase 6 (DONE 2026-09-13):** History / Hall of Fame / League Records /
+Head-to-Head rivalry explorer. New: `fantasy_football/metrics/
+history.py` (+ unit tests - pure functions per the spec's testing
+requirement: `compute_streaks`, `compute_head_to_head`,
+`compute_league_records`), `fantasy_football/history_data.py`
+(Streamlit-cached read-model spanning ALL seasons, unlike
+`dashboard_data.py` which is scoped to one season), `pages/5_History.py`
+(3 tabs: Hall of Fame, League Records, Head-to-Head).
+
+**Major correctness discovery while validating this phase: ESPN member
+IDs are not as permanently stable as the espn-api docs / this project's
+own earlier assumption implied.** For the 2026 season, ESPN listed a
+freshly re-linked account as an ADDITIONAL co-owner alongside 2
+managers' (Aaron Hendel, Alex Bradford) long-standing member ids -
+confirmed same real people by matching first/last name, and by the
+"new" id having zero history before 2026 while the "old" id has the
+full 2015-2026 span. The app's original "primary owner = alphabetically
+first manager_id" convention (used since Phase 4) picked whichever id
+sorted first, which for one of these two people picked the NEW
+(historyless) id for the 2026 season specifically - silently splitting
+that person's whole career across two Hall of Fame rows, and would have
+caused the SAME misattribution on Home/Luck/Roster Strength/Lineup
+Efficiency's "Manager" column for their current-season row too (not
+just History) had it gone unnoticed.
+
+Fixed at the shared root, not per-page: added `db.primary_owner_join_sql()`
+and `db.primary_manager_ids_sql()` (built on a common `_ranked_owners_sql()`
+window-function query) that rank co-owners by TOTAL TENURE (count of
+teams/seasons owned league-wide) rather than picking alphabetically -
+self-correcting if this happens again for someone else in a future
+season. `dashboard_data.py._team_manager_join_sql()` and
+`history_data.py._primary_manager_sql()` both now delegate to this one
+definition instead of maintaining separate (and, it turned out,
+differently-buggy) copies. `history_data.get_managers()` also had to be
+fixed separately - it was listing every raw `team_owners.manager_id`
+including non-primary aliases, which produced a confusing duplicate-
+looking entry in the Head-to-Head picker that could never actually
+match any matchup (since matchup resolution always used the corrected
+primary-owner logic) - now built on `primary_manager_ids_sql()` so the
+two can't drift apart again.
+
+Two more real bugs found via in-browser validation (Playwright), both
+in `history.py`: (1) "Closest Game" and "Biggest Blowout" displayed the
+raw SIGNED margin instead of its absolute value - showed "-0.1 pt
+margin" when the losing side's row happened to be selected by
+`idxmin()`. Fixed with `abs()`, and strengthened the unit test to
+include the losing side's mirror row specifically so it would have
+caught this (the original test only had one row per game, which
+happened to always be positive and couldn't expose the bug). (2) The
+page displayed raw manager_id GUIDs instead of display names for
+"Largest victory" and "Current Streak" - `compute_head_to_head()`
+correctly returns manager_id (staying ID-based keeps the pure function
+testable/agnostic of display concerns), but the page forgot to map IDs
+back to names before rendering; fixed in `pages/5_History.py`, not the
+pure function.
+
+Cross-season design maintained consistently: Hall of Fame's
+championships/finals/playoff-appearances/career-record are exact facts
+(a win is a win regardless of scoring format); "Best/Worst Season" uses
+season-relative PPG percentile (`metrics_weekly.ppg_percentile` at each
+season's final week), NOT raw points, for the reasons documented back
+in Phase 3; "Career Points (raw)" is shown for reference only, explicitly
+labeled as not a fair ranking basis. League Records are raw record-book
+facts spanning every season/era on purpose (a record is a record,
+era and all) - not used for any manager-vs-manager ranking claim.
+
+Validated cross-referencing the GroupMe research from earlier in this
+session: Nick McGillivray's 3 championships (2020, 2022, 2025) exactly
+match the "2nd ship in 3 years" (2022) and "dynasty"/"3rd ship" (2025)
+chat references found during the personality-mining conversation - a
+good independent confirmation the History calculations are correct,
+not just internally consistent.
+
+**Phases 7-8:** Not started (Playoff simulation; Weekly recap + Claude
+commentary).
 
 **In progress (2026-09-13): FantasyPros API integration.** The user
 purchased FantasyPros API access (their real, licensed API - see the

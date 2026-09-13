@@ -288,6 +288,58 @@ def init_db(conn: sqlite3.Connection) -> None:
     _apply_migrations(conn)
 
 
+def _ranked_owners_sql() -> str:
+    """Every (team_pk, manager_id) co-ownership, ranked within each team
+    by the manager's total tenure (rn=1 is the primary owner). Shared by
+    primary_owner_join_sql and primary_manager_ids_sql so the definition
+    of "primary" can't drift between them."""
+    return """
+        SELECT o.team_pk, o.manager_id,
+               ROW_NUMBER() OVER (
+                   PARTITION BY o.team_pk
+                   ORDER BY (SELECT COUNT(*) FROM team_owners o2 WHERE o2.manager_id = o.manager_id) DESC,
+                            o.manager_id
+               ) AS rn
+        FROM team_owners o
+    """
+
+
+def primary_manager_ids_sql() -> str:
+    """Query returning the distinct manager_ids that are EVER a primary
+    (most-tenured) owner of some team - i.e. the real, de-duplicated
+    roster of managers, excluding secondary co-owner aliases like the
+    ESPN account-relink duplicates described in primary_owner_join_sql."""
+    return f"SELECT DISTINCT manager_id FROM ({_ranked_owners_sql()}) WHERE rn = 1"
+
+
+def primary_owner_join_sql(team_alias: str, mgr_alias: Optional[str] = None, owner_alias: Optional[str] = None) -> str:
+    """SQL fragment: resolve team `{team_alias}` to its PRIMARY manager -
+    the most-tenured co-owner (ranked by total team_owners rows across
+    ALL seasons/teams), not an arbitrary alphabetically-first pick.
+
+    Why this matters: for the 2026 season, ESPN listed a freshly
+    re-linked account as an ADDITIONAL co-owner alongside 2 managers'
+    long-standing member ids (same real people, confirmed by matching
+    first/last name - ESPN's member id is not as permanently stable as
+    the espn-api docs imply). Picking alphabetically-first among
+    co-owners split each person's career history across two separate
+    manager identities on the History/Hall of Fame page - found while
+    validating Phase 6. Ranking by tenure instead makes this self-
+    correcting if it happens again for someone else in a future season.
+
+    Produces joined aliases `{owner_alias}` and `{mgr_alias}` (default
+    `{team_alias}_owner` / `{team_alias}_mgr`) - the latter has
+    `.manager_id` / `.display_name`."""
+    mgr_alias = mgr_alias or f"{team_alias}_mgr"
+    owner_alias = owner_alias or f"{team_alias}_owner"
+    return f"""
+        LEFT JOIN (
+            SELECT team_pk, manager_id FROM ({_ranked_owners_sql()}) ranked WHERE rn = 1
+        ) {owner_alias} ON {owner_alias}.team_pk = {team_alias}.id
+        LEFT JOIN managers {mgr_alias} ON {mgr_alias}.manager_id = {owner_alias}.manager_id
+    """
+
+
 def get_team_pk(conn: sqlite3.Connection, season_id: int, espn_team_id: int) -> Optional[int]:
     row = conn.execute(
         "SELECT id FROM teams WHERE season_id = ? AND espn_team_id = ?",
