@@ -21,7 +21,7 @@ season, _ = ui.render_sidebar()
 st.title("Ask Me Anything")
 st.caption(
     "Ask anything about league history, standings, rosters, or past weeks - answered by Gemini "
-    "from this dashboard's own data. It cannot see FantasyPros rankings or any credentials."
+    "from this dashboard's own data. It cannot see third-party rankings data or any credentials."
 )
 
 api_key = config.gemini_api_key()
@@ -96,7 +96,7 @@ with st.expander("What can I ask?"):
 - **Rosters & drafts**: "Who did I draft in the first round?", "What's on my bench right now?"
 - **Weekly recaps**: "What happened in week 5?", "Summarize the closest game this season."
 
-**Not available**: FantasyPros rest-of-season rankings (kept private on purpose), and anything not
+**Not available**: third-party rest-of-season rankings (kept private on purpose), and anything not
 already tracked elsewhere in this dashboard - Ask Me Anything answers from the same data you can
 already see on the other pages, it doesn't have outside information.
         """
