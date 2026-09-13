@@ -222,6 +222,18 @@ CREATE TABLE IF NOT EXISTS player_rankings (
     UNIQUE(season_id, week, player_id)
 );
 
+CREATE TABLE IF NOT EXISTS fantasypros_rankings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season_id INTEGER NOT NULL REFERENCES seasons(season_id),
+    week INTEGER NOT NULL,
+    player_id INTEGER NOT NULL REFERENCES players(player_id),
+    position TEXT,
+    rank_ecr INTEGER,
+    pos_rank INTEGER,
+    ros_points REAL,
+    UNIQUE(season_id, week, player_id)
+);
+
 CREATE TABLE IF NOT EXISTS roster_strength_weekly (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     season_id INTEGER NOT NULL REFERENCES seasons(season_id),

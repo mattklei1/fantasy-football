@@ -91,9 +91,14 @@ stats and optional Claude-generated commentary.
 
 **Roster Strength (done)**
 - `pages/3_Roster_Strength.py`: forward-looking roster quality (not past
-  performance) blending this week's ESPN projection with ESPN's
-  season-long positional rank, with a starter/bench weighting that shifts
-  across the season as bye weeks come and go
+  performance) blending this week's ESPN projection, ESPN's season-long
+  positional rank, and FantasyPros' rest-of-season expert consensus rank
+  (weighted 20:15:40 - FantasyPros is the largest signal since it's the
+  only genuinely forward-looking one), with a starter/bench weighting
+  that shifts across the season as bye weeks come and go
+- FantasyPros integration requires a licensed `FANTASYPROS_API_KEY` (see
+  `.env.example`) - without one, the app falls back to the ESPN-only 2
+  signals rather than fabricating the third
 - Only reflects the current week of the current season - see the page's
   own methodology expander for details and limitations
 

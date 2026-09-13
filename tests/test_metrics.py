@@ -222,6 +222,47 @@ def test_player_values_percentile_computed_within_position():
     assert qb_best == pytest.approx(1.0)
 
 
+def test_player_value_blends_fantasypros_signal_when_present():
+    roster = pd.DataFrame(
+        {
+            "team_pk": [1, 1],
+            "player_id": [1, 2],
+            "position": ["QB", "QB"],
+            "slot_position": ["QB", "BE"],
+            "is_starter": [1, 0],
+            "projected_points": [20.0, 10.0],
+            "pos_rank": [None, None],
+            "fp_pos_rank": [1, 25],
+        }
+    )
+    result = compute_player_values(roster).set_index("player_id")
+    # with only the FantasyPros signal present (no ESPN pos_rank), a
+    # top-ranked FP player should score much higher than a QB25
+    assert result.loc[1, "player_value"] > result.loc[2, "player_value"]
+    # missing signals renormalize rather than drag the score toward 0 -
+    # a QB1 with only 1 of 3 signals present should still score near 1.0,
+    # not get capped near the FantasyPros weight (40/75 ~= 0.53)
+    assert result.loc[1, "player_value"] == pytest.approx(1.0, abs=0.05)
+
+
+def test_player_value_falls_back_when_fantasypros_column_absent():
+    # older call sites (or a DB with no FANTASYPROS_API_KEY configured)
+    # won't have an fp_pos_rank column at all - must not crash
+    roster = pd.DataFrame(
+        {
+            "team_pk": [1],
+            "player_id": [1],
+            "position": ["QB"],
+            "slot_position": ["QB"],
+            "is_starter": [1],
+            "projected_points": [20.0],
+            "pos_rank": [1],
+        }
+    )
+    result = compute_player_values(roster)
+    assert result["player_value"].iloc[0] == pytest.approx(1.0)
+
+
 def test_team_roster_strength_excludes_ir_and_splits_starter_bench():
     roster = pd.DataFrame(
         {

@@ -717,23 +717,63 @@ not just internally consistent.
 **Phases 7-8:** Not started (Playoff simulation; Weekly recap + Claude
 commentary).
 
-**FantasyPros API key received (2026-09-13), NOT yet integrated into
-Roster Strength.** The user purchased FantasyPros API access and pasted
-a real key, now stored as `FANTASYPROS_API_KEY` in `.env` (gitignored,
-same pattern as `ESPN_S2`/`SWID`). Confirmed working with a live test
-call against `api.fantasypros.com/public/v2/json/nfl/{year}/consensus-
-rankings?type=ROS&position={POS}` (auth via `x-api-key` header) -
-response includes `player_id`, `player_name`, `rank_ecr`, `pos_rank`
-(e.g. "QB1"), `r2p_pts` (rest-of-season projected points),
-`player_bye_week`, `player_owned_espn`/`player_owned_yahoo`.
-**Remaining work, not started:** wire this into Roster Strength as the
-3rd signal - per-position API calls, matching FantasyPros `player_id`
-to our ESPN `player_id` (nontrivial cross-platform ID matching, no
-shared key - will likely need name+team+position fuzzy matching), then
-reweight `SIGNAL_WEIGHTS` per the original design (FantasyPros 40%,
-ESPN weekly projection + season rank reduced/reweighted proportionally;
-Yahoo stays out of scope - no generic ROS-rankings API endpoint exists).
-Confirm with the user before starting given the ID-matching complexity.
+**FantasyPros integration into Roster Strength (DONE 2026-09-13).** The
+user purchased FantasyPros API access; the key is stored as
+`FANTASYPROS_API_KEY` in `.env` (gitignored, same pattern as
+`ESPN_S2`/`SWID`). New: `fantasy_football/fantasypros_client.py` (thin
+wrapper - `fetch_ros_rankings()`/`fetch_all_ros_rankings()` against
+`api.fantasypros.com/public/v2/json/nfl/{year}/consensus-
+rankings?type=ROS&position={POS}`, auth via `x-api-key` header, covers
+all 6 standard positions: QB/RB/WR/TE/K/DST), `fantasy_football/
+player_matching.py` (+ unit tests - pure, no network/DB), new
+`fantasypros_rankings` table, `ingest.py:ingest_fantasypros_rankings()`.
+
+**Cross-platform player ID matching** (the hard part of this task,
+since FantasyPros and ESPN share no common player id): matches by
+normalized name within position for QB/RB/WR/TE/K (`normalize_name()`
+lowercases, drops apostrophes, turns hyphens/periods into spaces, and
+strips a trailing Jr/Sr/II/III/IV/V suffix, so "Kenneth Walker III"
+collides with "Kenneth Walker"), and by NFL team abbreviation for D/ST
+specifically - name matching doesn't work there at all (ESPN stores
+"Texans D/ST", FantasyPros returns "Houston Texans", zero shared name
+tokens). Confirmed ESPN's `pro_team` and FantasyPros' `player_team_id`
+agree on 30 of 32 team abbreviations; the 2 that differ (`JAX`/`JAC`,
+`WSH`/`WAS`) are hardcoded in `TEAM_ABBREV_FP_TO_ESPN`. An ambiguous
+name (2+ currently-rostered players sharing a normalized name at the
+same position) is deliberately left unmatched rather than guessed -
+hasn't happened in this league's real rosters yet, but the logic
+handles it safely if it ever does. Matching only runs against players
+actually on a roster this season/week (not FantasyPros' full league-
+wide player pool per position), which also keeps the false-collision
+search space small. **Validated against real 2026 week-1 data: 207/207
+rostered players matched (100%), including all 14 rostered D/ST units**
+- see `_match_dst`/`_match_by_name` in `player_matching.py` for the two
+matching strategies and their respective unit tests.
+
+**Reweighted `SIGNAL_WEIGHTS`** in `roster_strength.py` per the
+original 4-source design: FantasyPros ROS rank 40, ESPN weekly
+projection 20, ESPN season rank 15 (Yahoo's 25 dropped, remaining 3
+renormalized to sum to 1: 20/75, 15/75, 40/75). `compute_player_values`'
+`blend()` was generalized from a 2-signal special case to N present
+signals, renormalizing over whichever signals actually exist for a
+given player (a player FantasyPros couldn't match, or whose ESPN
+posRank isn't populated yet, correctly falls back to the signals it
+does have rather than being penalized as if the missing signal were a
+zero) - see the new `test_player_value_blends_fantasypros_signal_when_
+present`/`test_player_value_falls_back_when_fantasypros_column_absent`
+tests, which specifically assert this renormalization (not just "does
+it run without crashing").
+
+Same "current week only, no backfill" limitation as ESPN's `posRank` -
+FantasyPros' ROS endpoint has no history either. Validated end-to-end
+against real 2026 week-1 data via `refresh_data.py`-equivalent manual
+run: `roster_strength_weekly` populated for all 12 teams, plausible
+range (37.7-50.4 on the 0-100 scale, week 1 - expect this range to
+shift once real week 1 results roll in and ESPN's season-long
+`posRank` starts meaningfully differentiating players). Confirmed
+correct rendering in-browser via Playwright, including the updated
+Methodology expander. 37/37 unit tests passing (`tests/test_metrics.py`
++ new `tests/test_player_matching.py`).
 
 **Lineup Efficiency scope filter (DONE 2026-09-13, user-requested
 addition to Phase 5):** added a Regular Season / Playoffs / All radio

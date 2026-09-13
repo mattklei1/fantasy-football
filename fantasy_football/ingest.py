@@ -19,7 +19,7 @@ from typing import Optional
 
 from espn_api.football.team import Team as ESPNTeam
 
-from . import db
+from . import config, db
 from .espn_client import ESPNClient
 
 BENCH_SLOTS = {"BE", "IR"}
@@ -431,6 +431,65 @@ def ingest_player_rankings(conn, league, season: int, week: int, log=print) -> N
         )
 
 
+def ingest_fantasypros_rankings(conn, season: int, week: int, api_key: str, log=print) -> None:
+    """Rest-of-season consensus rankings from FantasyPros' licensed API,
+    matched to our ESPN player_id (no shared id between the two sources -
+    see player_matching.py) and stored only for players actually rostered
+    this season/week (FantasyPros' own lists cover the whole league-wide
+    player pool per position, most of which nobody in this league has
+    rostered). Same "current week only" limitation as
+    ingest_player_rankings - FantasyPros' ROS endpoint has no history
+    either, so this can't be backfilled to past weeks."""
+    from . import fantasypros_client, player_matching
+
+    rows = conn.execute(
+        """
+        SELECT DISTINCT wr.player_id, p.player_name, p.default_position, wr.pro_team
+        FROM weekly_rosters wr JOIN players p ON p.player_id = wr.player_id
+        WHERE wr.season_id = ? AND wr.week = ?
+        """,
+        (season, week),
+    ).fetchall()
+    if not rows:
+        return
+    espn_players_by_position: dict[str, list[dict]] = {}
+    for player_id, player_name, position, pro_team in rows:
+        espn_players_by_position.setdefault(position, []).append(
+            {"player_id": player_id, "player_name": player_name, "pro_team": pro_team}
+        )
+
+    try:
+        fp_by_position = fantasypros_client.fetch_all_ros_rankings(api_key, season)
+    except Exception as exc:  # noqa: BLE001
+        log(f"[warn] season {season} week {week} fantasypros rankings: {exc}")
+        return
+
+    matched_total = 0
+    for fp_position, fp_players in fp_by_position.items():
+        espn_position = player_matching.POSITION_MAP.get(fp_position, fp_position)
+        espn_players = espn_players_by_position.get(espn_position, [])
+        id_map = player_matching.match_players_for_position(espn_players, fp_players, espn_position)
+        fp_by_id = {p["player_id"]: p for p in fp_players}
+        for fp_id, espn_id in id_map.items():
+            fp = fp_by_id[fp_id]
+            db.upsert(
+                conn,
+                "fantasypros_rankings",
+                {
+                    "season_id": season,
+                    "week": week,
+                    "player_id": espn_id,
+                    "position": espn_position,
+                    "rank_ecr": fp.get("rank_ecr"),
+                    "pos_rank": player_matching.parse_pos_rank(fp.get("pos_rank")),
+                    "ros_points": fp.get("r2p_pts"),
+                },
+                conflict_cols=["season_id", "week", "player_id"],
+            )
+        matched_total += len(id_map)
+    log(f"[info] season {season} week {week}: matched {matched_total} FantasyPros ROS rankings to rostered players")
+
+
 def ingest_season(conn, client: ESPNClient, season: int, log=print) -> None:
     league = client.get_league(season)
     current_season = client.credentials.current_season
@@ -475,6 +534,13 @@ def ingest_season(conn, client: ESPNClient, season: int, log=print) -> None:
             ingest_player_rankings(conn, league, season, last_week, log=log)
         except Exception as exc:  # noqa: BLE001
             log(f"[warn] season {season} player rankings: {exc}")
+
+        fp_api_key = config.fantasypros_api_key()
+        if fp_api_key:
+            try:
+                ingest_fantasypros_rankings(conn, season, last_week, fp_api_key, log=log)
+            except Exception as exc:  # noqa: BLE001
+                log(f"[warn] season {season} fantasypros rankings: {exc}")
 
     conn.commit()
 

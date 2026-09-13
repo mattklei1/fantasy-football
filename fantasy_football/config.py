@@ -65,3 +65,8 @@ def load_espn_credentials() -> ESPNCredentials:
 def anthropic_api_key() -> str | None:
     key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     return key or None
+
+
+def fantasypros_api_key() -> str | None:
+    key = os.getenv("FANTASYPROS_API_KEY", "").strip()
+    return key or None
