@@ -44,14 +44,25 @@ st.caption(
 )
 
 df = df.reset_index(drop=True)
+# "Rank" is the fixed Roster Strength rank (identity column) - it does NOT
+# renumber when the table below is sorted by a different metric, so you can
+# still see each team's overall rank while browsing by Starter/Bench Value.
 df.insert(0, "Rank", df.index + 1)
 display = df.copy()
 display["Starter Value"] = (display["starter_value"] * 100).round(1)
 display["Bench Value"] = (display["bench_value"] * 100).round(1)
 display["Roster Strength"] = display["roster_strength"].round(1)
 
-table = display[["Rank", "team_name", "manager_name", "Starter Value", "Bench Value", "Roster Strength"]].rename(
-    columns={"team_name": "Team", "manager_name": "Manager"}
+sort_col1, sort_col2 = st.columns([3, 1])
+sort_by = sort_col1.selectbox(
+    "Sort by", ["Roster Strength", "Starter Value", "Bench Value"], key="roster_strength_sort_by"
+)
+descending = sort_col2.checkbox("Descending", value=True, key="roster_strength_sort_desc")
+
+table = (
+    display[["Rank", "team_name", "manager_name", "Starter Value", "Bench Value", "Roster Strength"]]
+    .rename(columns={"team_name": "Team", "manager_name": "Manager"})
+    .sort_values(sort_by, ascending=not descending)
 )
 st.markdown(table.to_html(escape=False, index=False, classes="ff-table"), unsafe_allow_html=True)
 
