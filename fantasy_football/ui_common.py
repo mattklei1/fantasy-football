@@ -46,6 +46,19 @@ CSS = """
     font-weight: 600;
     margin-bottom: 4px;
 }
+.ff-card-icon {
+    font-size: 1.1rem;
+    margin-right: 6px;
+    letter-spacing: normal;
+    text-transform: none;
+}
+.ff-card {
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.ff-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+}
 .ff-card-value {
     font-size: 1.5rem;
     font-weight: 700;
@@ -97,10 +110,12 @@ def inject_css() -> None:
     st.markdown(CSS, unsafe_allow_html=True)
 
 
-def stat_card(label: str, value: str, sub: str | None = None) -> None:
+def stat_card(label: str, value: str, sub: str | None = None, icon: str | None = None, accent: str | None = None) -> None:
     sub_html = f'<div class="ff-card-sub">{sub}</div>' if sub else ""
+    icon_html = f'<span class="ff-card-icon">{icon}</span>' if icon else ""
+    border_style = f' style="border-left: 4px solid {accent};"' if accent else ""
     st.markdown(
-        f'<div class="ff-card"><div class="ff-card-label">{label}</div>'
+        f'<div class="ff-card"{border_style}><div class="ff-card-label">{icon_html}{label}</div>'
         f'<div class="ff-card-value">{value}</div>{sub_html}</div>',
         unsafe_allow_html=True,
     )
@@ -115,15 +130,29 @@ def fraud_badge_html(fraud_index: float | None) -> str:
     return badge_html(fraud_badge(fraud_index))
 
 
-def rank_change_html(change) -> str:
+def trend_arrow(change) -> str:
+    """Plain-text (no HTML) rank-trend arrow - for st.dataframe/column_config
+    cells, which render HTML tags as literal text rather than parsing them
+    (unlike the old to_html()-table approach, hence plain glyphs + a
+    separate trend_color() for pandas Styler instead of inline HTML)."""
     if change is None or (isinstance(change, float) and change != change):  # NaN
-        return '<span class="ff-rank-flat">–</span>'
+        return "–"
     change = int(change)
     if change > 0:
-        return f'<span class="ff-rank-up">▲ {change}</span>'
+        return f"▲{change}"
     if change < 0:
-        return f'<span class="ff-rank-down">▼ {abs(change)}</span>'
-    return '<span class="ff-rank-flat">–</span>'
+        return f"▼{abs(change)}"
+    return "–"
+
+
+def trend_color(value: str) -> str:
+    """pandas Styler CSS string for a trend_arrow() cell - green/red/gray,
+    same palette as the rest of the app's badges."""
+    if isinstance(value, str) and value.startswith("▲"):
+        return "color: #2e7d32; font-weight: 700;"
+    if isinstance(value, str) and value.startswith("▼"):
+        return "color: #b71c1c; font-weight: 700;"
+    return "color: #6b7280;"
 
 
 def format_record(wins, losses, ties=0) -> str:

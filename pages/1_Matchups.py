@@ -45,7 +45,7 @@ def team_context_line(team_pk: int) -> str:
     )
     return (
         f"Record {record} · Power Rank #{int(ctx['power_rank'])} · "
-        f"PPG {ctx['ppg']:.1f} · Last 3 {ctx['last3_ppg']:.1f} · "
+        f"PPG {ctx['ppg']:.0f} · Last 3 {ctx['last3_ppg']:.0f} · "
         f"All-Play {ctx['all_play_win_pct']*100:.0f}%"
     )
 

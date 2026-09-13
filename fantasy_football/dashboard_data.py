@@ -94,16 +94,22 @@ def get_standings(season: int, through_week: int | None = None) -> pd.DataFrame:
 
     df["power_rank"] = df["power_score"].rank(ascending=False, method="min").astype(int)
 
-    prev_week = through_week - 1
-    if prev_week >= 1:
-        prev = pd.read_sql_query(
-            "SELECT team_pk, power_score FROM metrics_weekly WHERE season_id = ? AND week = ?",
-            conn, params=(season, prev_week),
+    # rank_change is movement SINCE WEEK 1 (season-long trajectory: "rose
+    # from 8th to 2nd"), not week-over-week - a deliberate choice (2026-09-
+    # 13) so the Home page's Δ tells a season-arc story rather than just
+    # noisy single-week wobble. Week-over-week movement still exists
+    # separately for the Weekly Recap narrative (see commentary.py, which
+    # intentionally keeps its own week-over-week comparison - that's about
+    # "what happened this week," a different question from this one).
+    if through_week > 1:
+        week1 = pd.read_sql_query(
+            "SELECT team_pk, power_score FROM metrics_weekly WHERE season_id = ? AND week = 1",
+            conn, params=(season,),
         )
-        if not prev.empty:
-            prev["prev_rank"] = prev["power_score"].rank(ascending=False, method="min").astype(int)
-            df = df.merge(prev[["team_pk", "prev_rank"]], on="team_pk", how="left")
-            df["rank_change"] = df["prev_rank"] - df["power_rank"]
+        if not week1.empty:
+            week1["week1_rank"] = week1["power_score"].rank(ascending=False, method="min").astype(int)
+            df = df.merge(week1[["team_pk", "week1_rank"]], on="team_pk", how="left")
+            df["rank_change"] = df["week1_rank"] - df["power_rank"]
         else:
             df["rank_change"] = None
     else:
