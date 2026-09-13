@@ -1,0 +1,35 @@
+name: GroupMe Waiver Recap
+
+# Fires across a DST-safety window (see slate-updates.yml and
+# fantasy_football/schedule_guard.py for the full reasoning).
+#
+# IMPORTANT, unverified assumption: targets Wednesday ~9am Pacific,
+# guessing ESPN processed this league's waivers Tuesday night/Wednesday
+# early AM ET (a common default - espn_api doesn't expose this league's
+# actual waiver-processing day, so this wasn't confirmed against real
+# settings). Adjust the cron's day-of-week (currently "3" = Wednesday)
+# and post_waiver_recap.py's DEFAULT_TARGET_HOUR if this league's
+# waivers actually process a different day.
+on:
+  schedule:
+    - cron: "7,22,37,52 16,17 * * 3"
+  workflow_dispatch: {}
+
+jobs:
+  post-recap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Post waiver recap
+        env:
+          LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          SWID: ${{ secrets.SWID }}
+          CURRENT_SEASON: ${{ secrets.CURRENT_SEASON }}
+          GROUPME_BOT_ID: ${{ secrets.GROUPME_BOT_ID }}
+          FANTASYPROS_API_KEY: ${{ secrets.FANTASYPROS_API_KEY }}
+        run: python scripts/post_waiver_recap.py

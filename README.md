@@ -174,6 +174,32 @@ stats and optional Claude-generated commentary.
 - An "Underlying facts" expander shows the exact structured JSON the recap was written from
 - Requires a completed regular-season week to recap - no partial-week recaps
 
+## Scheduled GroupMe posts
+
+Three recurring in-season messages, sent via a GroupMe Bot (not the app itself - these run on
+GitHub Actions, independent of whether the Streamlit app is deployed or awake):
+
+- **Early Slate Update** (~1:30pm Pacific Sundays): live scores so far, closest games, top scorers
+- **Afternoon Slate Update** (~5:00pm Pacific Sundays): same, later in the day
+- **Waiver Wire Report** (~9:00am Pacific Wednesdays, unverified guess at this league's actual
+  waiver day - adjust if wrong): every contested claim with all real bids placed (not just the
+  winner), and winning bids that looked like overpays against our own suggested-value estimate
+
+**Setup:**
+1. Create a Bot for your GroupMe group at [dev.groupme.com](https://dev.groupme.com/bots) - takes
+   its `bot_id`, no other access.
+2. Add these as **GitHub Actions repository secrets** (Settings → Secrets and variables → Actions),
+   matching your `.env` values: `LEAGUE_ID`, `ESPN_S2`, `SWID`, `CURRENT_SEASON`, `GROUPME_BOT_ID`,
+   and `FANTASYPROS_API_KEY` (optional - powers the waiver report's suggested bid values).
+3. That's it - `.github/workflows/slate-updates.yml` and `waiver-recap.yml` pick up from there.
+   Use each workflow's "Run workflow" button (Actions tab) to test on demand instead of waiting
+   for the schedule.
+
+No suggested-bid number exists anywhere to pull from (checked FantasyPros' full API, ESPN, and
+Yahoo - none of them publish one) - `fantasy_football/metrics/waiver_value.py` computes our own,
+normalized to this league's real $200 budget and real superflex slot counts, not borrowed
+assumptions. Always labeled as a heuristic, never presented as fact.
+
 ## Deploying (Streamlit Community Cloud)
 
 Vercel/Next.js-style hosts don't work for this app - Streamlit needs one persistent Python

@@ -788,6 +788,127 @@ than guessing if a season ever used a different format (none has, but
 per the spec's "document the limitation, don't guess" instruction this
 isn't assumed away).
 
+**Scheduled GroupMe posts (DONE 2026-09-13, in progress - bot not yet
+created by the user).** Recurring in-season messages: a live matchup
+update after the early Sunday slate, another after the afternoon slate,
+and a weekly waiver-wire recap. New: `fantasy_football/groupme_client.py`
+(Bot API wrapper - a Bot's `bot_id` can ONLY post to its one group, no
+read/account access at all, unlike the personal access token used
+earlier this project for one-off GroupMe research), `fantasy_football/
+slate_report.py` (live cumulative score snapshot), `fantasy_football/
+waiver_report.py` (weekly waiver recap), `fantasy_football/metrics/
+waiver_value.py` (suggested-bid heuristic, + tests), `fantasy_football/
+schedule_guard.py` (DST-safety check, + tests), `scripts/post_slate_
+update.py` / `scripts/post_waiver_recap.py` (GitHub Actions entry
+points), `.github/workflows/slate-updates.yml` / `waiver-recap.yml`.
+
+**Why GitHub Actions, not this coding session:** checked - the session's
+own cron tool is explicitly documented as session-only (nothing written
+to disk) and auto-expires recurring jobs after 7 days. Fine for a
+reminder, wrong tool for something that needs to run unattended for an
+entire NFL season. GitHub Actions cron is durable, free at this volume,
+and the repo already lives on GitHub - no new infrastructure.
+
+**Suggested FAAB bid - confirmed nobody publishes this, built our own.**
+Checked all three real candidates before building anything: FantasyPros'
+full API endpoint list (players/news/injuries/compare-players/rankings/
+consensus-rankings/rankings-experts/projections/player-points - no
+waiver or FAAB endpoint at all; their FAAB tool is website-only, off
+limits per the same ToS reasoning as everywhere else in this project),
+ESPN's `Player` object (checked a real free agent's fields directly - no
+bid/value field), and Yahoo (no public API, established earlier this
+project). So `metrics/waiver_value.py` is our own heuristic - FantasyPros
+ROS positional rank (reusing `roster_strength.rank_to_score`, the same
+decay curve already used and validated) blended 70/30 with ESPN's
+`percent_owned` as a demand signal, normalized to this league's REAL
+$200 budget (not a generic $100 assumption) and REAL superflex slot
+counts (not assumed - `position_slot_counts` is pulled live from
+`league.settings`, same source of truth used everywhere else in this
+project). The superflex QB premium is modeled directly: each additional
+`OP` slot applies a data-driven +0.5x multiplier to QB specifically (not
+RB/WR/TE, whose flex-eligible pool is already deep) - because an OP slot
+overwhelmingly gets filled by a 2nd startable QB in practice, which is
+the entire reason "superflex" leagues are colloquially called that.
+Explicitly labeled as a heuristic everywhere it surfaces (in the message
+text itself, in code comments) - never presented as a fact the way a
+real market price would be.
+
+**The "multiple people bid on the same player" feature is real,
+verified against actual league history** - a big finding worth
+flagging for future sessions: `league.transactions()` (an espn-api
+method this project's regular ingestion does NOT use - `ingest.py`'s
+`ingest_recent_activity()` uses the narrower `recent_activity()`
+endpoint, which only shows WINNING transactions) exposes the FULL
+waiver claim log including losing bids with real nonzero dollar
+amounts. Confirmed against real 2025 season data: e.g. week 1's Daniel
+Jones had 9 claims across 6 teams, bids $1-$12. Statuses seen in the
+wild: `EXECUTED`, `CANCELED`, `PENDING`, and several `FAILED_*` variants
+(`INVALIDPLAYERSOURCE`, `ROSTERLIMIT`, `AUCTIONBUDGETEXCEEDED`,
+`PLAYERALREADYDROPPED`) - none of these map cleanly to "lost to a higher
+bid" specifically (they're mostly technical/validation failures), so
+`waiver_report.py` doesn't try to classify WHY a claim didn't win -
+it just shows every real bid placed on a contested player, which
+answers the actual question without needing that classification.
+
+**Live scripts intentionally never touch `data/league.db`.** They run
+from GitHub Actions - a separate, ephemeral environment with no access
+to the deployed Streamlit app's local disk (which, per the deployment-
+hardening notes below, isn't even reliably persistent there either) -
+so they pull everything fresh from ESPN/FantasyPros directly each run.
+This also means they work identically regardless of whether the
+Streamlit app happens to be freshly booted, mid-sleep, or never deployed
+at all.
+
+**DST is a real bug class here, not a nitpick - handled explicitly.**
+The NFL season (Sept-Feb) crosses the November US DST transition, and
+GitHub Actions cron runs in UTC with no DST awareness - a naive fixed-
+UTC-time cron would silently drift an hour off the intended Pacific
+time for the back half of every season. Fixed with `schedule_guard.py`:
+each workflow fires several times across a small window (offset from
+the exact hour/half-hour, per GitHub's own guidance about not piling
+onto :00/:30), and the script itself checks REAL Pacific time via
+`zoneinfo` (which handles DST correctly automatically) before doing any
+real work - unrelated firings no-op in under a second. Verified with a
+unit test that asserts the SAME Pacific wall-clock target matches on
+both sides of a real DST transition date, not just spot-checked by eye.
+
+**A real bug caught by actually running the scripts, not just writing
+them:** `scripts/post_slate_update.py`/`post_waiver_recap.py` failed
+with `ModuleNotFoundError: No module named 'fantasy_football'` on the
+very first live run - Python sets `sys.path[0]` to the SCRIPT's own
+directory (`scripts/`), not the repo root, so the sibling `fantasy_
+football/` package wasn't importable. This would have broken in GitHub
+Actions too, silently, on the very first scheduled run, had it not been
+caught here. Fixed with the standard `sys.path.insert(0, ...parent)`
+bootstrap at the top of both scripts. **Lesson reaffirmed: run the code,
+don't just review it** - same lesson as every "validated in-browser"
+note elsewhere in this file.
+
+**Known open items, not yet resolved:**
+- **No GroupMe Bot created yet** - user is still deciding on a bot name
+  (USC Pike-themed - the league's original 2015-2021 name before
+  "Salted by Quincy" - candidates discussed: "The Pike Dream", "Fines
+  Committee", others). Once created, the `bot_id` needs to go into both
+  `.env` (local testing) and the repo's GitHub Actions secrets (for the
+  real scheduled runs) alongside the existing `LEAGUE_ID`/`ESPN_S2`/
+  `SWID`/`CURRENT_SEASON`/`FANTASYPROS_API_KEY` secrets.
+- **Waiver-processing day is a GUESS (Wednesday ~9am Pacific)**, not
+  verified - `espn_api`'s `LeagueSettings` has no waiver-day field to
+  check against. Confirm this league's actual pattern and adjust
+  `waiver-recap.yml`'s cron day-of-week + `post_waiver_recap.py`'s
+  `DEFAULT_TARGET_HOUR` if it's off.
+- **"Sneaky good pickups" was deliberately NOT built** - it's inherently
+  hindsight (can't know a pickup was good until they've played), so it
+  doesn't fit an immediate post-waiver message. Would need a separate,
+  later "look back N weeks" job if the user wants this - not scoped yet.
+- Not live-tested against a real GroupMe bot yet (none exists) - the
+  full pipeline was validated against real ESPN data end-to-end (real
+  contested claims, real suggested-bid math, real live matchup scores)
+  with the final `send_long_message()` call itself unit-tested via a
+  mocked `requests.post`, same "validated everything short of the one
+  external credential we don't have yet" pattern as the Claude/Gemini
+  integrations before it.
+
 **Deployment hardening for Streamlit Community Cloud (DONE 2026-09-13).**
 The user decided to actually deploy this for the league rather than keep
 it local-only, which surfaced two real gaps checked and fixed before

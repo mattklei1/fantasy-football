@@ -86,6 +86,16 @@ def app_password() -> str | None:
     return pw or None
 
 
+def groupme_bot_id() -> str | None:
+    """The GroupMe Bot's `bot_id` (from dev.groupme.com, after creating a
+    bot for the league's group) - required to post scheduled messages
+    (see groupme_client.py). Not the personal access token used earlier
+    this project for read-only message history research - a Bot's
+    bot_id can only post, it has no read/account access at all."""
+    bot_id = os.getenv("GROUPME_BOT_ID", "").strip()
+    return bot_id or None
+
+
 def gemini_model() -> str:
     """Configurable rather than hardcoded - Gemini model names change
     fast (verified 'gemini-2.5-flash' is real and current as of
