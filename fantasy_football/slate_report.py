@@ -2,6 +2,18 @@
 runs (see scripts/post_slate_update.py), highlighting the closest
 matchups and the top individual scorer so far.
 
+"Closest" is judged by PROJECTED FINAL margin, not the raw score-so-far
+margin (user-reported real problem, 2026-09-13: "a lot of times people
+have big leads because noone on the other team has played" - a 60-10
+score-so-far margin can be a near-toss-up once the trailing team's
+players who haven't kicked off yet are accounted for, and vice versa).
+`home_projected`/`away_projected` come straight from ESPN's own live
+BoxScore field - confirmed elsewhere in this project (see Matchups page)
+that this is a single number that IS the pre-game projection before
+kickoff and live-updates to (points scored so far + rest-of-lineup
+projection) once games start, so it's already the right "how is this
+actually going to end up" signal with no extra computation needed here.
+
 Scope decision, stated plainly rather than silently assumed: this reports
 whatever has scored so far LEAGUE-WIDE at trigger time, not scores
 isolated to "only players whose NFL games are in the early window." Doing
@@ -27,13 +39,22 @@ class MatchupSnapshot:
     home_score: float
     away_team: str
     away_score: float
+    home_projected: float = 0.0
+    away_projected: float = 0.0
 
     @property
     def margin(self) -> float:
         return abs(self.home_score - self.away_score)
 
+    @property
+    def projected_margin(self) -> float:
+        return abs(self.home_projected - self.away_projected)
+
     def __str__(self) -> str:
-        return f"{self.home_team} {self.home_score:.1f} - {self.away_score:.1f} {self.away_team}"
+        base = f"{self.home_team} {self.home_score:.1f} - {self.away_score:.1f} {self.away_team}"
+        if self.home_projected or self.away_projected:
+            base += f" (proj {self.home_projected:.1f}-{self.away_projected:.1f})"
+        return base
 
 
 def fetch_live_matchups(league, week: int) -> list[MatchupSnapshot]:
@@ -44,7 +65,12 @@ def fetch_live_matchups(league, week: int) -> list[MatchupSnapshot]:
             continue  # a playoff bye - no real second team to compare
         home_name = getattr(bs.home_team, "team_name", str(bs.home_team))
         away_name = getattr(bs.away_team, "team_name", str(bs.away_team))
-        snapshots.append(MatchupSnapshot(home_name, bs.home_score or 0.0, away_name, bs.away_score or 0.0))
+        snapshots.append(
+            MatchupSnapshot(
+                home_name, bs.home_score or 0.0, away_name, bs.away_score or 0.0,
+                home_projected=bs.home_projected or 0.0, away_projected=bs.away_projected or 0.0,
+            )
+        )
     return snapshots
 
 
@@ -72,8 +98,11 @@ def build_message(label: str, matchups: list[MatchupSnapshot], top_scores: list[
 
     lines = [f"{label.upper()}", ""]
 
-    closest = sorted(matchups, key=lambda m: m.margin)[:3]
-    lines.append("CLOSEST GAMES RIGHT NOW:")
+    # Sorted by PROJECTED final margin, not the raw score-so-far margin -
+    # see module docstring for why (a big score-so-far gap is often just
+    # "the other team hasn't played yet," not a real edge).
+    closest = sorted(matchups, key=lambda m: m.projected_margin)[:3]
+    lines.append("CLOSEST GAMES (BY PROJECTED FINISH):")
     for m in closest:
         lines.append(f"- {m}")
     lines.append("")
