@@ -232,27 +232,56 @@ chunks of untested placeholder code.
 directly so far, no PR yet - none was requested).
 
 **Environment:** This is developed inside a Claude Code cloud sandbox.
-ESPN's API host (`fantasy.espn.com` / `lm-api-reads.fantasy.espn.com`) is
-NOT reachable by default - the sandbox's egress proxy blocks it unless the
+UPDATE (2026-09-13): network egress to ESPN is confirmed working from this
+sandbox - `lm-api-reads.fantasy.espn.com` is reachable and returns real
+JSON responses (not a proxy block). The earlier note below about the
+egress proxy blocking ESPN was correct for a prior session but is no
+longer the blocker; don't assume network is the problem without checking
+first (a raw `requests.get(...)` to the league endpoint returning a JSON
+body, even a 401, proves the network path is fine).
+
+Old note (kept for history): ESPN's API host (`fantasy.espn.com` /
+`lm-api-reads.fantasy.espn.com`) was NOT reachable by default in an
+earlier session - the sandbox's egress proxy blocked it unless the
 environment's network policy (claude.ai/code -> environment settings ->
-Capabilities -> domain allowlist) explicitly allows those two hosts. The
-user has already added both to their environment's allowlist, but the
-policy only applies to newly-created sessions/containers - if
-`python test_connection.py` still 403s, it means this session predates
-that change; nothing else is wrong.
+Capabilities -> domain allowlist) explicitly allowed those two hosts.
 
 **Real credentials exist** in the user's local `.env` (gitignored, not in
-git history): `LEAGUE_ID=1025842`, real `ESPN_S2`/`SWID`, `CURRENT_SEASON
-=2026`. Ask the user to re-supply them if a fresh clone doesn't have
-`.env` (it's gitignored, so a fresh clone/session won't have it - the user
-has these already so just ask them to paste values again or confirm the
-file exists in this workspace).
+git history): `LEAGUE_ID=1025842`, `CURRENT_SEASON=2026`. Ask the user to
+re-supply `ESPN_S2`/`SWID` if a fresh clone doesn't have `.env` (it's
+gitignored, so a fresh clone/session won't have it).
 
-**Phase 1 (DONE):** `fantasy_football/config.py` (env var loading),
-`fantasy_football/espn_client.py` (ESPN client wrapper w/ per-season
-caching), `test_connection.py` (prints league validation summary). Not
-yet confirmed against a live connection due to the sandbox network
-restriction above - this is the first thing to verify in a new session.
+**BLOCKER as of 2026-09-13: ESPN is rejecting the current ESPN_S2/SWID
+cookie pair.** Confirmed via a direct `requests.get` to
+`https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{2024,
+2025,2026}/segments/0/leagues/1025842` - ESPN returns HTTP 401
+`AUTH_LEAGUE_NOT_VISIBLE` ("You are not authorized to view this League.")
+for all three season years, both with and without the cookies attached
+(same error either way, which is itself suspicious - normally a bad-but-
+present cookie pair still gets a *different* error than no cookies at
+all, but ESPN collapses several distinct auth failures into this one
+message so it isn't conclusive on its own). This means either:
+1. The ESPN_S2/SWID values are stale/expired (ESPN session cookies do
+   expire and need re-extraction from a logged-in browser periodically).
+2. The cookies belong to an ESPN account that does not have access to
+   league 1025842 (wrong account/browser profile).
+3. The league ID itself is wrong (less likely - user-provided).
+Network reachability is NOT the issue this time - ESPN's server actively
+responded with a real auth-rejection JSON payload. Next session should
+ask the user to log into fantasy.espn.com in a browser (the account with
+access to league 1025842 / teamId=1), open dev tools -> Application/
+Storage -> Cookies -> https://fantasy.espn.com, and re-copy fresh `espn_s2`
+and `SWID` cookie values (SWID including the curly braces). Also worth
+double-checking the value isn't accidentally double-encoded or truncated
+during copy/paste - a valid `espn_s2` is normally ~300+ characters.
+
+**Phase 1 (DONE, code only):** `fantasy_football/config.py` (env var
+loading), `fantasy_football/espn_client.py` (ESPN client wrapper w/
+per-season caching), `test_connection.py` (prints league validation
+summary). Code confirmed working end-to-end (network + parsing), but a
+live successful connection is still NOT confirmed due to the credential
+rejection above - this is the first thing to verify in a new session once
+fresh cookies are supplied.
 
 **Phase 2 (NOT STARTED):** SQLite schema + ingestion + refresh workflow.
 This is the next task.
