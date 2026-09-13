@@ -44,36 +44,55 @@ with tab_hof:
         display["Playoff Record"] = display.apply(
             lambda r: ui.format_record(r["playoff_wins"], r["playoff_losses"], r["playoff_ties"]), axis=1
         )
-        display["Career Points For (raw)"] = display["career_points_for"].round(0).astype(int)
-        display["Career Points Against (raw)"] = display["career_points_against"].round(0).astype(int)
-        display["Normalized Points For"] = (display["career_points_for_pct"] * 100).round(0).astype(int).astype(str) + "th pct avg"
-        display["Normalized Points Against"] = (display["career_points_against_pct"] * 100).round(0).astype(int).astype(str) + "th pct avg"
-        display["Best Season"] = display.apply(
-            lambda r: (
-                f"{int(r['best_season'])} ({r['best_season_team']}, "
-                f"{r['best_season_percentile']*100:.0f}th pct)"
-            ) if pd.notna(r.get("best_season")) else "—",
-            axis=1,
-        ) if "best_season" in display.columns else "—"
-        display["Worst Season"] = display.apply(
-            lambda r: (
-                f"{int(r['worst_season'])} ({r['worst_season_team']}, "
-                f"{r['worst_season_percentile']*100:.0f}th pct)"
-            ) if pd.notna(r.get("worst_season")) else "—",
-            axis=1,
-        ) if "worst_season" in display.columns else "—"
+        display["Career Points For"] = display["career_points_for"].round(0).astype(int)
+        display["Career Points Against"] = display["career_points_against"].round(0).astype(int)
+        display["Norm. Points For"] = (display["career_points_for_pct"] * 100).round(0).astype(int)
+        display["Norm. Points Against"] = (display["career_points_against_pct"] * 100).round(0).astype(int)
+        display["Best Season"] = display["best_season"] if "best_season" in display.columns else None
+        display["Worst Season"] = display["worst_season"] if "worst_season" in display.columns else None
+        for col in ("Best Season", "Worst Season"):
+            display[col] = display[col].apply(lambda v: int(v) if pd.notna(v) else None)
 
         table = display[
             ["manager_name", "championships", "finals_appearances", "playoff_appearances",
-             "seasons_played", "Regular Season Record", "Playoff Record",
-             "Career Points For (raw)", "Career Points Against (raw)",
-             "Normalized Points For", "Normalized Points Against",
+             "Regular Season Record", "Playoff Record",
+             "Career Points For", "Career Points Against",
+             "Norm. Points For", "Norm. Points Against",
              "Best Season", "Worst Season"]
         ].rename(columns={
             "manager_name": "Manager", "championships": "🏆", "finals_appearances": "Finals",
-            "playoff_appearances": "Playoffs", "seasons_played": "Seasons",
-        })
-        st.markdown(table.to_html(escape=False, index=False, classes="ff-table"), unsafe_allow_html=True)
+            "playoff_appearances": "Playoffs",
+        }).sort_values("🏆", ascending=False)
+
+        st.dataframe(
+            table,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "Career Points For": st.column_config.NumberColumn(format="localized"),
+                "Career Points Against": st.column_config.NumberColumn(format="localized"),
+                "Norm. Points For": st.column_config.NumberColumn(
+                    format="%dth pct avg",
+                    help="Average, across every season played, of that season's points-for "
+                    "percentile within its own field - era-normalized, so a fair cross-season "
+                    "comparison unlike raw points.",
+                ),
+                "Norm. Points Against": st.column_config.NumberColumn(
+                    format="%dth pct avg",
+                    help="Same as Norm. Points For, but for points allowed to opponents.",
+                ),
+                "Playoffs": st.column_config.NumberColumn(
+                    help="Real playoff bracket appearances only - excludes ESPN's separate "
+                    "consolation ladder for teams that missed the playoffs.",
+                ),
+                "Playoff Record": st.column_config.TextColumn(
+                    help="Real playoff bracket games only (including placement games among "
+                    "teams that qualified) - excludes the consolation bracket.",
+                ),
+                "Best Season": st.column_config.NumberColumn(format="%d", help="Year of the season with the highest season-relative PPG percentile."),
+                "Worst Season": st.column_config.NumberColumn(format="%d", help="Year of the season with the lowest season-relative PPG percentile."),
+            },
+        )
 
 with tab_records:
     st.caption(

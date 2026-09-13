@@ -410,6 +410,7 @@ def _mock_h2h_matchups():
             "season_id": [2023, 2023, 2024],
             "week": [1, 2, 15],
             "is_playoff": [0, 0, 1],
+            "matchup_type": ["NONE", "NONE", "WINNERS_BRACKET"],
             "home_manager_id": ["A", "B", "A"],
             "away_manager_id": ["B", "A", "B"],
             "home_score": [130.0, 102.0, 110.0],
@@ -447,6 +448,30 @@ def test_head_to_head_current_streak():
 def test_head_to_head_no_games_played():
     result = compute_head_to_head(_mock_h2h_matchups(), "A", "C")
     assert result["games_played"] == 0
+
+
+def test_head_to_head_playoff_record_excludes_losers_consolation_ladder():
+    # ESPN tags the consolation bracket (for teams that MISSED the
+    # playoffs) as is_playoff=1 too - playoff_games/wins must not count it,
+    # only the real playoff bracket (matchup_type in REAL_PLAYOFF_MATCHUP_TYPES)
+    matchups = pd.DataFrame(
+        {
+            "season_id": [2023, 2024],
+            "week": [15, 16],
+            "is_playoff": [1, 1],
+            "matchup_type": ["WINNERS_BRACKET", "LOSERS_CONSOLATION_LADDER"],
+            "home_manager_id": ["A", "A"],
+            "away_manager_id": ["B", "B"],
+            "home_score": [120.0, 90.0],
+            "away_score": [100.0, 95.0],
+        }
+    )
+    result = compute_head_to_head(matchups, "A", "B")
+    assert result["games_played"] == 2  # counts both in the all-time series
+    assert result["a_wins"] == 1  # won game 1 (120-100), lost game 2 (90-95)
+    assert result["playoff_games"] == 1  # but only the real playoff bracket game
+    assert result["a_playoff_wins"] == 1
+    assert result["b_playoff_wins"] == 0
 
 
 def test_league_records_identifies_extremes():

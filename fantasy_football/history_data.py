@@ -11,7 +11,7 @@ import streamlit as st
 
 from . import db
 from . import dashboard_data as dd
-from .metrics.history import compute_head_to_head, compute_league_records
+from .metrics.history import REAL_PLAYOFF_MATCHUP_TYPES, compute_head_to_head, compute_league_records
 
 
 def _primary_manager_sql(team_alias: str) -> str:
@@ -42,7 +42,7 @@ def get_all_matchups_by_manager() -> pd.DataFrame:
     since a rivalry's playoff history matters."""
     conn = dd.get_connection()
     query = f"""
-        SELECT m.season_id, m.week, m.is_playoff, m.home_score, m.away_score,
+        SELECT m.season_id, m.week, m.is_playoff, m.matchup_type, m.home_score, m.away_score,
                ht_mgr.manager_id AS home_manager_id,
                {db.manager_full_name_sql('ht_mgr')} AS home_manager_name,
                at_mgr.manager_id AS away_manager_id,
@@ -74,21 +74,6 @@ def get_all_team_weeks() -> pd.DataFrame:
         WHERE m.completed = 1
     """
     return pd.read_sql_query(query, conn)
-
-
-#: The ONLY matchup_type values that represent a real playoff berth. ESPN
-#: flags every post-regular-season game as is_playoff=1, including
-#: LOSERS_CONSOLATION_LADDER - the placement bracket for teams that did NOT
-#: make the playoffs (the "toilet bowl"). Counting those as "playoff
-#: appearances" was a real bug: it inflated every manager's total to
-#: (almost) their season count. WINNERS_BRACKET is the actual championship
-#: bracket; WINNERS_CONSOLATION_LADDER is the placement bracket for teams
-#: that DID qualify for the playoffs but lost early - still real playoff
-#: participants, unlike the losers' ladder. Verified against every season's
-#: real playoff_team_count (2026-09-13): the distinct-team count under
-#: these two values matches playoff_team_count exactly for all 11 completed
-#: seasons in this league's history.
-REAL_PLAYOFF_MATCHUP_TYPES = ("WINNERS_BRACKET", "WINNERS_CONSOLATION_LADDER")
 
 
 @st.cache_data(ttl=300)

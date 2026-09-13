@@ -15,6 +15,17 @@ from __future__ import annotations
 
 import pandas as pd
 
+#: The ONLY matchup_type values that represent a real playoff berth. ESPN
+#: flags every post-regular-season game as is_playoff=1, including
+#: LOSERS_CONSOLATION_LADDER - the placement bracket for teams that did NOT
+#: make the playoffs (the "toilet bowl"). WINNERS_BRACKET is the real
+#: championship bracket; WINNERS_CONSOLATION_LADDER is the placement
+#: bracket for teams that DID qualify but lost early - still real playoff
+#: participants. Verified against every season's real playoff_team_count
+#: (2026-09-13): the distinct-team count under these two values matches
+#: playoff_team_count exactly for every completed season in this league.
+REAL_PLAYOFF_MATCHUP_TYPES = ("WINNERS_BRACKET", "WINNERS_CONSOLATION_LADDER")
+
 
 def compute_streaks(results: pd.Series) -> dict:
     """results: chronologically ordered sequence of 'W'/'L'/'T'.
@@ -63,10 +74,17 @@ def _result(own_score: float, opp_score: float) -> str:
 
 def compute_head_to_head(matchups: pd.DataFrame, manager_a: str, manager_b: str) -> dict:
     """matchups: one row per completed matchup with columns season_id,
-    week, is_playoff, home_manager_id, away_manager_id, home_score,
-    away_score (already resolved to manager id, not team_pk - a manager's
-    team changes identity each season, but the manager doesn't).
-    Returns a summary dict plus the full chronological history."""
+    week, is_playoff, matchup_type, home_manager_id, away_manager_id,
+    home_score, away_score (already resolved to manager id, not team_pk -
+    a manager's team changes identity each season, but the manager
+    doesn't). Returns a summary dict plus the full chronological history.
+
+    The overall All-Time Series (a_wins/b_wins) counts every game these
+    two ever played, playoffs and consolation-ladder placement games
+    alike - a complete history. The separate Playoff Record breakdown
+    below is scoped to REAL_PLAYOFF_MATCHUP_TYPES only - ESPN's
+    consolation ladder for teams that MISSED the playoffs isn't a
+    meaningful "playoff record" even though ESPN tags it is_playoff=1."""
     mask = (
         (matchups["home_manager_id"] == manager_a) & (matchups["away_manager_id"] == manager_b)
     ) | ((matchups["home_manager_id"] == manager_b) & (matchups["away_manager_id"] == manager_a))
@@ -90,7 +108,7 @@ def compute_head_to_head(matchups: pd.DataFrame, manager_a: str, manager_b: str)
     b_wins = int((games["a_result"] == "L").sum())
     ties = int((games["a_result"] == "T").sum())
 
-    playoff_games = games[games["is_playoff"] == 1]
+    playoff_games = games[games["matchup_type"].isin(REAL_PLAYOFF_MATCHUP_TYPES)]
     a_playoff_wins = int((playoff_games["a_result"] == "W").sum())
     b_playoff_wins = int((playoff_games["a_result"] == "L").sum())
 
