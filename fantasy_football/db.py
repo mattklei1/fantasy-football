@@ -99,6 +99,11 @@ CREATE TABLE IF NOT EXISTS weekly_rosters (
     player_id INTEGER NOT NULL REFERENCES players(player_id),
     slot_position TEXT,
     pro_team TEXT,
+    -- JSON list of slot names this player was legally eligible for THAT
+    -- week (e.g. ["RB","RB/WR","RB/WR/TE","OP","BE","IR"]) - needed for
+    -- the optimal-lineup solver (Phase 5). Snapshotted per week, not on
+    -- the player dimension, since ESPN eligibility can shift mid-season.
+    eligible_slots TEXT,
     is_starter INTEGER NOT NULL DEFAULT 0,
     UNIQUE(season_id, week, team_pk, player_id)
 );
@@ -181,11 +186,21 @@ CREATE TABLE IF NOT EXISTS metrics_weekly (
     luck_wins REAL,
     fraud_index REAL,
     power_score REAL,
-    -- Phase 5 (optimal lineup engine) fields - NULL until then
+    -- Phase 5 (optimal lineup engine). Season-to-date cumulative like
+    -- everything else above; only computable for year>=2019 (needs
+    -- box_scores-derived per-player eligibility data).
     lineup_efficiency REAL,
     actual_starter_points REAL,
     optimal_starter_points REAL,
     points_left_on_bench REAL,
+    -- record recomputed as if every week's lineup had been the optimal
+    -- legal one, vs. the opponent's REAL actual score that week
+    optimal_wins INTEGER,
+    optimal_losses INTEGER,
+    optimal_ties INTEGER,
+    -- weeks where the optimal lineup would have won but the actual
+    -- lineup lost/tied - a loss the manager caused, not bad luck
+    manager_caused_losses INTEGER,
     UNIQUE(season_id, week, team_pk)
 );
 
@@ -231,9 +246,36 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+# Columns added to tables after they already held real data - CREATE
+# TABLE IF NOT EXISTS won't retrofit these onto an existing table, so
+# they're applied via ALTER TABLE ... ADD COLUMN (idempotent: skipped if
+# already present). New tables get the column for free from SCHEMA_SQL
+# above; this only matters for upgrading a database from before the
+# column existed.
+MIGRATIONS = {
+    "weekly_rosters": {"eligible_slots": "TEXT"},
+    "metrics_weekly": {
+        "optimal_wins": "INTEGER",
+        "optimal_losses": "INTEGER",
+        "optimal_ties": "INTEGER",
+        "manager_caused_losses": "INTEGER",
+    },
+}
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    for table, columns in MIGRATIONS.items():
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for col_name, col_type in columns.items():
+            if col_name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+    conn.commit()
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
     conn.commit()
+    _apply_migrations(conn)
 
 
 def get_team_pk(conn: sqlite3.Connection, season_id: int, espn_team_id: int) -> Optional[int]:

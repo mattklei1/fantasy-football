@@ -1,6 +1,7 @@
 """Pull season data out of SQLite into pandas DataFrames for metrics calc."""
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pandas as pd
@@ -50,6 +51,32 @@ def season_uses_median_scoring(conn: sqlite3.Connection, season: int) -> bool:
         "SELECT median_scoring FROM seasons WHERE season_id = ?", (season,)
     ).fetchone()
     return bool(row[0]) if row else False
+
+
+def load_roster_with_points(conn: sqlite3.Connection, season: int) -> pd.DataFrame:
+    """One row per team-week-player for every completed REGULAR SEASON
+    week (consistent scope with the rest of metrics/ - see the
+    regular-season-only note on load_matchups) - week, team_pk,
+    player_id, points, is_starter, eligible_slots (parsed to a
+    frozenset). Only populated for year>=2019 (eligible_slots requires
+    box_scores-derived data) and only for players ingested since the
+    eligible_slots column was added - older rows will have it as NULL
+    and get filtered out (a player who can't legally fill any slot is
+    correctly excluded from the optimizer, not a bug)."""
+    query = """
+        SELECT wr.week, wr.team_pk, wr.player_id, wr.is_starter, wr.eligible_slots,
+               COALESCE(pws.points, 0) AS points
+        FROM weekly_rosters wr
+        JOIN weekly_team_scores wts ON wts.season_id = wr.season_id AND wts.week = wr.week AND wts.team_pk = wr.team_pk
+        LEFT JOIN player_week_scores pws
+            ON pws.season_id = wr.season_id AND pws.week = wr.week AND pws.player_id = wr.player_id
+        WHERE wr.season_id = ? AND wts.completed = 1 AND wts.is_playoff = 0
+              AND wr.eligible_slots IS NOT NULL
+    """
+    df = pd.read_sql_query(query, conn, params=(season,))
+    if not df.empty:
+        df["eligible_slots"] = df["eligible_slots"].apply(lambda s: frozenset(json.loads(s)))
+    return df
 
 
 def load_roster_for_week(conn: sqlite3.Connection, season: int, week: int) -> pd.DataFrame:

@@ -189,6 +189,7 @@ def ingest_week_boxscores(
                         "player_id": bp.playerId,
                         "slot_position": bp.slot_position,
                         "pro_team": bp.proTeam,
+                        "eligible_slots": json.dumps(bp.eligibleSlots),
                         "is_starter": int(bp.slot_position not in BENCH_SLOTS),
                     },
                     conflict_cols=["season_id", "week", "team_pk", "player_id"],

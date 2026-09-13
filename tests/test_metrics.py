@@ -12,6 +12,8 @@ from fantasy_football.metrics.season_metrics import (
     compute_season_metrics,
 )
 from fantasy_football.metrics.win_probability import TeamProjection, win_probability
+from fantasy_football.metrics.lineup_optimizer import RosterPlayer, optimal_lineup, starting_slots
+from fantasy_football.metrics.lineup_efficiency import compute_lineup_efficiency
 from fantasy_football.metrics.roster_strength import (
     bench_weight_for_week,
     compute_player_values,
@@ -239,6 +241,71 @@ def test_team_roster_strength_excludes_ir_and_splits_starter_bench():
     assert row["bench_value"] == valued[valued["player_id"] == 2]["player_value"].iloc[0]
     assert row["bench_weight"] == pytest.approx(0.35)
     assert 0 <= row["roster_strength"] <= 100
+
+
+def test_starting_slots_excludes_bench_and_ir():
+    slots = starting_slots({"QB": 1, "RB": 2, "BE": 6, "IR": 1, "": 0})
+    assert slots == ["QB", "RB", "RB"]
+
+
+def test_optimal_lineup_picks_highest_scorer_per_slot():
+    players = [
+        RosterPlayer(1, 10.0, frozenset({"QB", "BE"})),
+        RosterPlayer(2, 20.0, frozenset({"QB", "BE"})),
+        RosterPlayer(3, 5.0, frozenset({"RB", "BE"})),
+    ]
+    points, assignment = optimal_lineup(players, {"QB": 1, "RB": 1, "BE": 2})
+    assert points == pytest.approx(25.0)
+    assert set(assignment.values()) == {2, 3}  # the 20pt QB and the only RB, not the 10pt QB
+
+
+def test_optimal_lineup_beats_naive_greedy_on_flex_contention():
+    # A naive "assign highest scorer to whichever slot comes first" greedy
+    # can misallocate when a flex slot creates contention. True optimum:
+    # RB_A -> dedicated RB slot, WR_A -> flex (19 total), NOT RB_A -> flex.
+    players = [
+        RosterPlayer(1, 10.0, frozenset({"RB", "RB/WR/TE", "BE"})),  # RB_A
+        RosterPlayer(2, 8.0, frozenset({"RB", "RB/WR/TE", "BE"})),   # RB_B
+        RosterPlayer(3, 9.0, frozenset({"WR", "RB/WR/TE", "BE"})),   # WR_A
+    ]
+    points, assignment = optimal_lineup(players, {"RB": 1, "RB/WR/TE": 1, "BE": 1})
+    assert points == pytest.approx(19.0)
+    assert set(assignment.values()) == {1, 3}
+
+
+def test_optimal_lineup_leaves_unfillable_slot_empty():
+    # no player eligible for TE - that slot must stay empty, not crash
+    players = [RosterPlayer(1, 10.0, frozenset({"QB", "BE"}))]
+    points, assignment = optimal_lineup(players, {"QB": 1, "TE": 1})
+    assert points == pytest.approx(10.0)
+    assert len(assignment) == 1
+
+
+def test_lineup_efficiency_flags_manager_caused_loss():
+    # Team 1, week 1: actual lineup scores 15 (left a 25pt bench player
+    # unstarted), opponent scored 20. Actual result: loss. But optimal
+    # lineup (25) would have beaten 20 - a manager-caused loss.
+    roster = pd.DataFrame(
+        {
+            "week": [1, 1],
+            "team_pk": [1, 1],
+            "player_id": [1, 2],
+            "points": [15.0, 25.0],
+            "is_starter": [1, 0],
+            "eligible_slots": [frozenset({"QB", "BE"}), frozenset({"QB", "BE"})],
+        }
+    )
+    matchups = pd.DataFrame(
+        {"week": [1], "home_team_pk": [1], "away_team_pk": [2], "home_score": [15.0], "away_score": [20.0]}
+    )
+    result = compute_lineup_efficiency(roster, matchups, {"QB": 1, "BE": 1})
+    row = result.iloc[0]
+    assert row["actual_starter_points"] == pytest.approx(15.0)
+    assert row["optimal_starter_points"] == pytest.approx(25.0)
+    assert row["points_left_on_bench"] == pytest.approx(10.0)
+    assert row["lineup_efficiency"] == pytest.approx(15.0 / 25.0)
+    assert row["manager_caused_losses"] == 1
+    assert row["optimal_wins"] == 1
 
 
 def test_compute_season_metrics_empty_input_returns_empty():

@@ -204,6 +204,28 @@ def get_luck_page_extras(season: int) -> dict:
 
 
 @st.cache_data(ttl=60)
+def get_lineup_efficiency(season: int, through_week: int | None = None) -> pd.DataFrame:
+    conn = get_connection()
+    if through_week is None:
+        through_week = get_latest_metrics_week(season)
+    if through_week is None:
+        return pd.DataFrame()
+    query = f"""
+        SELECT t.id AS team_pk, t.team_name, mgr.display_name AS manager_name,
+               m.week, m.games_played,
+               m.actual_starter_points, m.optimal_starter_points, m.lineup_efficiency,
+               m.points_left_on_bench, m.optimal_wins, m.optimal_losses, m.optimal_ties,
+               m.manager_caused_losses, m.matchup_wins, m.matchup_losses, m.matchup_ties
+        FROM metrics_weekly m
+        JOIN teams t ON t.id = m.team_pk
+        {_team_manager_join_sql()}
+        WHERE m.season_id = ? AND m.week = ? AND m.lineup_efficiency IS NOT NULL
+        ORDER BY m.lineup_efficiency DESC
+    """
+    return pd.read_sql_query(query, conn, params=(season, through_week))
+
+
+@st.cache_data(ttl=60)
 def get_roster_strength(season: int) -> pd.DataFrame:
     """Roster Strength is only ever computed for the current week of the
     current season (ESPN's posRank has no history to backfill) - one row

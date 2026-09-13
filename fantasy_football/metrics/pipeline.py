@@ -3,12 +3,14 @@ ingestion - re-running overwrites the same rows via db.upsert, never
 duplicates."""
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from typing import Optional
 
 from .. import db
 from . import loaders
+from .lineup_efficiency import compute_lineup_efficiency
 from .roster_strength import compute_player_values, compute_team_roster_strength
 from .season_metrics import compute_season_metrics
 
@@ -19,6 +21,12 @@ METRICS_WEEKLY_COLUMNS = [
     "median_wins", "median_losses", "median_ties",
     "actual_win_pct", "all_play_wins", "all_play_losses", "all_play_ties",
     "all_play_win_pct", "expected_wins", "luck_wins", "fraud_index", "power_score",
+]
+
+LINEUP_EFFICIENCY_COLUMNS = [
+    "actual_starter_points", "optimal_starter_points", "lineup_efficiency",
+    "points_left_on_bench", "optimal_wins", "optimal_losses", "optimal_ties",
+    "manager_caused_losses",
 ]
 
 
@@ -50,6 +58,37 @@ def compute_and_store_season_metrics(conn: sqlite3.Connection, season: int) -> i
         }
         for col in METRICS_WEEKLY_COLUMNS:
             payload[col] = _clean(row.get(col))
+        db.upsert(conn, "metrics_weekly", payload, conflict_cols=["season_id", "week", "team_pk"])
+
+    conn.commit()
+    return len(result)
+
+
+def compute_and_store_lineup_efficiency(conn: sqlite3.Connection, season: int) -> int:
+    """UPDATES existing metrics_weekly rows (the lineup-efficiency
+    columns only) - must run AFTER compute_and_store_season_metrics for
+    the same season, since it relies on those rows already existing
+    (upserting a subset of columns for a row that doesn't exist yet
+    would leave every other column NULL). Only covers year>=2019 seasons
+    with eligible_slots backfilled - see load_roster_with_points."""
+    roster_df = loaders.load_roster_with_points(conn, season)
+    if roster_df.empty:
+        return 0
+    matchups_df = loaders.load_matchups(conn, season)
+    row = conn.execute("SELECT position_slot_counts FROM seasons WHERE season_id = ?", (season,)).fetchone()
+    if not row or not row[0]:
+        return 0
+    position_slot_counts = json.loads(row[0])
+
+    result = compute_lineup_efficiency(roster_df, matchups_df, position_slot_counts)
+    if result.empty:
+        return 0
+
+    for _, r in result.iterrows():
+        payload = {col: _clean(r.get(col)) for col in LINEUP_EFFICIENCY_COLUMNS}
+        payload["season_id"] = season
+        payload["week"] = int(r["week"])
+        payload["team_pk"] = int(r["team_pk"])
         db.upsert(conn, "metrics_weekly", payload, conflict_cols=["season_id", "week", "team_pk"])
 
     conn.commit()
@@ -95,6 +134,7 @@ def compute_and_store_all_seasons(conn: Optional[sqlite3.Connection] = None) -> 
     counts = {}
     for (season,) in conn.execute("SELECT season_id FROM seasons ORDER BY season_id"):
         counts[season] = compute_and_store_season_metrics(conn, season)
+        compute_and_store_lineup_efficiency(conn, season)
 
         current_week_row = conn.execute(
             "SELECT current_week FROM seasons WHERE season_id = ? AND is_current = 1", (season,)
