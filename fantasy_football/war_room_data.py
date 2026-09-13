@@ -21,6 +21,7 @@ import streamlit as st
 
 from . import config, player_matching
 from . import dashboard_data as dd
+from .metrics.lineup_optimizer import RosterPlayer, optimal_lineup
 from .metrics.roster_strength import rank_to_score
 from .metrics.waiver_value import position_scarcity_multipliers, suggested_bid
 
@@ -63,6 +64,14 @@ def _slot_counts(season: int) -> dict:
     meta = dd.get_season_meta(season)
     raw = meta.get("position_slot_counts")
     return json.loads(raw) if raw else {}
+
+
+def get_position_slot_counts(season: int) -> dict:
+    """Public wrapper for this season's real ESPN roster slot counts -
+    callers (pages/9_War_Room.py) need this to call optimal_roster_value()/
+    evaluate_trade() themselves without reaching into the private
+    _slot_counts() helper."""
+    return _slot_counts(season)
 
 
 @st.cache_data(ttl=300)
@@ -198,7 +207,7 @@ def get_trade_rosters(season: int) -> pd.DataFrame:
     query = f"""
         SELECT wr.team_pk, t.team_name, mgr.display_name AS manager_name,
                wr.player_id, p.player_name, p.default_position AS position,
-               wr.slot_position, wr.is_starter,
+               wr.slot_position, wr.is_starter, wr.eligible_slots,
                fr.pos_rank AS fp_pos_rank, pr.pos_rank AS espn_pos_rank
         FROM weekly_rosters wr
         JOIN teams t ON t.id = wr.team_pk
@@ -252,3 +261,144 @@ def blend_trade_value(fp_score: float | None, espn_score: float | None, position
     total_weight = sum(w for w, _ in present)
     raw = sum(w * v for w, v in present) / total_weight
     return raw * scarcity_multipliers.get(position, 1.0)
+
+
+# --- Marginal, starter-slot-aware trade valuation -------------------------
+#
+# Researched before building this (2026-09-13): real trade calculators and
+# strategy writeups (FantasyCalc/DraftSharks-style tools, VORP-based
+# analyses, dynasty consolidation-strategy pieces) converge on the same
+# critique a naive "sum the players' values" trade calculator misses -
+# summing raw values is wrong whenever the two sides trade different
+# PLAYER COUNTS, because a roster can only start a fixed number of players
+# per position. A 2-for-1 where the two outgoing players were both bench
+# depth barely costs anything (you were never starting them anyway), while
+# the incoming single star's FULL value counts (he takes a real starting
+# spot). "Value over replacement" / stars-and-scrubs analyses land on the
+# same idea from the opposite direction: a player's real worth is what he
+# adds to your STARTING LINEUP, not his standalone rank.
+#
+# Rather than bolt on an arbitrary "10% per extra player" discount (a rule
+# of thumb some calculators use), this computes it exactly: the MARGINAL
+# change in each team's best-possible starting lineup value, before vs.
+# after the trade, reusing the exact same Hungarian-algorithm optimal-
+# lineup solver (metrics/lineup_optimizer.py) already built and tested for
+# the Lineup Efficiency page's actual-vs-optimal points - just fed each
+# player's ROS value_score instead of one week's real points. This single
+# model structurally captures everything the research called out:
+#   - 2-for-1s are valued correctly (bench filler contributes ~0 to the
+#     "before" total, so giving it up costs ~0)
+#   - team NEED is automatically priced in (an add at a position you're
+#     already 3-deep at barely moves the total; the same player added at a
+#     position where you're starting a replacement-level guy moves it a
+#     lot)
+#   - depth you can refill via waivers isn't overvalued (see
+#     get_free_agent_value_ceiling() below, which flags exactly that)
+
+
+def _roster_players(df: pd.DataFrame) -> list[RosterPlayer]:
+    players = []
+    for _, r in df.iterrows():
+        try:
+            slots = frozenset(json.loads(r["eligible_slots"]) or [])
+        except (TypeError, ValueError):
+            slots = frozenset()
+        players.append(RosterPlayer(player_id=int(r["player_id"]), points=float(r["value_score"]), eligible_slots=slots))
+    return players
+
+
+def optimal_roster_value(df: pd.DataFrame, position_slot_counts: dict) -> tuple[float, set[int]]:
+    """Best-possible STARTING LINEUP value_score total for a set of
+    rostered players (columns: player_id, value_score, eligible_slots),
+    plus the set of player_ids that lineup actually starts. Empty roster
+    -> (0.0, empty set), not an error."""
+    if df.empty:
+        return 0.0, set()
+    total, assignment = optimal_lineup(_roster_players(df), position_slot_counts)
+    return total, set(assignment.values())
+
+
+def evaluate_trade(
+    rosters_df: pd.DataFrame,
+    team_a: str,
+    team_b: str,
+    player_ids_out_a: list[int],
+    player_ids_out_b: list[int],
+    position_slot_counts: dict,
+) -> dict:
+    """The actual trade verdict: MARGINAL starting-lineup value gained or
+    lost by each side (see module-level note above), not a flat sum of
+    outgoing/incoming players' standalone values. Also reports which of a
+    team's OWN remaining players newly enter or exit its optimal starting
+    lineup as a side effect of the trade (e.g. your current RB2 gets
+    bumped to bench because the player you acquired is better) - real
+    roster-construction fallout a flat value sum can't show at all.
+
+    rosters_df: full multi-team roster frame from get_trade_rosters()
+    (needs team_name, player_id, player_name, value_score, eligible_slots).
+    player_ids_out_a/b: player_ids team_a/team_b are sending away."""
+    roster_a = rosters_df[rosters_df["team_name"] == team_a]
+    roster_b = rosters_df[rosters_df["team_name"] == team_b]
+
+    before_value_a, before_starters_a = optimal_roster_value(roster_a, position_slot_counts)
+    before_value_b, before_starters_b = optimal_roster_value(roster_b, position_slot_counts)
+
+    incoming_to_a = roster_b[roster_b["player_id"].isin(player_ids_out_b)]
+    incoming_to_b = roster_a[roster_a["player_id"].isin(player_ids_out_a)]
+
+    after_roster_a = pd.concat(
+        [roster_a[~roster_a["player_id"].isin(player_ids_out_a)], incoming_to_a], ignore_index=True
+    )
+    after_roster_b = pd.concat(
+        [roster_b[~roster_b["player_id"].isin(player_ids_out_b)], incoming_to_b], ignore_index=True
+    )
+
+    after_value_a, after_starters_a = optimal_roster_value(after_roster_a, position_slot_counts)
+    after_value_b, after_starters_b = optimal_roster_value(after_roster_b, position_slot_counts)
+
+    def _lineup_moves(before_starters, after_df, after_starters, name_by_id):
+        newly_starting = [name_by_id[pid] for pid in (after_starters - before_starters) if pid in name_by_id]
+        still_here = set(after_df["player_id"])
+        newly_benched = [
+            name_by_id[pid] for pid in (before_starters - after_starters) if pid in still_here and pid in name_by_id
+        ]
+        return newly_starting, newly_benched
+
+    starting_a, benched_a = _lineup_moves(
+        before_starters_a, after_roster_a, after_starters_a, dict(zip(after_roster_a["player_id"], after_roster_a["player_name"]))
+    )
+    starting_b, benched_b = _lineup_moves(
+        before_starters_b, after_roster_b, after_starters_b, dict(zip(after_roster_b["player_id"], after_roster_b["player_name"]))
+    )
+
+    return {
+        team_a: {
+            "before": before_value_a, "after": after_value_a, "gain": after_value_a - before_value_a,
+            "newly_starting": starting_a, "newly_benched": benched_a,
+        },
+        team_b: {
+            "before": before_value_b, "after": after_value_b, "gain": after_value_b - before_value_b,
+            "newly_starting": starting_b, "newly_benched": benched_b,
+        },
+    }
+
+
+@st.cache_data(ttl=300)
+def get_free_agent_value_ceiling(season: int) -> dict[str, float]:
+    """Best currently-available free agent's value at each position,
+    scaled onto the SAME axis as blend_trade_value()'s value_score
+    (rank_to_score() * 100 * the same superflex scarcity multiplier) - so
+    an outgoing bench player in a trade can be flagged "safely replaceable
+    via waivers" rather than counted as a real loss, directly reflecting
+    the read that finding a comparable replacement off waivers is a real,
+    repeatable skill rather than something to price as if it were gone
+    for good. Built from the live Waiver Board (get_waiver_board()) - no
+    extra ESPN/FantasyPros calls."""
+    board = get_waiver_board(season)
+    if board.empty:
+        return {}
+    scarcity = position_scarcity_multipliers(_slot_counts(season))
+    equivalent = board.apply(
+        lambda r: (rank_to_score(r["fp_pos_rank"]) or 0.0) * 100 * scarcity.get(r["position"], 1.0), axis=1
+    )
+    return board.assign(value_equivalent=equivalent).groupby("position")["value_equivalent"].max().to_dict()

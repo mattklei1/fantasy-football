@@ -1493,6 +1493,80 @@ unaffected. If a future session has real OAuth configured, spot-check the
 live admin path once, same as every other "can't test OAuth locally" note
 in this file.
 
+**Trade Calculator rebuilt as a MARGINAL, starter-slot-aware model
+(2026-09-13, later session) - the user's explicit critique of the first
+version.** Their point, stated directly: "in a 2 for 1 trade, you don't
+just add up the values of the 2 players you get or give - you can only
+start 1 of them," plus "I heavily lean towards being the person who gets
+the best player" and "I'm good at getting value off of waiver wire to
+replace." Researched real trade-calculator methodology before rebuilding
+(FantasyCalc/DraftSharks-style tools, VORP/points-over-replacement
+writeups, dynasty stars-and-scrubs/2-for-1 consolidation strategy pieces)
+rather than guessing at a formula - they converge on the same critique:
+summing raw player values is wrong whenever the two sides trade different
+player counts, because a roster only starts a fixed number per position.
+
+**The fix, not a bolted-on discount**: rather than an arbitrary "10% per
+extra player" rule some calculators use, `war_room_data.evaluate_trade()`
+computes the MARGINAL change in each side's own best-possible starting
+lineup value, before vs. after - reusing the EXACT SAME Hungarian-
+algorithm optimal-lineup solver (`metrics/lineup_optimizer.optimal_lineup()`)
+already built and tested for Lineup Efficiency's actual-vs-optimal weekly
+points, just fed each player's ROS `value_score` instead of one week's
+real points (`war_room_data.optimal_roster_value()` is the thin wrapper -
+needed `weekly_rosters.eligible_slots` added to `get_trade_rosters()`'s
+query, which wasn't being selected before). This single model
+structurally handles everything the research called out, with no special-
+casing:
+- **2-for-1s price correctly** - two bench players you were never
+  starting cost ~0 to give up (they don't make the "before" optimal
+  lineup either); the incoming star only counts up to his upgrade over
+  whoever he actually replaces, not his full standalone value.
+- **Team need is automatically priced in** - an add at a position you're
+  already deep at barely moves your total (he just sits); the identical
+  player at a position where you're starting a replacement-level guy
+  moves it a lot. No separate "position need" heuristic required - it
+  falls out of the same optimal-lineup recompute.
+- **"Best player" consolidation bias**: rather than fake this into the
+  formula (which would double-count what the marginal model already
+  rewards structurally), added an honest secondary callout - "Best player
+  X gets" per side - as a quick gut-check alongside the real verdict.
+- **Waiver-replaceable depth**: new `get_free_agent_value_ceiling()`
+  computes the best currently-available free agent's value per position
+  (built from the already-cached live Waiver Board, scaled onto the same
+  axis as `value_score` via `rank_to_score()` + the same superflex
+  scarcity multiplier) - an outgoing bench player with a comparable/
+  better free agent available gets a "🔄 replaceable via waivers" tag in
+  the picker, directly reflecting the user's stated read on his own
+  strategy rather than pricing that depth as if it were gone for good.
+- **Lineup-move transparency**: `evaluate_trade()` also reports which of
+  each team's OWN remaining players newly start or get bumped to bench as
+  a side effect - real roster-construction fallout ("your current RB2 is
+  now benched") a flat value sum could never show.
+
+Verdict logic changed too: since each side's marginal gain is now a
+self-referential number (not two portions of one shared pool the way raw
+sums were), a trade can genuinely be "win-win" (both gains positive - e.g.
+addressing complementary needs) rather than always forcing a zero-sum
+winner - matches real trade advice found during research ("trade offers
+that clearly benefit both teams' overall value" make partners more
+cooperative). `GAIN_NEUTRAL_THRESHOLD = 5.0` value-score points is a
+stated, documented default for "close enough to call a wash," not
+empirically calibrated - revisit if it ever reads wrong in practice.
+
+10 new unit tests (`tests/test_war_room_data.py`, pure - synthetic
+rosters, no DB/network): the exact 2-for-1 scenario from the user's own
+description (2 bench players for 1 star correctly shows a marginal gain
+far below the star's raw value, with the newly-benched existing starter
+named), plus a "hoarding depth that can't crack the lineup shows ~zero
+gain" case. Re-validated end to end via AppTest against real live 2026
+week-1 rosters/free agents after the rebuild - a real 2-for-1 (a
+🔄-tagged bench RB + a bench WR for a 138-value superflex QB) correctly
+showed a much smaller marginal gain (+82) than the raw acquired value,
+correctly named the bumped starter, and correctly tagged real bench
+players as waiver-replaceable against the live free-agent pool. 162/162
+tests passing.
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip

@@ -1,11 +1,15 @@
 """Unit tests for fantasy_football.war_room_data - pure logic only
-(blend_trade_value), no network/DB calls per PROJECT_BRIEF testing
-requirements. The rest of war_room_data.py (live FantasyPros/ESPN calls,
-SQLite reads) is exercised via in-browser/AppTest validation instead,
-same convention as dashboard_data.py's live-data functions."""
+(blend_trade_value, optimal_roster_value, evaluate_trade), no network/DB
+calls per PROJECT_BRIEF testing requirements. The rest of war_room_data.py
+(live FantasyPros/ESPN calls, SQLite reads) is exercised via
+in-browser/AppTest validation instead, same convention as
+dashboard_data.py's live-data functions."""
+import json
+
+import pandas as pd
 import pytest
 
-from fantasy_football.war_room_data import blend_trade_value
+from fantasy_football.war_room_data import blend_trade_value, evaluate_trade, optimal_roster_value
 
 
 def test_blends_both_signals_when_present():
@@ -45,3 +49,100 @@ def test_scarcity_multiplier_does_not_affect_other_positions():
     rb = blend_trade_value(0.6, 0.6, "RB", scarcity)
     rb_no_scarcity = blend_trade_value(0.6, 0.6, "RB", {})
     assert rb == pytest.approx(rb_no_scarcity)
+
+
+# --- optimal_roster_value / evaluate_trade --------------------------------
+# A single-QB/single-RB toy league (position_slot_counts = {"QB": 1, "RB": 1})
+# keeps the optimal-lineup math easy to hand-verify while still exercising
+# the real Hungarian-algorithm solver (metrics/lineup_optimizer.py), not a
+# reimplementation of it.
+
+SLOT_COUNTS = {"QB": 1, "RB": 1}
+
+
+def _roster_row(team_name, player_id, player_name, position, value_score, eligible_slots):
+    return {
+        "team_name": team_name, "player_id": player_id, "player_name": player_name,
+        "position": position, "value_score": value_score,
+        "eligible_slots": json.dumps(eligible_slots),
+    }
+
+
+def test_optimal_roster_value_only_counts_players_that_actually_start():
+    df = pd.DataFrame(
+        [
+            _roster_row("Team A", 1, "QB Starter", "QB", 50.0, ["QB", "BE"]),
+            _roster_row("Team A", 2, "RB Starter", "RB", 60.0, ["RB", "BE"]),
+            _roster_row("Team A", 3, "RB Backup", "RB", 20.0, ["RB", "BE"]),
+        ]
+    )
+    total, starters = optimal_roster_value(df, SLOT_COUNTS)
+    assert total == pytest.approx(110.0)  # 50 + 60, NOT +20 for the buried backup
+    assert starters == {1, 2}
+
+
+def test_optimal_roster_value_empty_roster_is_zero_not_an_error():
+    df = pd.DataFrame(columns=["player_id", "value_score", "eligible_slots"])
+    total, starters = optimal_roster_value(df, SLOT_COUNTS)
+    assert total == 0.0
+    assert starters == set()
+
+
+def test_evaluate_trade_2for1_gain_is_marginal_not_the_raw_incoming_value():
+    """The exact scenario the user described: trading 2 bench-caliber
+    players for 1 difference-maker should NOT show a gain equal to the
+    star's full raw value - it should show only the upgrade over whoever
+    he actually replaces in the lineup, because the roster can only start
+    one RB either way."""
+    rosters = pd.DataFrame(
+        [
+            _roster_row("Team A", 1, "QB A1", "QB", 50.0, ["QB", "BE"]),
+            _roster_row("Team A", 2, "RB A1", "RB", 60.0, ["RB", "BE"]),
+            _roster_row("Team A", 3, "RB A2 (bench)", "RB", 20.0, ["RB", "BE"]),
+            _roster_row("Team A", 4, "Throwaway (bench)", "RB", 10.0, ["RB", "BE"]),
+            _roster_row("Team B", 5, "QB B1", "QB", 40.0, ["QB", "BE"]),
+            _roster_row("Team B", 6, "RB Star", "RB", 90.0, ["RB", "BE"]),
+        ]
+    )
+    result = evaluate_trade(
+        rosters, "Team A", "Team B",
+        player_ids_out_a=[3, 4], player_ids_out_b=[6],
+        position_slot_counts=SLOT_COUNTS,
+    )
+
+    # Team A: before 50+60=110, after 50+90=140 (RB Star replaces RB A1,
+    # NOT a naive +90 for "receiving a 90-value player") - true gain is 30.
+    assert result["Team A"]["before"] == pytest.approx(110.0)
+    assert result["Team A"]["after"] == pytest.approx(140.0)
+    assert result["Team A"]["gain"] == pytest.approx(30.0)
+    assert "RB Star" in result["Team A"]["newly_starting"]
+    assert "RB A1" in result["Team A"]["newly_benched"]
+
+    # Team B: before 40+90=130, after only 40+20=60 (their best remaining
+    # RB is the throwaway 20-value pickup) - a real, large loss.
+    assert result["Team B"]["before"] == pytest.approx(130.0)
+    assert result["Team B"]["after"] == pytest.approx(60.0)
+    assert result["Team B"]["gain"] == pytest.approx(-70.0)
+
+
+def test_evaluate_trade_no_bench_impact_when_receiving_player_still_sits():
+    """Adding a player who can't crack the lineup anyway (already 2-deep
+    at a 1-starter position) should show ~zero gain - the model should
+    NOT reward hoarding depth that never plays."""
+    rosters = pd.DataFrame(
+        [
+            _roster_row("Team A", 1, "QB A1", "QB", 50.0, ["QB", "BE"]),
+            _roster_row("Team A", 2, "RB A1", "RB", 60.0, ["RB", "BE"]),
+            _roster_row("Team B", 3, "QB B1", "QB", 10.0, ["QB", "BE"]),
+            _roster_row("Team B", 4, "RB B1 (mediocre)", "RB", 25.0, ["RB", "BE"]),
+        ]
+    )
+    result = evaluate_trade(
+        rosters, "Team A", "Team B",
+        player_ids_out_a=[], player_ids_out_b=[4],
+        position_slot_counts=SLOT_COUNTS,
+    )
+    # Team A already starts a better RB (60) than the incoming 25-value
+    # player, so he just sits - gain should be 0, not +25.
+    assert result["Team A"]["gain"] == pytest.approx(0.0)
+    assert result["Team A"]["newly_starting"] == []

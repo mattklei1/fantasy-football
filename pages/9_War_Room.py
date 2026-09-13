@@ -131,17 +131,26 @@ that position) show no suggested bid rather than a fabricated one.
                 """
             )
 
+GAIN_NEUTRAL_THRESHOLD = 5.0  # value-score points; a "gain" smaller than this counts as a wash for that side
+
 with tab_trade:
     st.caption(
-        "Value-based, superflex-aware trade evaluator. Value blends FantasyPros' rest-of-season "
-        "rank and ESPN's season-long positional rank (same decay curve as Roster Strength), with "
-        "this league's real OP-slot QB premium applied - a relative comparison to sanity-check a "
-        "proposed deal, not a market price."
+        "Marginal, starter-slot-aware trade evaluator - NOT a sum-the-players calculator. Value "
+        "blends FantasyPros' rest-of-season rank and ESPN's season-long positional rank with this "
+        "league's real OP-slot QB premium, but the verdict is each side's change in its own "
+        "BEST-POSSIBLE STARTING LINEUP value (same optimal-lineup solver as Lineup Efficiency), "
+        "not raw value added up. That's what makes a 2-for-1 price correctly: two bench players "
+        "you were never starting anyway cost you almost nothing to give up, and a single "
+        "difference-maker is only worth the upgrade over whoever he actually replaces in your "
+        "lineup - not his full standalone value. See Methodology below for the research this is "
+        "based on."
     )
     rosters_df = wr.get_trade_rosters(season)
     if rosters_df.empty:
         st.info("No roster data available yet this season.")
     else:
+        slot_counts = wr.get_position_slot_counts(season)
+        fa_ceiling = wr.get_free_agent_value_ceiling(season)
         teams = sorted(rosters_df["team_name"].dropna().unique().tolist())
         col_a, col_b = st.columns(2)
         with col_a:
@@ -155,51 +164,88 @@ with tab_trade:
         else:
             roster_a = rosters_df[rosters_df["team_name"] == team_a]
             roster_b = rosters_df[rosters_df["team_name"] == team_b]
+            _, starters_a_now = wr.optimal_roster_value(roster_a, slot_counts)
+            _, starters_b_now = wr.optimal_roster_value(roster_b, slot_counts)
 
-            def _label(row: pd.Series) -> str:
-                return f"{row['player_name']} ({row['position']}, {row['value_score']:.0f} val)"
+            def _label(row: pd.Series, starters_now: set) -> str:
+                tag = ""
+                if row["player_id"] not in starters_now:
+                    cap = fa_ceiling.get(row["position"])
+                    if cap is not None and row["value_score"] <= cap * 1.1:
+                        tag = " \U0001f504 replaceable via waivers"
+                return f"{row['player_name']} ({row['position']}, {row['value_score']:.0f} val){tag}"
 
             col_a2, col_b2 = st.columns(2)
             with col_a2:
                 st.markdown(f"**{team_a} sends:**")
-                value_by_label_a = {_label(r): r["value_score"] for _, r in roster_a.iterrows()}
+                id_by_label_a = {_label(r, starters_a_now): r["player_id"] for _, r in roster_a.iterrows()}
                 picks_a = st.multiselect(
-                    f"{team_a} players", list(value_by_label_a.keys()), key="wr_trade_picks_a"
+                    f"{team_a} players", list(id_by_label_a.keys()), key="wr_trade_picks_a"
                 )
             with col_b2:
                 st.markdown(f"**{team_b} sends:**")
-                value_by_label_b = {_label(r): r["value_score"] for _, r in roster_b.iterrows()}
+                id_by_label_b = {_label(r, starters_b_now): r["player_id"] for _, r in roster_b.iterrows()}
                 picks_b = st.multiselect(
-                    f"{team_b} players", list(value_by_label_b.keys()), key="wr_trade_picks_b"
+                    f"{team_b} players", list(id_by_label_b.keys()), key="wr_trade_picks_b"
                 )
 
-            value_a = sum(value_by_label_a[p] for p in picks_a)
-            value_b = sum(value_by_label_b[p] for p in picks_b)
-            total_value = value_a + value_b
+            st.caption("\U0001f504 = not currently a starter for that team, and a comparable or better free agent is available right now.")
+
+            player_ids_out_a = [id_by_label_a[p] for p in picks_a]
+            player_ids_out_b = [id_by_label_b[p] for p in picks_b]
 
             if not picks_a and not picks_b:
                 st.caption("Select players from each side to evaluate the trade.")
             else:
+                result = wr.evaluate_trade(rosters_df, team_a, team_b, player_ids_out_a, player_ids_out_b, slot_counts)
+                gain_a, gain_b = result[team_a]["gain"], result[team_b]["gain"]
+
                 c1, c2, c3 = st.columns(3)
                 with c1:
-                    ui.stat_card(f"{team_a} sends", f"{value_a:.0f} val", f"{len(picks_a)} player(s)")
+                    ui.stat_card(
+                        f"{team_a} lineup impact", f"{gain_a:+.0f} val",
+                        f"{result[team_a]['before']:.0f} → {result[team_a]['after']:.0f}",
+                    )
                 with c2:
-                    ui.stat_card(f"{team_b} sends", f"{value_b:.0f} val", f"{len(picks_b)} player(s)")
+                    ui.stat_card(
+                        f"{team_b} lineup impact", f"{gain_b:+.0f} val",
+                        f"{result[team_b]['before']:.0f} → {result[team_b]['after']:.0f}",
+                    )
                 with c3:
-                    if total_value == 0:
-                        verdict, sub = "No value on either side", "check the picks above"
+                    a_up, b_up = gain_a > GAIN_NEUTRAL_THRESHOLD, gain_b > GAIN_NEUTRAL_THRESHOLD
+                    if a_up and b_up:
+                        verdict, sub = "Win-win trade", "both sides upgrade their starting lineup"
+                    elif a_up:
+                        verdict, sub = f"{team_a} wins the trade", f"+{gain_a:.0f} val vs {gain_b:+.0f} for {team_b}"
+                    elif b_up:
+                        verdict, sub = f"{team_b} wins the trade", f"+{gain_b:.0f} val vs {gain_a:+.0f} for {team_a}"
                     else:
-                        gap_pct = abs(value_a - value_b) / total_value * 100
-                        if gap_pct <= 10:
-                            verdict = "Fair trade"
-                        else:
-                            # A team WINS by receiving more than it sends -
-                            # team_a receives value_b (what team_b sends),
-                            # so team_a comes out ahead when value_b > value_a.
-                            winner = team_a if value_b > value_a else team_b
-                            verdict = f"{winner} wins the trade"
-                        sub = f"{gap_pct:.0f}% value gap"
+                        verdict, sub = "Lopsided for both sides", "neither lineup actually improves - re-check this deal"
                     ui.stat_card("Verdict", verdict, sub)
+
+                move_cols = st.columns(2)
+                with move_cols[0]:
+                    if result[team_a]["newly_starting"]:
+                        st.caption(f"**{team_a}** now starting: {', '.join(result[team_a]['newly_starting'])}")
+                    if result[team_a]["newly_benched"]:
+                        st.caption(f"**{team_a}** now benched: {', '.join(result[team_a]['newly_benched'])}")
+                with move_cols[1]:
+                    if result[team_b]["newly_starting"]:
+                        st.caption(f"**{team_b}** now starting: {', '.join(result[team_b]['newly_starting'])}")
+                    if result[team_b]["newly_benched"]:
+                        st.caption(f"**{team_b}** now benched: {', '.join(result[team_b]['newly_benched'])}")
+
+                incoming_a = roster_b[roster_b["player_id"].isin(player_ids_out_b)]
+                incoming_b = roster_a[roster_a["player_id"].isin(player_ids_out_a)]
+                best_cols = st.columns(2)
+                with best_cols[0]:
+                    if not incoming_a.empty:
+                        best = incoming_a.loc[incoming_a["value_score"].idxmax()]
+                        st.caption(f"Best player {team_a} gets: **{best['player_name']}** ({best['value_score']:.0f} val)")
+                with best_cols[1]:
+                    if not incoming_b.empty:
+                        best = incoming_b.loc[incoming_b["value_score"].idxmax()]
+                        st.caption(f"Best player {team_b} gets: **{best['player_name']}** ({best['value_score']:.0f} val)")
 
             with st.expander(f"Full rosters ({team_a} vs {team_b}, by value)"):
                 roster_cols = st.columns(2)
@@ -225,3 +271,30 @@ with tab_trade:
                         ),
                         hide_index=True, use_container_width=True,
                     )
+
+            with st.expander("Methodology"):
+                st.markdown(
+                    """
+**Why not just add up the players' values?** Researched before building this: real trade
+calculators and VORP/stars-and-scrubs strategy writeups agree a flat sum breaks down the moment
+the two sides trade different PLAYER COUNTS - a roster can only start a fixed number of players
+per position, so a 2-for-1 where the two outgoing players were bench depth barely costs you
+anything (you were never starting them), while the incoming star's full value only matters up to
+the upgrade he provides over whoever he replaces in your actual lineup.
+
+**The fix**: each side's verdict is the MARGINAL change in its own best-possible starting lineup
+value (before vs. after the trade) - the exact same optimal-lineup solver Lineup Efficiency uses
+to find the best legal lineup from real weekly points, just fed each player's rest-of-season value
+instead. This automatically prices in:
+- **Team need** - an add at a position you're already deep at barely moves your total; the same
+  player at a position where you're starting a replacement-level guy moves it a lot.
+- **"You can only start one of them"** - getting a 2nd great player at a position you're already
+  set at only helps if he's better than your current starter there, never both at once.
+- **Waiver-replaceable depth** (\U0001f504 tag above) - an outgoing bench player with a comparable
+  or better free agent currently available isn't a real loss, since you can refill that spot
+  yourself rather than treating it as value walking out the door.
+
+**Not modeled**: draft pick value, injury risk, and strength-of-schedule/bye-week timing - this is
+a snapshot of current rest-of-season value, not a full trade-deadline calculus.
+                    """
+                )
