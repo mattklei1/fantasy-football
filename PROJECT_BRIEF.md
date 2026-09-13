@@ -373,14 +373,41 @@ Validated against the live league:
 - Spot-checked correctness: team/manager join, matchup scores, weekly
   roster + player score join, draft pick 1, transactions - all correct
   against what ESPN's own UI would show.
-- Historical backfill (2015-2025) was kicked off in the background (takes
-  several minutes - box_scores requires one ESPN call per week per season
-  for 2019+, scoreboard() fallback for 2015-2018). Check `seasons` table
-  row count (should reach 12 total once done: 2015-2026) and check the
-  latest `refresh_log` row for status - if a new session picks this up
-  mid-backfill or after a dropped session, just re-run
-  `python refresh_data.py` with no args (idempotent, safe to re-run
-  everything) or target specific missing seasons.
+- Historical backfill (2015-2025) completed - all 12 seasons (2015-2026)
+  now in `data/league.db`, took ~4 minutes total (box_scores requires one
+  ESPN call per week per season for 2019+, scoreboard() fallback for
+  2015-2018).
+- **Bug found + fixed during backfill:** the `scoreboard()` fallback path
+  (`ingest_week_scoreboard`, used for 2015-2018 only) crashed on any bye
+  week ("`'Matchup' object has no attribute 'away_team'`") because
+  `espn_api`'s `Matchup.home_team`/`.away_team` are bare type-hints with
+  no default value when a side has no scheduled opponent - accessing them
+  raises `AttributeError` instead of returning `None`. This silently
+  dropped the ENTIRE week's matchup data (not just the bye team) for
+  2015-2018 week 14 on the first backfill run. Fixed with `getattr(m,
+  'home_team', None)` and now records a `weekly_team_scores` row for
+  whichever side(s) are real teams even on a bye, while still only
+  writing a `matchups` row when both sides are real. Re-ran the 4
+  affected seasons after the fix; matchup count went 1061->1081 and
+  weekly_team_scores 2122->2170, confirming the previously-lost week 14
+  data is now captured. **Lesson for future ingestion work on this repo:
+  wrap per-item logic in try/except or use `getattr`, don't let one bad
+  record in a week silently take out the whole week** - the original bug
+  only surfaced because of the `[warn]` log line, not a hard failure, so
+  watch those logs on every backfill/refresh run.
+- **Full 12-season data-quality validation (2026-09-13), all passed:**
+  12/12 seasons present; 12 teams every season; zero duplicate matchup
+  rows; zero matchups with home_team_pk == away_team_pk; zero completed
+  weekly_team_scores rows with a NULL score; zero mismatches between
+  `matchups.home_score/away_score` and the corresponding
+  `weekly_team_scores` rows (full reconciliation join); draft pick counts
+  per season are consistent with roster-size changes (192 = 12 teams x 16
+  rounds for the older, smaller-roster seasons; 204 = 12 x 17 for the
+  larger-roster/superflex seasons). Fun fact surfaced by the data: the
+  league was named "USC Pike" through 2021 and became "Salted by Quincy"
+  starting 2022 - worth keeping in mind for History-page team name vs.
+  identity handling (this is a LEAGUE rename, not a team rename, so it
+  doesn't affect the manager-identity design).
 - Known limitation accepted as documented above: no historical
   transaction backfill possible (ESPN API constraint, not our bug).
 

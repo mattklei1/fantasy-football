@@ -215,31 +215,43 @@ def ingest_week_scoreboard(
     isn't available - matchup/team scores only, no roster/player rows."""
     matchups = league.scoreboard(week)
     for m in matchups:
-        home_team, away_team = m.home_team, m.away_team
-        if not isinstance(home_team, ESPNTeam) or not isinstance(away_team, ESPNTeam):
-            continue  # bye week - unmatched raw team id
-        home_pk = team_pk_by_espn_id.get(home_team.team_id)
-        away_pk = team_pk_by_espn_id.get(away_team.team_id)
-        if home_pk is None or away_pk is None:
-            continue
-
-        db.upsert(
-            conn,
-            "matchups",
-            {
-                "season_id": season,
-                "week": week,
-                "home_team_pk": home_pk,
-                "away_team_pk": away_pk,
-                "home_score": m.home_score,
-                "away_score": m.away_score,
-                "is_playoff": int(m.is_playoff),
-                "matchup_type": m.matchup_type,
-                "completed": int(completed),
-            },
-            conflict_cols=["season_id", "week", "home_team_pk", "away_team_pk"],
+        # Matchup.home_team/.away_team are bare type-hints with no default -
+        # if a side has no scheduled opponent (bye week), the attribute is
+        # never set at all and a direct access raises AttributeError. Use
+        # getattr so one bye entry doesn't take down the whole week.
+        home_team = getattr(m, "home_team", None)
+        away_team = getattr(m, "away_team", None)
+        home_pk = (
+            team_pk_by_espn_id.get(home_team.team_id) if isinstance(home_team, ESPNTeam) else None
         )
+        away_pk = (
+            team_pk_by_espn_id.get(away_team.team_id) if isinstance(away_team, ESPNTeam) else None
+        )
+
+        if home_pk is not None and away_pk is not None:
+            db.upsert(
+                conn,
+                "matchups",
+                {
+                    "season_id": season,
+                    "week": week,
+                    "home_team_pk": home_pk,
+                    "away_team_pk": away_pk,
+                    "home_score": m.home_score,
+                    "away_score": m.away_score,
+                    "is_playoff": int(m.is_playoff),
+                    "matchup_type": m.matchup_type,
+                    "completed": int(completed),
+                },
+                conflict_cols=["season_id", "week", "home_team_pk", "away_team_pk"],
+            )
+
+        # Record a score for whichever side(s) are real teams, even on a
+        # bye week with no opponent - the team still put up a real score
+        # that season totals / all-play calcs need.
         for team_pk, score in ((home_pk, m.home_score), (away_pk, m.away_score)):
+            if team_pk is None:
+                continue
             db.upsert(
                 conn,
                 "weekly_team_scores",
