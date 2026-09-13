@@ -156,6 +156,60 @@ def require_password() -> None:
     st.stop()
 
 
+def require_login() -> None:
+    """Real per-user auth via Streamlit's native st.login() (Google OAuth) -
+    each league member signs in with their own Google account instead of
+    a password everyone shares. No-ops entirely when the deployment's
+    secrets.toml has no [auth] section configured, so local dev (no
+    Google OAuth app set up) never sees a login wall - same pattern as
+    require_password() above. Deliberately fails CLOSED on authorization:
+    a real, successful Google sign-in that isn't on config.allowed_emails()
+    is still turned away, since this gates a private, real-money league,
+    not "any Google user may enter." Called from render_sidebar()
+    alongside require_password() - both gates enforce independently, so
+    either can be configured/removed without touching the other."""
+    try:
+        auth_configured = bool(st.secrets.get("auth"))
+    except Exception:
+        auth_configured = False
+    if not auth_configured:
+        return
+
+    if not st.user.is_logged_in:
+        st.title("🏈 Fantasy Dashboard")
+        st.write("Sign in with the Google account your commissioner put on the access list.")
+        st.button("Log in with Google", on_click=st.login)
+        st.stop()
+
+    email = (st.user.email or "").strip().lower()
+    admin = config.admin_email()
+    if email not in config.allowed_emails() and email != admin:
+        st.title("🏈 Fantasy Dashboard")
+        st.error(
+            f"Signed in as {email}, but that address isn't on the league's access list. "
+            "Ask the commissioner to add it."
+        )
+        st.button("Log out", on_click=st.logout)
+        st.stop()
+
+
+def is_admin() -> bool:
+    """True only when the signed-in visitor is config.admin_email() -
+    gates the commissioner-only War Room page (pages/9_War_Room.py).
+    Never raises: returns False for any not-logged-in/not-configured
+    state, so local dev and everyone else just sees the page's locked
+    teaser rather than a crash."""
+    try:
+        if not st.user.is_logged_in:
+            return False
+    except Exception:
+        return False
+    admin = config.admin_email()
+    if not admin:
+        return False
+    return (st.user.email or "").strip().lower() == admin
+
+
 def ensure_data_bootstrapped() -> None:
     """Streamlit Community Cloud's local filesystem isn't reliably
     persistent - a redeploy, and possibly the 12-hour idle sleep/wake
@@ -191,9 +245,18 @@ def ensure_data_bootstrapped() -> None:
 def render_sidebar() -> tuple[int, int | None]:
     """Returns (selected_season, selected_week)."""
     require_password()
+    require_login()
     ensure_data_bootstrapped()
 
     st.sidebar.title("🏈 Fantasy Dashboard")
+
+    try:
+        logged_in = st.user.is_logged_in
+    except Exception:
+        logged_in = False
+    if logged_in:
+        st.sidebar.caption(f"Signed in as {st.user.email}")
+        st.sidebar.button("Log out", on_click=st.logout, key="sidebar_logout")
 
     seasons = dd.get_available_seasons()
     if not seasons:

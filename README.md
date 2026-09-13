@@ -231,16 +231,50 @@ Streamlit, and it comes with private-app access control built in.
    ANTHROPIC_API_KEY = "..."
    FANTASYPROS_API_KEY = "..."
    GEMINI_API_KEY = "..."
-   APP_PASSWORD = "pick-something-simple"
+   ALLOWED_EMAILS = "you@gmail.com,friend1@gmail.com,friend2@gmail.com"
+   ADMIN_EMAIL = "you@gmail.com"
    ```
    Only `LEAGUE_ID`/`ESPN_S2`/`SWID` are required - everything else is optional and that feature
-   just shows a setup message without it.
+   just shows a setup message without it. `APP_PASSWORD` (see `.env.example`) still works as a
+   legacy backup gate but is no longer the primary access control - real per-user login is set up
+   in step 5 below.
 4. **Make it private**: in the repo's visibility / the app's sharing settings, keep the app
    private and add each league member's email as a viewer (Share button → enter email → Invite).
    Only people you've explicitly added can open the URL at all - it won't be listed or searchable.
-5. **Set `APP_PASSWORD`** (step 3, above) as a second layer on top of the viewer allowlist - cheap
-   insurance, and lets you share access more casually (e.g. a GroupMe message) without adding
-   every single person as a named Streamlit viewer.
+   This is a platform-level gate (Streamlit Cloud's own login), separate from step 5 - it stops
+   the app from being reachable at all, but doesn't tell the *app itself* who's viewing, which is
+   why the admin-only War Room page needs step 5 too.
+5. **Email login** (real per-user auth, needed for the War Room page to know who you are): this
+   app uses Streamlit's native `st.login()` (Google OAuth), not a custom login system.
+   1. In [Google Cloud Console](https://console.cloud.google.com/apis/credentials), create (or
+      reuse) a project, configure the **OAuth consent screen** (External, add league members as
+      test users if it stays in "Testing" mode), then create an **OAuth Client ID** of type
+      **Web application**.
+   2. Add an **authorized redirect URI**: `https://<your-app-name>.streamlit.app/oauth2callback`
+      (swap in your app's real Streamlit Cloud URL).
+   3. Copy the generated **Client ID** and **Client Secret**.
+   4. In the app's *Advanced settings → Secrets*, add an `[auth]` section (this is genuinely
+      nested TOML, unlike the flat secrets above - Streamlit's login system reads it directly,
+      not via `config.py`/`os.getenv()`):
+      ```toml
+      [auth]
+      redirect_uri = "https://<your-app-name>.streamlit.app/oauth2callback"
+      cookie_secret = "any-long-random-string-you-generate"
+      client_id = "...apps.googleusercontent.com"
+      client_secret = "..."
+      server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
+      ```
+      Double-check the exact key names against
+      [Streamlit's st.login docs](https://docs.streamlit.io/develop/api-reference/user/st.login)
+      at deploy time - added recently enough in Streamlit's history that details occasionally
+      shift between versions.
+   5. Redeploy/reboot the app. Visiting it now shows a "Log in with Google" button; only emails on
+      `ALLOWED_EMAILS` (step 3) get past it, and only `ADMIN_EMAIL` sees the War Room page's real
+      content (everyone else sees it locked).
+   - Not configured yet? The app falls back to no login wall at all (same as local dev) - fine
+     temporarily since step 4's Streamlit Cloud viewer invite is still a real gate on its own, but
+     the War Room page will stay locked for literally everyone (including you) until this is set
+     up, since `is_admin()` requires a real signed-in email to check.
 
 **Two things specific to this host, both already handled in code:**
 - **Secrets → env vars**: confirmed Streamlit Cloud auto-exposes root-level secrets as real

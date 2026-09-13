@@ -1345,6 +1345,74 @@ written to the database per the user's explicit request ("will come back
 and edit later"). Don't add a personalities/bios table or column on your
 own initiative; wait for the user to provide the finalized version.
 
+**Real per-user login (Google, via Streamlit's native st.login()) +
+commissioner-only War Room page - SCAFFOLDING DONE 2026-09-13, deploy
+steps still needed from the user.** User asked for the deployed site to
+have real "email login" (replacing the old shared APP_PASSWORD gate)
+AND a section visible to everyone but only USABLE by them
+(mattklei1@gmail.com) - "gate it off for just me and show it as locked
+for others (I want them to see they don't have access to stuff ;)".
+Both needs share one mechanism: Streamlit's native `st.login()`
+(Google OAuth, stable in the already-installed Streamlit 1.63) gives
+the app a real, verified `st.user.email` per visitor - something the
+old shared password could never provide (everyone who knew the
+password looked identical to the app).
+
+Built:
+- `config.allowed_emails()` (comma-separated `ALLOWED_EMAILS` env var,
+  lowercased/parsed, empty-set default) and `config.admin_email()`
+  (`ADMIN_EMAIL` env var) - who's let in at all vs. who sees the extra
+  page. Deliberately fails CLOSED: an empty `ALLOWED_EMAILS` blocks
+  everyone but the admin, not "allow anyone with a Google account" -
+  this gates a private, real-money league, an open-by-default allowlist
+  would be an easy way to accidentally expose it.
+- `ui_common.require_login()`: no-ops when secrets.toml has no `[auth]`
+  section (so local dev with no OAuth app configured is unaffected,
+  same no-op pattern `require_password()` already used) - otherwise
+  shows a "Log in with Google" wall, then checks the signed-in email
+  against the allowlist and turns away anyone not on it, even a real
+  successful Google sign-in. Both gates (`require_password()` and
+  `require_login()`) run from `render_sidebar()` independently, so
+  either can be configured/retired on its own schedule without a code
+  change - APP_PASSWORD doesn't need to be ripped out the day OAuth
+  goes live.
+- `ui_common.is_admin()`: true only when `st.user.email` (lowercased)
+  equals `config.admin_email()`. Never raises - returns False for any
+  not-logged-in/not-configured state, so it's safe to call from a page
+  unconditionally.
+- `pages/9_War_Room.py`: new page, visible in the sidebar nav to
+  EVERYONE (that's deliberate - the locked teaser is the point, not a
+  hidden page), but non-admins get a "🔒 locked, here's what you're
+  missing" screen instead of content. Real content for the admin is
+  scaffolding only right now (an explicit roadmap list: full
+  FantasyPros data browser, an upgraded waiver model, a trade
+  calculator) - none of those tools are built yet, just the gate and
+  the page shell.
+- `requirements.txt`: bumped `streamlit>=1.42.0` (was already
+  satisfied - installed version is 1.63) and added `Authlib>=1.3.2`
+  (installed and confirmed importable; `st.login()` depends on it
+  internally and it wasn't in requirements before, would have crashed
+  on first deploy).
+- Live-tested locally: booted the real app (`streamlit run Home.py`),
+  confirmed Home and `/War_Room` both return 200 with no tracebacks in
+  server logs, with no `secrets.toml` present at all (matching a fresh
+  clone) - confirms the no-op fallback path actually works, not just
+  reads like it should. Full OAuth login flow itself CANNOT be
+  validated without real Google OAuth credentials + a deployed HTTPS
+  redirect URI - that step is on the user once they've done the Google
+  Cloud Console setup (README's new "Email login" section under
+  Deploying), not testable locally.
+- 6 new tests (`test_ui_common.py`: `allowed_emails()` parsing/
+  lowercasing/empty-default, `admin_email()` lowercasing,
+  `require_login()` no-op, `is_admin()` false when logged out/
+  unconfigured) + all 141 tests passing.
+
+**Not built yet, deliberately out of scope for this pass:** the actual
+War Room tools (FantasyPros data browser, advanced waiver model, trade
+calculator) - user described what they want but this is real feature
+work for its own phase, scoped as a roadmap list in the page for now
+rather than guessed at and half-built.
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip

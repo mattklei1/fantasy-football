@@ -81,9 +81,37 @@ def app_password() -> str | None:
     """Optional shared password gate (see ui_common.require_password()) -
     for a hosted deployment reachable by more than just the developer.
     Unset locally on purpose: local dev shouldn't need a password prompt
-    on every run."""
+    on every run. Legacy: superseded by real per-user Google login (see
+    admin_email()/allowed_emails() below) but left in place as a backup
+    gate during the transition - harmless if both are configured, since
+    require_login() still requires the visitor's own email be on the
+    allowlist regardless of whether the shared password was also entered."""
     pw = os.getenv("APP_PASSWORD", "").strip()
     return pw or None
+
+
+def admin_email() -> str | None:
+    """The one Google account (see ui_common.require_login()/is_admin())
+    that can see the commissioner-only War Room page - everyone else who
+    signs in sees it locked. Not the same as being on ALLOWED_EMAILS:
+    this address should also be listed there (or logging in won't get
+    past the gate at all), this just additionally unlocks the extra
+    page."""
+    email = os.getenv("ADMIN_EMAIL", "").strip().lower()
+    return email or None
+
+
+def allowed_emails() -> set[str]:
+    """Comma-separated allowlist of Google account emails permitted to use
+    the deployed site at all (see ui_common.require_login()) - a private,
+    real-money friend league, so a real Google sign-in alone isn't
+    enough, it also has to be an email the commissioner actually put on
+    this list. Empty by default (fails CLOSED: nobody but ADMIN_EMAIL
+    gets in until this is set), not "allow everyone" - a wide-open
+    empty-allowlist default would be an easy way to accidentally expose
+    real-money league data to the entire internet."""
+    raw = os.getenv("ALLOWED_EMAILS", "")
+    return {e.strip().lower() for e in raw.split(",") if e.strip()}
 
 
 def groupme_bot_id() -> str | None:

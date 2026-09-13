@@ -33,6 +33,37 @@ def test_require_password_noop_when_already_authenticated(monkeypatch):
     ui_common.require_password()
 
 
+def test_require_login_noop_when_auth_not_configured():
+    # no secrets.toml in the test environment at all -> must return
+    # normally (not call st.stop()), same as require_password() above
+    ui_common.require_login()
+
+
+def test_is_admin_false_when_not_logged_in():
+    # st.user outside a real script run reports not logged in
+    assert ui_common.is_admin() is False
+
+
+def test_is_admin_false_when_admin_email_unset(monkeypatch):
+    monkeypatch.setattr(config, "admin_email", lambda: None)
+    assert ui_common.is_admin() is False
+
+
+def test_allowed_emails_parses_and_lowercases(monkeypatch):
+    monkeypatch.setenv("ALLOWED_EMAILS", "Alice@Example.com, bob@example.com ,")
+    assert config.allowed_emails() == {"alice@example.com", "bob@example.com"}
+
+
+def test_allowed_emails_empty_by_default(monkeypatch):
+    monkeypatch.delenv("ALLOWED_EMAILS", raising=False)
+    assert config.allowed_emails() == set()
+
+
+def test_admin_email_lowercased(monkeypatch):
+    monkeypatch.setenv("ADMIN_EMAIL", "Mattklei1@Gmail.com")
+    assert config.admin_email() == "mattklei1@gmail.com"
+
+
 def test_ensure_data_bootstrapped_skips_refresh_when_data_exists(monkeypatch, tmp_path):
     db_path = tmp_path / "league.db"
     conn = sqlite3.connect(db_path)
