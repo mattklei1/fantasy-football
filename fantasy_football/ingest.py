@@ -177,6 +177,17 @@ def ingest_week_boxscores(
                 conflict_cols=["season_id", "week", "team_pk"],
             )
 
+            if not completed:
+                # Captures a "start of week" projection baseline as early
+                # as possible - any refresh of the persistent site DB
+                # (the "Refresh ESPN Data" button, or the auto-refresh on
+                # restart) races to lock this in via INSERT OR IGNORE,
+                # not just a live visit to the Matchups page. Only for
+                # not-yet-completed weeks - snapshotting a long-finished
+                # week's stale projected_score during a historical
+                # backfill would be meaningless table growth for nothing.
+                db.record_projection_snapshot(conn, season, week, team_pk, projected)
+
             for bp in lineup:
                 _upsert_player(conn, bp.playerId, bp.name, bp.position)
 
