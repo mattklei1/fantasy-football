@@ -12,6 +12,7 @@ import time
 from fantasy_football import db
 from fantasy_football.espn_client import ESPNClient
 from fantasy_football.ingest import refresh_all
+from fantasy_football.metrics.pipeline import compute_and_store_all_seasons
 
 
 def main() -> int:
@@ -20,12 +21,19 @@ def main() -> int:
     client = ESPNClient()
     start = time.time()
     status = refresh_all(client=client, seasons=seasons)
+
+    print("Recomputing metrics...")
+    conn = db.get_connection()
+    metric_counts = compute_and_store_all_seasons(conn)
+    conn.close()
     elapsed = time.time() - start
 
     print()
     print("=" * 50)
     print(f"REFRESH {status.upper()} in {elapsed:.1f}s")
     print("=" * 50)
+    for season, n in metric_counts.items():
+        print(f"metrics {season}: {n} team-weeks")
 
     conn = db.get_connection()
     counts = {}

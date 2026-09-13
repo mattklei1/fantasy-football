@@ -411,11 +411,54 @@ Validated against the live league:
 - Known limitation accepted as documented above: no historical
   transaction backfill possible (ESPN API constraint, not our bug).
 
-**Phases 3-8:** Not started. Next up: Phase 3 (Standings, All-Play, Luck
-Index, Fraud Index, Power Rankings) - remember the two user-specified
-additions above (median/top-half win decomposition for 2025+, and
-season-relative normalization for any cross-season comparison) before
-writing those metrics.
+**Phase 3 (DONE 2026-09-13):** Standings, All-Play, Luck Index, Fraud
+Index, Power Rankings. New: `fantasy_football/metrics/` package
+(`loaders.py` - pandas DataFrames out of SQLite; `season_metrics.py` -
+pure, DB-free calculation functions, this is what's unit tested;
+`pipeline.py` - orchestrates + upserts into `metrics_weekly`), plus
+`tests/test_metrics.py` (9 tests, all passing, no live ESPN calls per the
+spec's testing requirement). `refresh_data.py` now runs ingestion AND
+recomputes metrics for every season in one command.
+
+**Critical design decision made during this phase - metrics are
+REGULAR-SEASON-ONLY:** All-Play/Luck/Fraud/Power Score are computed over
+regular-season weeks only (`is_playoff = 0`), not the full season
+including playoffs. This was discovered, not assumed: reconciling my
+computed matchup+median record and points_for against ESPN's own
+`team.wins`/`.losses`/`.points_for` for a full season showed an EXACT
+match through the last regular-season week (2025 week 14) but diverged
+once playoff weeks were included - ESPN's own team totals simply stop
+accumulating at the end of the regular season. Also, the playoff bracket
+shrinks (top seeds get byes, lower seeds drop to a smaller consolation
+ladder), which would corrupt All-Play/median comparisons that assume a
+consistent field size. Playoff outcomes (championships, bracket runs)
+are a separate Hall-of-Fame concern for Phase 6, read directly from
+`matchups.matchup_type`/`is_playoff`, not blended into this weekly
+snapshot. **This reconciliation-against-ESPN's-own-numbers technique is
+worth reusing whenever a new derived metric is added** - it caught a real
+design bug (silently including playoff weeks) that unit tests alone
+would not have caught, since the mock-data unit tests can't know what
+ESPN's real semantics are.
+
+Validated: computed matchup+median combined record and points_for match
+ESPN's official numbers EXACTLY for every team in a median-scoring season
+(2025) and a pre-median season (2020) at the regular-season-end
+checkpoint. `luck_wins` is deliberately matchup-only (not the combined
+record) against All-Play expected wins, isolating opponent-schedule luck
+from the median bonus (which isn't opponent-dependent) - see the
+in-code comment on `metrics_weekly` in `db.py` and the docstring in
+`season_metrics.py` for the full reasoning, and the "median scoring
+toggle" unit test that asserts `luck_wins` doesn't move when the median
+toggle changes but `actual_win_pct`/`fraud_index` do.
+
+Metrics currently computed for all 11 completed seasons (2015-2025);
+2026 has 0 rows so far because week 1 hasn't finished yet (`completed=0`)
+- this is expected, not a bug, and will populate on the next refresh
+after week 1 concludes.
+
+**Phases 4-8:** Not started. Next up: Phase 4 (Streamlit Home, Luck
+dashboard, Matchups pages) - this is where `metrics_weekly` actually gets
+displayed for the first time.
 
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist

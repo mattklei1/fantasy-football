@@ -145,14 +145,43 @@ CREATE TABLE IF NOT EXISTS metrics_weekly (
     season_id INTEGER NOT NULL REFERENCES seasons(season_id),
     week INTEGER NOT NULL,
     team_pk INTEGER NOT NULL REFERENCES teams(id),
-    power_score REAL,
+    -- all fields below are SEASON-TO-DATE cumulative THROUGH this week,
+    -- so metrics_weekly is a snapshot history (enables rank-movement charts)
+    games_played INTEGER,
+    points_for REAL,
+    points_against REAL,
+    ppg REAL,
+    last3_ppg REAL,
+    ppg_percentile REAL,
+    recent_form_percentile REAL,
+    -- real head-to-head result vs that week's scheduled opponent
+    matchup_wins INTEGER,
+    matchup_losses INTEGER,
+    matchup_ties INTEGER,
+    -- top-half-of-league bonus result (ESPN's WIN_BONUS_TOP_HALF format,
+    -- this league since 2025 - see seasons.median_scoring). Computed for
+    -- EVERY season regardless of whether that season's rules counted it
+    -- (informational "would-be" top-half record for older seasons), but
+    -- only folded into actual_win_pct below when median_scoring is on.
+    median_wins INTEGER,
+    median_losses INTEGER,
+    median_ties INTEGER,
+    -- ESPN's official displayed record = matchup + median combined when
+    -- median_scoring is on, matchup-only otherwise. This is what
+    -- determines standings/seeding, so fraud_index and power_score use it.
+    actual_win_pct REAL,
     all_play_wins INTEGER,
     all_play_losses INTEGER,
+    all_play_ties INTEGER,
+    all_play_win_pct REAL,
+    -- Luck Wins uses MATCHUP wins only (not the combined record) vs.
+    -- all-play expected wins, isolating pure opponent-schedule luck from
+    -- the median bonus, which isn't opponent-dependent at all.
     expected_wins REAL,
     luck_wins REAL,
-    actual_win_pct REAL,
-    all_play_win_pct REAL,
     fraud_index REAL,
+    power_score REAL,
+    -- Phase 5 (optimal lineup engine) fields - NULL until then
     lineup_efficiency REAL,
     actual_starter_points REAL,
     optimal_starter_points REAL,
