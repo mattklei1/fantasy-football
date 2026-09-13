@@ -13,12 +13,76 @@ way any external tool would.
 Deliberately transparent about being a heuristic, not a fact - every
 message this feeds into should read as "here's roughly what this was
 worth," not "the correct price."
+
+CALIBRATED against this league's own real 2025 waiver history (2026-09-
+13), not just assumed - pulled every executed, nonzero WAIVER bid for
+the full season (108 real claims) and looked at the max bid actually
+paid per position, as a % of the $200 budget:
+
+    QB 40% ($80 max) | RB 25.5% ($51) | WR 12% ($24)
+    TE 7.5% ($15)    | D/ST 3% ($6)   | K 0.5% ($1, n=1 - thin sample)
+
+Before this calibration, every position shared ONE flat 40%-of-budget
+ceiling (POSITION_CEILINGS below) - fine for QB, since that happens to
+match the real QB max almost exactly, but it meant D/ST could suggest
+$30-40 when real managers never paid more than $6 for one all season -
+an order of magnitude too high. POSITION_CEILINGS fixes this with a
+per-position ceiling instead of one shared number, each set at the real
+observed max with modest headroom (one season's max is a real number,
+not a hard limit - a truly special player could exceed it).
+
+Re-ran the full 2025 season through the RECALIBRATED formula afterward
+to check the fix actually worked, not just assumed it did (99/108 real
+claims matched to a suggested value; RB/TE showed 0 matches on a first
+pass - traced to FantasyPros' own API returning 0 results for
+`consensus-rankings?season=2025` for those two positions specifically
+while every other position/season combination works fine, a FantasyPros-
+side quirk, not a matching bug - worked around by pointing the backtest
+at the current season's rankings applied retroactively, same as
+production always does anyway). Real mean vs. suggested mean, and real
+max vs. suggested max, per position:
+
+    QB:   real $17 avg / $80 max  ->  suggested $26 avg / $50 max
+    RB:   real  $9 avg / $51 max  ->  suggested $13 avg / $24 max
+    WR:   real  $6 avg / $24 max  ->  suggested  $6 avg / $11 max
+    TE:   real  $7 avg / $15 max  ->  suggested  $8 avg / $14 max
+    D/ST: real  $3 avg /  $6 max  ->  suggested  $4 avg /  $8 max
+    K:    real  $1 (n=1)          ->  suggested  $4 (n=1)
+
+D/ST went from suggesting 10-15x real value to within a couple dollars.
+Every position's suggested max now sits in the same order of magnitude
+as the real max. The remaining richness on some positions' MEAN (QB/RB/
+D/ST run ~1.3-1.7x over their real average, while WR lands almost
+exactly on it) is most likely the ceiling this comparison itself can't
+fully escape - the suggested side necessarily uses CURRENT rankings
+applied retroactively to last year's transactions (FantasyPros' ROS
+data is inherently "now," never historical - see the Roster Strength
+data-sourcing note elsewhere in this project for the same constraint),
+so a player's real 2025 waiver-wire value and his 2026-rankings-implied
+value aren't quite the same thing being compared. Deliberately NOT
+chased further with more formula tuning based on one season's noisy,
+partially-mismatched data - revisit once a live season's real
+transactions can be compared against that same season's live rankings,
+a genuinely apples-to-apples check this backtest can't fully deliver.
 """
 from __future__ import annotations
 
 from .roster_strength import rank_to_score
 
-MAX_BID_PCT_OF_BUDGET = 0.40  # a true league-altering pickup tops out around 40% of budget
+# Per-position ceiling (max suggested bid as a fraction of the total
+# budget) - see the calibration note above for where these numbers come
+# from. K has only 1 real data point (n=1, $1) - treated as a weak
+# signal, so its ceiling gets more headroom than the sample alone would
+# suggest, not a literal 0.5%+epsilon.
+POSITION_CEILINGS = {
+    "QB": 0.40,
+    "RB": 0.28,
+    "WR": 0.15,
+    "TE": 0.10,
+    "D/ST": 0.05,
+    "K": 0.03,
+}
+DEFAULT_CEILING = 0.15  # fallback for any position not in the table above
 RANK_WEIGHT = 0.7
 DEMAND_WEIGHT = 0.3
 
@@ -55,4 +119,5 @@ def suggested_bid(
     demand = (percent_owned or 0.0) / 100.0
     raw = RANK_WEIGHT * rank_score + DEMAND_WEIGHT * demand
     raw *= scarcity_multipliers.get(position, 1.0)
-    return min(raw, 1.0) * MAX_BID_PCT_OF_BUDGET * budget
+    ceiling = POSITION_CEILINGS.get(position, DEFAULT_CEILING)
+    return min(raw, 1.0) * ceiling * budget

@@ -936,18 +936,46 @@ overspends and 6 steals surfaced from real bids in the same week,
 confirming both paths fire correctly off real data, not just synthetic
 test cases.
 
-**Known limitation surfaced by that same live validation, flagged to
-the user, not yet addressed:** D/ST suggested values look inflated
-(~$30-40 for a streaming defense) - the model doesn't currently
-discount low-ceiling/low-real-world-FAAB-spend positions (D/ST, K)
-the way actual league bidding behavior would. `rank_to_score` +
-`percent_owned` alone don't capture that a well-owned matchup D/ST
-simply isn't worth what a similarly-ranked RB/WR is, regardless of
-rank. A position-specific ceiling dampener for D/ST/K would fix this -
-not built yet, offered to the user, waiting on their call before
-touching the formula further (the same "heuristic, not gospel"
-caveat is already printed in every waiver message, so this isn't
-silently wrong to end users, just worth tightening).
+**D/ST/K suggested-bid dampening - FIXED and calibrated against real
+history (DONE 2026-09-13).** The limitation above (D/ST suggesting
+$30-40 for a streaming defense) traced to `waiver_value.py` sharing
+ONE flat 40%-of-budget ceiling across every position - correct for QB
+by coincidence, wildly wrong for low-spend positions. Pulled every
+executed, nonzero 2025 WAIVER bid (108 real claims) and computed the
+real max bid as a % of the $200 budget per position: QB 40% ($80),
+RB 25.5% ($51), WR 12% ($24), TE 7.5% ($15), D/ST 3% ($6), K 0.5%
+($1, n=1). Replaced the flat constant with a per-position
+`POSITION_CEILINGS` dict (`{"QB": 0.40, "RB": 0.28, "WR": 0.15,
+"TE": 0.10, "D/ST": 0.05, "K": 0.03}`, `DEFAULT_CEILING = 0.15` for
+anything unmapped), each set a bit above the real observed max since
+one season's max isn't a hard ceiling.
+
+Re-ran the full 2025 season through the recalibrated formula to
+confirm the fix, not just assume it (99/108 claims matched -
+discovered along the way that FantasyPros' own API returns 0 results
+for `consensus-rankings?season=2025` specifically for RB/TE, a
+FantasyPros-side quirk not a matching bug, worked around by using
+current-season rankings applied retroactively, same as production
+always does). Real vs. suggested, mean/max per position:
+
+    QB:   real $17 / $80 max  ->  suggested $26 / $50 max
+    RB:   real  $9 / $51 max  ->  suggested $13 / $24 max
+    WR:   real  $6 / $24 max  ->  suggested  $6 / $11 max
+    TE:   real  $7 / $15 max  ->  suggested  $8 / $14 max
+    D/ST: real  $3 /  $6 max  ->  suggested  $4 /  $8 max
+    K:    real  $1 (n=1)      ->  suggested  $4 (n=1)
+
+D/ST went from 10-15x real value to within a couple dollars; every
+position's suggested max now sits in the same order of magnitude as
+its real max. Deliberately did NOT chase further tuning on the
+remaining mean-side richness (QB/RB/D/ST run ~1.3-1.7x over their
+real average) - it's most likely the "current rankings applied to
+last year's transactions" comparison itself, not the formula; revisit
+once a live season's real transactions can be checked against that
+same season's live rankings. Full test suite (135 tests) passes;
+`test_waiver_value.py` extended with ceiling-specific coverage
+(`test_low_ceiling_positions_are_capped_far_below_qb`,
+`test_unknown_position_falls_back_to_default_ceiling`).
 
 **Anthropic API key**: user wants Claude-generated Weekly Recap
 personality eventually but is holding off adding the key for now - key
@@ -965,8 +993,6 @@ since Phase 8.
   built** - inherently needs a few weeks of played games to evaluate,
   doesn't fit an immediate post-waiver message. Would need a separate,
   later "look back N weeks" job if the user wants this - not scoped.
-- **D/ST/K suggested-bid dampening** - see above, not built, needs the
-  user's go-ahead.
 - Slate updates and waiver recap are STILL not live-tested against the
   real bot specifically (only the Weekly Recap and one manual "[Test]"
   message have actually posted) - the other two were validated against

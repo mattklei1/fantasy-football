@@ -3,7 +3,8 @@ network calls (per PROJECT_BRIEF testing requirements)."""
 import pytest
 
 from fantasy_football.metrics.waiver_value import (
-    MAX_BID_PCT_OF_BUDGET,
+    DEFAULT_CEILING,
+    POSITION_CEILINGS,
     position_scarcity_multipliers,
     suggested_bid,
 )
@@ -34,14 +35,31 @@ def test_suggested_bid_top_ranked_player_costs_more_than_replacement_level():
     top = suggested_bid(1, 90.0, "WR", scarcity, budget=200.0)
     replacement = suggested_bid(80, 5.0, "WR", scarcity, budget=200.0)
     assert top > replacement
-    assert top <= MAX_BID_PCT_OF_BUDGET * 200.0
+    assert top <= POSITION_CEILINGS["WR"] * 200.0
 
 
-def test_suggested_bid_never_exceeds_budget_ceiling():
+def test_suggested_bid_never_exceeds_its_position_ceiling():
     # an absurdly good rank + full ownership should still be capped
     scarcity = {"QB": 1.5}
     result = suggested_bid(1, 100.0, "QB", scarcity, budget=200.0)
-    assert result <= MAX_BID_PCT_OF_BUDGET * 200.0
+    assert result <= POSITION_CEILINGS["QB"] * 200.0
+
+
+def test_low_ceiling_positions_are_capped_far_below_qb():
+    # the calibration fix this addresses: D/ST and K must never approach
+    # QB-level suggested values, even for a rank-1/fully-owned player
+    dst = suggested_bid(1, 100.0, "D/ST", {}, budget=200.0)
+    k = suggested_bid(1, 100.0, "K", {}, budget=200.0)
+    qb = suggested_bid(1, 100.0, "QB", {"QB": 1.5}, budget=200.0)
+    assert dst <= POSITION_CEILINGS["D/ST"] * 200.0
+    assert k <= POSITION_CEILINGS["K"] * 200.0
+    assert dst < qb
+    assert k < dst
+
+
+def test_unknown_position_falls_back_to_default_ceiling():
+    result = suggested_bid(1, 100.0, "P", {}, budget=200.0)
+    assert result == pytest.approx(DEFAULT_CEILING * 200.0)
 
 
 def test_suggested_bid_qb_costs_more_in_superflex_than_flat_format():
