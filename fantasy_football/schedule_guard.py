@@ -28,3 +28,29 @@ def is_target_time_now(target_hour: int, target_minute: int = 0, tolerance_minut
     target = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
     delta = abs((now - target).total_seconds()) / 60
     return delta <= tolerance_minutes
+
+
+def should_refresh_weekly(last_refreshed_at: str | None, weekday: int = 1, hour: int = 18) -> bool:
+    """True if a weekly boundary has passed since `last_refreshed_at` (a
+    UTC timestamp string as SQLite's datetime('now') produces, or None if
+    never refreshed). Default boundary is Tuesday 6pm Pacific (9pm ET) -
+    deliberately AFTER FantasyPros' own Tuesday ~5pm ET Rest-of-Season
+    rankings snapshot (confirmed via their accuracy FAQ, 2026-09-13), so
+    the weekly Roster Strength refresh actually picks up that week's
+    fresh consensus instead of the tail end of last week's. Used to keep
+    Roster Strength frozen for a full week instead of drifting every time
+    someone clicks "Refresh ESPN Data" (which still refreshes everything
+    ELSE - scores, standings - on every click; only the FantasyPros-
+    dependent Roster Strength pipeline is weekly-gated)."""
+    now = datetime.datetime.now(PACIFIC)
+    days_since = (now.weekday() - weekday) % 7
+    boundary = (now - datetime.timedelta(days=days_since)).replace(hour=hour, minute=0, second=0, microsecond=0)
+    if boundary > now:
+        boundary -= datetime.timedelta(days=7)
+
+    if last_refreshed_at is None:
+        return True
+    last = datetime.datetime.fromisoformat(last_refreshed_at)
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=datetime.timezone.utc)
+    return last < boundary

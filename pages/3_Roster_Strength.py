@@ -20,7 +20,8 @@ st.title("Roster Strength")
 st.caption(
     "Forward-looking roster quality (NOT past performance - see Power Score on Home for that). "
     "Blends this week's ESPN projection, ESPN's season-long positional rank, and a third-party "
-    "rest-of-season expert consensus rank."
+    "rest-of-season expert consensus rank. Updates once a week (Tuesday evening) rather than on "
+    "every refresh, so it stays a stable snapshot for the week instead of shifting daily."
 )
 
 df = dd.get_roster_strength(season)

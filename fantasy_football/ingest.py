@@ -21,6 +21,7 @@ from espn_api.football.team import Team as ESPNTeam
 
 from . import config, db
 from .espn_client import ESPNClient
+from .schedule_guard import should_refresh_weekly
 
 BENCH_SLOTS = {"BE", "IR"}
 
@@ -537,17 +538,28 @@ def ingest_season(conn, client: ESPNClient, season: int, log=print) -> None:
         except Exception as exc:  # noqa: BLE001
             log(f"[warn] season {season} recent_activity: {exc}")
 
-        try:
-            ingest_player_rankings(conn, league, season, last_week, log=log)
-        except Exception as exc:  # noqa: BLE001
-            log(f"[warn] season {season} player rankings: {exc}")
-
-        fp_api_key = config.fantasypros_api_key()
-        if fp_api_key:
+        # Roster Strength's inputs (this block) are deliberately weekly-
+        # gated, NOT refreshed on every call like everything else above -
+        # see schedule_guard.should_refresh_weekly()'s docstring for why
+        # (keeps Roster Strength frozen for the week instead of drifting
+        # every time someone clicks "Refresh ESPN Data").
+        last_rs_refresh = db.get_roster_strength_last_refreshed(conn, season)
+        if should_refresh_weekly(last_rs_refresh):
             try:
-                ingest_fantasypros_rankings(conn, season, last_week, fp_api_key, log=log)
+                ingest_player_rankings(conn, league, season, last_week, log=log)
             except Exception as exc:  # noqa: BLE001
-                log(f"[warn] season {season} fantasypros rankings: {exc}")
+                log(f"[warn] season {season} player rankings: {exc}")
+
+            fp_api_key = config.fantasypros_api_key()
+            if fp_api_key:
+                try:
+                    ingest_fantasypros_rankings(conn, season, last_week, fp_api_key, log=log)
+                except Exception as exc:  # noqa: BLE001
+                    log(f"[warn] season {season} fantasypros rankings: {exc}")
+
+            db.record_roster_strength_refresh(conn, season)
+        else:
+            log(f"[skip] season {season} Roster Strength inputs: already refreshed this week")
 
     conn.commit()
 

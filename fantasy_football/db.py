@@ -85,6 +85,36 @@ CREATE TABLE IF NOT EXISTS weekly_team_scores (
     UNIQUE(season_id, week, team_pk)
 );
 
+-- First-observed projected score per (season, week, team) - a "start of
+-- week" baseline. ESPN itself doesn't preserve this: weekly_team_scores.
+-- projected_score is overwritten on every refresh as the live game
+-- updates it, so without a separate snapshot there's no way to answer
+-- "what were we projected for BEFORE this week started." INSERT OR
+-- IGNORE means whichever refresh sees a given week first "locks in" its
+-- projection permanently - not literally always a Tuesday-morning value
+-- if the app's first-ever look at a week happens mid-week, but the
+-- earliest this app could have captured it, which is the best available.
+CREATE TABLE IF NOT EXISTS matchup_projection_snapshots (
+    season_id INTEGER NOT NULL REFERENCES seasons(season_id),
+    week INTEGER NOT NULL,
+    team_pk INTEGER NOT NULL REFERENCES teams(id),
+    projected_score REAL,
+    captured_at TEXT,
+    PRIMARY KEY (season_id, week, team_pk)
+);
+
+-- One row, updated in place, tracking the last time Roster Strength's
+-- inputs (ESPN player rankings + FantasyPros ROS rankings) were actually
+-- refreshed - see schedule_guard.should_refresh_weekly(). Deliberately
+-- separate from refresh_log: refresh_log tracks the general ESPN data
+-- refresh, which can and should happen anytime (scores, standings);
+-- Roster Strength is gated to once a week (Tuesday evening, after
+-- FantasyPros' own weekly snapshot) so it doesn't drift mid-week.
+CREATE TABLE IF NOT EXISTS roster_strength_refresh_log (
+    season_id INTEGER PRIMARY KEY REFERENCES seasons(season_id),
+    refreshed_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS players (
     player_id INTEGER PRIMARY KEY,
     player_name TEXT,
@@ -476,6 +506,44 @@ def get_team_pk(conn: sqlite3.Connection, season_id: int, espn_team_id: int) -> 
         (season_id, espn_team_id),
     ).fetchone()
     return row[0] if row else None
+
+
+def record_projection_snapshot(
+    conn: sqlite3.Connection, season_id: int, week: int, team_pk: int, projected_score: Optional[float]
+) -> None:
+    """No-ops (INSERT OR IGNORE) if a snapshot for this (season, week,
+    team) already exists - see matchup_projection_snapshots' schema
+    comment for why that's the point."""
+    conn.execute(
+        "INSERT OR IGNORE INTO matchup_projection_snapshots "
+        "(season_id, week, team_pk, projected_score, captured_at) VALUES (?, ?, ?, ?, datetime('now'))",
+        (season_id, week, team_pk, projected_score),
+    )
+    conn.commit()
+
+
+def get_projection_snapshots(conn: sqlite3.Connection, season_id: int, week: int) -> dict[int, float]:
+    rows = conn.execute(
+        "SELECT team_pk, projected_score FROM matchup_projection_snapshots WHERE season_id = ? AND week = ?",
+        (season_id, week),
+    ).fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def get_roster_strength_last_refreshed(conn: sqlite3.Connection, season_id: int) -> Optional[str]:
+    row = conn.execute(
+        "SELECT refreshed_at FROM roster_strength_refresh_log WHERE season_id = ?", (season_id,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def record_roster_strength_refresh(conn: sqlite3.Connection, season_id: int) -> None:
+    conn.execute(
+        "INSERT INTO roster_strength_refresh_log (season_id, refreshed_at) VALUES (?, datetime('now')) "
+        "ON CONFLICT(season_id) DO UPDATE SET refreshed_at = excluded.refreshed_at",
+        (season_id,),
+    )
+    conn.commit()
 
 
 def upsert(
