@@ -96,32 +96,46 @@ with tab_hof:
 
 with tab_records:
     st.caption(
-        "Raw records spanning every season, including different scoring eras - a record book "
-        "entry is a fact about what happened, not a cross-era ranking claim."
+        "Records span every season, including different scoring eras. Highest/Lowest Score Ever "
+        "are picked by season-relative percentile (fair across eras with different scoring "
+        "settings), not raw points - the headline number is still the real raw score, with the "
+        "percentile as context. Everything else here (blowouts, closest games) is a raw fact "
+        "about what happened, not a cross-era ranking claim."
     )
     records = hd.get_league_records()
     if not records:
         st.info("No record data available yet.")
     else:
+        def who(d, prefix=""):
+            return d.get(f"{prefix}manager_name") or d.get(f"{prefix}team_name")
+
         c1, c2, c3 = st.columns(3)
         hs, ls = records.get("highest_score"), records.get("lowest_score")
         bb, cg = records.get("biggest_blowout"), records.get("closest_game")
         mpl, lsw = records.get("most_points_in_loss"), records.get("lowest_score_in_win")
         with c1:
             if hs:
-                ui.stat_card("Highest Score Ever", f"{hs['score']:.1f}", f"{hs['team_name']} · {hs['season_id']} Wk{hs['week']}")
+                pct = f" · {hs['score_percentile']*100:.0f}th pctile that season" if "score_percentile" in hs else ""
+                ui.stat_card("Highest Score Ever", f"{hs['score']:.1f}", f"{who(hs)} · {hs['season_id']} Wk{hs['week']}{pct}")
             if bb:
-                ui.stat_card("Biggest Blowout", f"{bb['margin']:.1f} pt margin", f"{bb['team_name']} · {bb['season_id']} Wk{bb['week']}")
+                ui.stat_card(
+                    "Biggest Blowout", f"{bb['margin']:.1f} pt margin",
+                    f"{who(bb)} over {who(bb, 'opp_')} · {bb['season_id']} Wk{bb['week']}",
+                )
         with c2:
             if ls:
-                ui.stat_card("Lowest Score Ever", f"{ls['score']:.1f}", f"{ls['team_name']} · {ls['season_id']} Wk{ls['week']}")
+                pct = f" · {ls['score_percentile']*100:.0f}th pctile that season" if "score_percentile" in ls else ""
+                ui.stat_card("Lowest Score Ever", f"{ls['score']:.1f}", f"{who(ls)} · {ls['season_id']} Wk{ls['week']}{pct}")
             if cg:
-                ui.stat_card("Closest Game", f"{cg['margin']:.1f} pt margin", f"{cg['team_name']} · {cg['season_id']} Wk{cg['week']}")
+                ui.stat_card(
+                    "Closest Game", f"{cg['margin']:.1f} pt margin",
+                    f"{who(cg)} vs {who(cg, 'opp_')} · {cg['season_id']} Wk{cg['week']}",
+                )
         with c3:
             if mpl:
-                ui.stat_card("Most Points in a Loss", f"{mpl['score']:.1f}", f"{mpl['team_name']} · {mpl['season_id']} Wk{mpl['week']}")
+                ui.stat_card("Most Points in a Loss", f"{mpl['score']:.1f}", f"{who(mpl)} · {mpl['season_id']} Wk{mpl['week']}")
             if lsw:
-                ui.stat_card("Lowest Score in a Win", f"{lsw['score']:.1f}", f"{lsw['team_name']} · {lsw['season_id']} Wk{lsw['week']}")
+                ui.stat_card("Lowest Score in a Win", f"{lsw['score']:.1f}", f"{who(lsw)} · {lsw['season_id']} Wk{lsw['week']}")
 
 with tab_h2h:
     managers = hd.get_managers()

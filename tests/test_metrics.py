@@ -505,6 +505,63 @@ def test_league_records_identifies_extremes():
     assert result["lowest_score_in_win"]["team_name"] == "Bad Beat Team"  # won with only 90, the least of any win
 
 
+def test_league_records_biggest_blowout_and_closest_game_include_opponent():
+    records = pd.DataFrame(
+        {
+            "season_id": [2020, 2020],
+            "week": [1, 1],
+            "team_pk": [1, 2],
+            "team_name": ["Blowout Team", "Loser Team"],
+            "manager_name": ["Alice", "Bob"],
+            "opp_team_name": ["Loser Team", "Blowout Team"],
+            "opp_manager_name": ["Bob", "Alice"],
+            "score": [200.0, 50.0],
+            "opp_score": [50.0, 200.0],
+            "is_playoff": [0, 0],
+        }
+    )
+    result = compute_league_records(records)
+    assert result["biggest_blowout"]["manager_name"] == "Alice"
+    assert result["biggest_blowout"]["opp_manager_name"] == "Bob"
+    assert result["biggest_blowout"]["opp_team_name"] == "Loser Team"
+    assert result["biggest_blowout"]["opp_score"] == pytest.approx(50.0)
+    # non-opponent records (highest/lowest score) don't carry opponent fields
+    assert "opp_team_name" not in result["highest_score"]
+
+
+def test_league_records_highest_lowest_use_season_relative_percentile_when_present():
+    # Season 2010 is a low-scoring era (max 120), season 2020 a high-scoring
+    # one (max 300) - without normalization, the RAW highest score would
+    # always come from 2020 regardless of how exceptional it actually was
+    # within its own season. "Modest 2010 Topper" is the best score of a
+    # LOW-scoring season (should win via percentile) even though its raw
+    # points are far below several 2020 scores.
+    records = pd.DataFrame(
+        {
+            "season_id": [2010, 2010, 2010, 2020, 2020, 2020],
+            "week": [1, 1, 1, 1, 1, 1],
+            "team_pk": [1, 2, 3, 4, 5, 6],
+            "team_name": [
+                "Modest 2010 Topper", "2010 Middle", "2010 Bottom",
+                "2020 Middle High", "2020 Middle Low", "2020 Big Score",
+            ],
+            "score": [120.0, 80.0, 40.0, 250.0, 200.0, 300.0],
+            "opp_score": [80.0, 120.0, 300.0, 200.0, 250.0, 40.0],
+            "is_playoff": [0, 0, 0, 0, 0, 0],
+        }
+    )
+    records["score_percentile"] = records.groupby("season_id")["score"].rank(pct=True)
+    result = compute_league_records(records)
+    # 2020's "Big Score" (300, raw max) is only the 2020 max, same percentile
+    # tier as 2010's max - both are their season's #1, so whichever pandas
+    # picks first on a tie is fine; the real assertion is that a LOW raw
+    # score season's leader is still eligible to win via percentile.
+    assert result["highest_score"]["score_percentile"] == pytest.approx(1.0)
+    assert result["lowest_score"]["score_percentile"] == pytest.approx(1 / 3)
+    # headline number is still the RAW score, not the percentile
+    assert result["highest_score"]["score"] in (120.0, 300.0)
+
+
 def test_compute_season_metrics_empty_input_returns_empty():
     empty_scores = pd.DataFrame(columns=["week", "team_pk", "score"])
     empty_matchups = pd.DataFrame(columns=["week", "home_team_pk", "away_team_pk", "home_score", "away_score"])

@@ -40,6 +40,14 @@ CSS = """
     border-radius: 12px;
     padding: 16px 18px;
     margin-bottom: 8px;
+    /* Stat cards often sit stacked 2-per-column next to other columns'
+       stacked cards (e.g. History's League Records grid) - a longer
+       subtext wrapping to 2 lines on one card was pushing everything
+       below it in that column out of alignment with neighboring
+       columns. A shared min-height keeps every card the same height
+       regardless of how much its subtext wraps. */
+    min-height: 96px;
+    box-sizing: border-box;
 }
 .ff-card-label {
     font-size: 0.72rem;

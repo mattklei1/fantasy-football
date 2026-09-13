@@ -74,17 +74,33 @@ def get_all_matchups_by_manager() -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def get_all_team_weeks() -> pd.DataFrame:
     """One row per team per completed matchup-week (both sides
-    unpivoted), ALL seasons - used for league records."""
+    unpivoted), ALL seasons - used for league records. Includes the
+    OPPONENT's team/manager too, so a record like Biggest Blowout can
+    show both sides, not just the team that set it."""
     conn = dd.get_connection()
-    query = """
+    ht_mgr = db.manager_full_name_sql("ht_mgr")
+    at_mgr = db.manager_full_name_sql("at_mgr")
+    query = f"""
         SELECT m.season_id, m.week, m.is_playoff,
-               ht.id AS team_pk, ht.team_name, m.home_score AS score, m.away_score AS opp_score
-        FROM matchups m JOIN teams ht ON ht.id = m.home_team_pk
+               ht.id AS team_pk, ht.team_name, {ht_mgr} AS manager_name,
+               m.home_score AS score, m.away_score AS opp_score,
+               at.team_name AS opp_team_name, {at_mgr} AS opp_manager_name
+        FROM matchups m
+        JOIN teams ht ON ht.id = m.home_team_pk
+        JOIN teams at ON at.id = m.away_team_pk
+        {_primary_manager_sql('ht')}
+        {_primary_manager_sql('at')}
         WHERE m.completed = 1
         UNION ALL
         SELECT m.season_id, m.week, m.is_playoff,
-               at.id AS team_pk, at.team_name, m.away_score AS score, m.home_score AS opp_score
-        FROM matchups m JOIN teams at ON at.id = m.away_team_pk
+               at.id AS team_pk, at.team_name, {at_mgr} AS manager_name,
+               m.away_score AS score, m.home_score AS opp_score,
+               ht.team_name AS opp_team_name, {ht_mgr} AS opp_manager_name
+        FROM matchups m
+        JOIN teams ht ON ht.id = m.home_team_pk
+        JOIN teams at ON at.id = m.away_team_pk
+        {_primary_manager_sql('ht')}
+        {_primary_manager_sql('at')}
         WHERE m.completed = 1
     """
     return pd.read_sql_query(query, conn)
@@ -210,6 +226,15 @@ def get_hall_of_fame() -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def get_league_records() -> dict:
     team_weeks = get_all_team_weeks()
+    if not team_weeks.empty:
+        # Season-relative percentile (same rank-based approach as
+        # metrics_weekly.ppg_percentile elsewhere in this project) - lets
+        # Highest/Lowest Score Ever be picked by how exceptional a score
+        # was WITHIN its own season's field, not raw points, which skews
+        # toward high-PPR/high-scoring eras. Computed here (not inside
+        # compute_league_records) so that function stays pure/DB-free.
+        team_weeks = team_weeks.copy()
+        team_weeks["score_percentile"] = team_weeks.groupby("season_id")["score"].rank(pct=True)
     return compute_league_records(team_weeks)
 
 

@@ -151,16 +151,24 @@ def compute_head_to_head(matchups: pd.DataFrame, manager_a: str, manager_b: str)
 def compute_league_records(matchups: pd.DataFrame) -> dict:
     """matchups: one row per completed matchup, both sides unpivoted into
     team-week rows with columns season_id, week, team_pk, team_name,
-    score, opp_score, is_playoff (see history_data.py for the unpivot).
-    Raw record-book facts spanning every season/format."""
+    manager_name, score, opp_score, opp_team_name, opp_manager_name,
+    is_playoff, and (optional) score_percentile - that last one is a
+    season-relative rank percentile computed by history_data.py (kept
+    out of this pure/DB-free module on purpose). When present, Highest/
+    Lowest Score Ever are picked by score_percentile (how exceptional a
+    score was WITHIN its own season, fair across eras with different
+    scoring settings) rather than raw points - raw points still get
+    shown as the headline number, since that's the fact people actually
+    remember, with the percentile as supporting context."""
     if matchups.empty:
         return {}
 
     m = matchups.copy()
     m["margin"] = m["score"] - m["opp_score"]
+    rank_col = "score_percentile" if "score_percentile" in m.columns else "score"
 
-    highest = m.loc[m["score"].idxmax()]
-    lowest = m.loc[m["score"].idxmin()]
+    highest = m.loc[m[rank_col].idxmax()]
+    lowest = m.loc[m[rank_col].idxmin()]
     blowout = m.loc[m["margin"].idxmax()]
     closest = m.loc[m["margin"].abs().idxmin()]
 
@@ -169,19 +177,27 @@ def compute_league_records(matchups: pd.DataFrame) -> dict:
     most_in_loss = losses.loc[losses["score"].idxmax()] if not losses.empty else None
     lowest_in_win = wins.loc[wins["score"].idxmin()] if not wins.empty else None
 
-    def row_dict(row):
+    def row_dict(row, with_opponent: bool = False):
         if row is None:
             return None
-        return {
-            "team_name": row["team_name"], "season_id": int(row["season_id"]),
-            "week": int(row["week"]), "score": float(row["score"]),
+        d = {
+            "team_name": row["team_name"], "manager_name": row.get("manager_name"),
+            "season_id": int(row["season_id"]), "week": int(row["week"]),
+            "score": float(row["score"]),
         }
+        if "score_percentile" in row.index and pd.notna(row["score_percentile"]):
+            d["score_percentile"] = float(row["score_percentile"])
+        if with_opponent:
+            d["opp_team_name"] = row.get("opp_team_name")
+            d["opp_manager_name"] = row.get("opp_manager_name")
+            d["opp_score"] = float(row["opp_score"])
+        return d
 
     return {
         "highest_score": row_dict(highest),
         "lowest_score": row_dict(lowest),
-        "biggest_blowout": {**row_dict(blowout), "margin": abs(float(blowout["margin"]))},
-        "closest_game": {**row_dict(closest), "margin": abs(float(closest["margin"]))},
+        "biggest_blowout": {**row_dict(blowout, with_opponent=True), "margin": abs(float(blowout["margin"]))},
+        "closest_game": {**row_dict(closest, with_opponent=True), "margin": abs(float(closest["margin"]))},
         "most_points_in_loss": row_dict(most_in_loss),
         "lowest_score_in_win": row_dict(lowest_in_win),
     }
