@@ -205,7 +205,7 @@ def get_trade_rosters(season: int) -> pd.DataFrame:
         return pd.DataFrame()
 
     query = f"""
-        SELECT wr.team_pk, t.team_name, mgr.display_name AS manager_name,
+        SELECT wr.team_pk, t.team_name, {dd._manager_name_sql()} AS manager_name,
                wr.player_id, p.player_name, p.default_position AS position,
                wr.slot_position, wr.is_starter, wr.eligible_slots,
                fr.pos_rank AS fp_pos_rank, pr.pos_rank AS espn_pos_rank

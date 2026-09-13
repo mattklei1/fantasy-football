@@ -1676,6 +1676,45 @@ visual/manual pass on one page can surface a real correctness bug on a
 completely different page** - this was found while checking mobile
 CSS, not by looking for a manager-name bug.
 
+**The same bug turned out to be much more widespread - grepped the whole
+codebase for `display_name` rather than assuming dashboard_data.py was
+the only offender, and found two more independent occurrences:**
+1. `commentary.py._team_names()` - Weekly Recap's facts builder had its
+   own separate copy of the exact same `mgr.display_name AS manager_name`
+   pattern (this module deliberately avoids importing dashboard_data.py,
+   so it never inherited that file's fix). Confirmed visibly broken in
+   the same mobile screenshot pass - the placeholder recap read "The
+   Brown Downs (jeffreydriscoll)" instead of "(Jeffrey Driscoll)". This
+   means every real weekly recap (and the GroupMe posts built from the
+   same facts pipeline) had usernames baked into the PROSE, reading far
+   worse than a stray table column.
+2. **The 10 `ama_*` SQL views in `db.py`** (`_create_ama_views()`) - the
+   entire Ask Me Anything/Gemini data layer was built on `mgr.display_name`
+   too (`ama_teams`, `ama_matchups`'s home/away manager columns,
+   `ama_standings`, `ama_lineup_efficiency`, `ama_roster_strength`,
+   `ama_draft_picks`, `ama_transactions`, `ama_player_weeks` - 9 of the
+   10 views). Meant any Gemini answer mentioning a manager by name would
+   surface a raw ESPN username.
+
+Fixed both the same way (swap in `db.manager_full_name_sql(alias)`), but
+the views needed a SECOND, more important fix: `_create_ama_views()` used
+`CREATE VIEW IF NOT EXISTS`, which is idempotent for a brand-new database
+but - discovered by directly inspecting this sandbox's real `data/
+league.db` - silently keeps a STALE view definition in any database that
+already has the view. The Python source fix alone had ZERO effect on
+this sandbox's existing database until `_create_ama_views()` was changed
+to unconditionally `DROP VIEW IF EXISTS` + recreate every view on each
+`init_db()` call (safe, since a view holds no data). Re-verified directly
+against the real `data/league.db` after the fix: `ama_teams` now returns
+"Matthew Klei"/"Quinn Hazard"/etc., and `commentary._team_names()` (real
+2025 data) returns the same - then re-confirmed the Weekly Recap page
+itself in a fresh browser check after clearing the one locally-cached
+recap that still held the old buggy text (this sandbox's `data/
+league.db` only - not the deployed site's separate database). Anyone
+running this app with an existing database should expect their next
+`refresh_data.py`/app-boot `init_db()` call to silently fix this the same
+way - no manual migration step needed, by design.
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip

@@ -55,8 +55,11 @@ SECTION_ORDER = [
 
 
 def _team_names(conn: sqlite3.Connection, season: int) -> dict[int, dict]:
+    # db.manager_full_name_sql(), NOT mgr.display_name directly - the
+    # latter is ESPN's raw account username (e.g. "yankeesjets247"), a
+    # real bug found 2026-09-13 leaking usernames into recap prose.
     query = f"""
-        SELECT t.id AS team_pk, t.team_name, mgr.display_name AS manager_name
+        SELECT t.id AS team_pk, t.team_name, {db.manager_full_name_sql("mgr")} AS manager_name
         FROM teams t {db.primary_owner_join_sql("t", mgr_alias="mgr", owner_alias="owner")}
         WHERE t.season_id = ?
     """

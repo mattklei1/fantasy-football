@@ -412,6 +412,12 @@ def primary_owner_join_sql(team_alias: str, mgr_alias: Optional[str] = None, own
     """
 
 
+AMA_VIEW_NAMES = [
+    "ama_seasons", "ama_teams", "ama_matchups", "ama_standings", "ama_lineup_efficiency",
+    "ama_roster_strength", "ama_draft_picks", "ama_transactions", "ama_player_weeks", "ama_weekly_recaps",
+]
+
+
 def _create_ama_views(conn: sqlite3.Connection) -> None:
     """"ama_*" views: the ONLY objects the Ask Me Anything feature's
     Gemini-generated SQL is allowed to read (see fantasy_football/
@@ -421,32 +427,44 @@ def _create_ama_views(conn: sqlite3.Connection) -> None:
     of what's defined here). Deliberately excludes `fantasypros_rankings`
     entirely - no view here ever references it - and pre-bakes the
     primary-owner manager-identity join so generated SQL doesn't have to
-    reconstruct that window-function logic itself. CREATE VIEW IF NOT
-    EXISTS is idempotent, safe to call on every init_db()."""
+    reconstruct that window-function logic itself.
+
+    Unconditionally DROPs and recreates every view on each call (a view
+    holds no data, so this is always safe) rather than using an
+    IF-NOT-EXISTS guard on CREATE VIEW - that guard is idempotent for a
+    brand-new database but silently keeps a STALE definition in any
+    database that already has the view, which is exactly what happened
+    here: a real bug fix to these view definitions (raw ESPN
+    `display_name` usernames -> real names, 2026-09-13) had no effect at
+    all on an existing `data/league.db` until this was changed to always
+    recreate."""
     owner_join_home = primary_owner_join_sql("ht", mgr_alias="hmgr", owner_alias="ho")
     owner_join_away = primary_owner_join_sql("at", mgr_alias="amgr", owner_alias="ao")
     owner_join = primary_owner_join_sql("t", mgr_alias="mgr", owner_alias="owner")
 
+    for view_name in AMA_VIEW_NAMES:
+        conn.execute(f"DROP VIEW IF EXISTS {view_name}")
+
     conn.executescript(f"""
-        CREATE VIEW IF NOT EXISTS ama_seasons AS
+        CREATE VIEW ama_seasons AS
         SELECT season_id, league_name, current_week, reg_season_count, playoff_team_count,
                scoring_type, median_scoring, reception_points
         FROM seasons;
 
-        CREATE VIEW IF NOT EXISTS ama_teams AS
-        SELECT t.id AS team_pk, t.season_id, t.team_name, mgr.display_name AS manager_name
+        CREATE VIEW ama_teams AS
+        SELECT t.id AS team_pk, t.season_id, t.team_name, {manager_full_name_sql('mgr')} AS manager_name
         FROM teams t {owner_join};
 
-        CREATE VIEW IF NOT EXISTS ama_matchups AS
+        CREATE VIEW ama_matchups AS
         SELECT m.season_id, m.week, m.matchup_type, m.completed, m.is_playoff,
-               ht.team_name AS home_team_name, hmgr.display_name AS home_manager_name, m.home_score,
-               at.team_name AS away_team_name, amgr.display_name AS away_manager_name, m.away_score
+               ht.team_name AS home_team_name, {manager_full_name_sql('hmgr')} AS home_manager_name, m.home_score,
+               at.team_name AS away_team_name, {manager_full_name_sql('amgr')} AS away_manager_name, m.away_score
         FROM matchups m
         JOIN teams ht ON ht.id = m.home_team_pk {owner_join_home}
         JOIN teams at ON at.id = m.away_team_pk {owner_join_away};
 
-        CREATE VIEW IF NOT EXISTS ama_standings AS
-        SELECT mw.season_id, mw.week, t.team_name, mgr.display_name AS manager_name,
+        CREATE VIEW ama_standings AS
+        SELECT mw.season_id, mw.week, t.team_name, {manager_full_name_sql('mgr')} AS manager_name,
                mw.games_played, mw.matchup_wins, mw.matchup_losses, mw.matchup_ties,
                mw.median_wins, mw.median_losses, mw.median_ties, mw.actual_win_pct,
                mw.points_for, mw.points_against, mw.ppg, mw.last3_ppg, mw.ppg_percentile,
@@ -455,8 +473,8 @@ def _create_ama_views(conn: sqlite3.Connection) -> None:
         FROM metrics_weekly mw
         JOIN teams t ON t.id = mw.team_pk {owner_join};
 
-        CREATE VIEW IF NOT EXISTS ama_lineup_efficiency AS
-        SELECT mw.season_id, mw.week, t.team_name, mgr.display_name AS manager_name,
+        CREATE VIEW ama_lineup_efficiency AS
+        SELECT mw.season_id, mw.week, t.team_name, {manager_full_name_sql('mgr')} AS manager_name,
                mw.lineup_efficiency, mw.actual_starter_points, mw.optimal_starter_points,
                mw.points_left_on_bench, mw.optimal_wins, mw.optimal_losses, mw.optimal_ties,
                mw.manager_caused_losses, mw.correct_decisions, mw.total_decisions, mw.decision_accuracy
@@ -464,27 +482,27 @@ def _create_ama_views(conn: sqlite3.Connection) -> None:
         JOIN teams t ON t.id = mw.team_pk {owner_join}
         WHERE mw.lineup_efficiency IS NOT NULL;
 
-        CREATE VIEW IF NOT EXISTS ama_roster_strength AS
-        SELECT rs.season_id, rs.week, t.team_name, mgr.display_name AS manager_name,
+        CREATE VIEW ama_roster_strength AS
+        SELECT rs.season_id, rs.week, t.team_name, {manager_full_name_sql('mgr')} AS manager_name,
                rs.starter_value, rs.bench_value, rs.starter_weight, rs.bench_weight, rs.roster_strength
         FROM roster_strength_weekly rs
         JOIN teams t ON t.id = rs.team_pk {owner_join};
 
-        CREATE VIEW IF NOT EXISTS ama_draft_picks AS
-        SELECT dp.season_id, t.team_name, mgr.display_name AS manager_name,
+        CREATE VIEW ama_draft_picks AS
+        SELECT dp.season_id, t.team_name, {manager_full_name_sql('mgr')} AS manager_name,
                dp.player_name, dp.round_num, dp.round_pick, dp.overall_pick,
                dp.bid_amount, dp.keeper_status
         FROM draft_picks dp
         LEFT JOIN teams t ON t.id = dp.team_pk {owner_join};
 
-        CREATE VIEW IF NOT EXISTS ama_transactions AS
-        SELECT tx.season_id, tx.activity_date, t.team_name, mgr.display_name AS manager_name,
+        CREATE VIEW ama_transactions AS
+        SELECT tx.season_id, tx.activity_date, t.team_name, {manager_full_name_sql('mgr')} AS manager_name,
                tx.action_type, tx.player_name, tx.bid_amount
         FROM transactions tx
         LEFT JOIN teams t ON t.id = tx.team_pk {owner_join};
 
-        CREATE VIEW IF NOT EXISTS ama_player_weeks AS
-        SELECT wr.season_id, wr.week, t.team_name, mgr.display_name AS manager_name,
+        CREATE VIEW ama_player_weeks AS
+        SELECT wr.season_id, wr.week, t.team_name, {manager_full_name_sql('mgr')} AS manager_name,
                p.player_name, p.default_position, wr.is_starter, wr.slot_position,
                pws.points, pws.projected_points
         FROM weekly_rosters wr
@@ -493,7 +511,7 @@ def _create_ama_views(conn: sqlite3.Connection) -> None:
         LEFT JOIN player_week_scores pws
             ON pws.season_id = wr.season_id AND pws.week = wr.week AND pws.player_id = wr.player_id;
 
-        CREATE VIEW IF NOT EXISTS ama_weekly_recaps AS
+        CREATE VIEW ama_weekly_recaps AS
         SELECT season_id, week, commentary_text, source, generated_at
         FROM weekly_recaps;
     """)
