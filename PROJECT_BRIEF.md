@@ -563,8 +563,78 @@ Only ever populated for the CURRENT week of the CURRENT season -
 `recent_activity()`. Empty-state handled gracefully on the page (not
 fabricated) for any season/week combo where it hasn't run.
 
-**Phases 5-8:** Not started (Manager lineup efficiency; History/Hall of
-Fame/head-to-head; Playoff simulation; Weekly recap + Claude commentary).
+**Phase 5 (DONE 2026-09-13):** Manager lineup efficiency / optimal
+lineup engine. New: `fantasy_football/metrics/lineup_optimizer.py` (+
+unit tests) - an EXACT optimal-lineup solver via scipy's Hungarian
+algorithm (maximum-weight bipartite matching, players x starting slots),
+not a greedy heuristic - a unit test specifically constructs a flex-slot
+contention scenario where naive greedy would misallocate and confirms
+the exact solver gets it right. `fantasy_football/metrics/
+lineup_efficiency.py` (+ tests) computes actual vs. optimal starter
+points, lineup efficiency, points left on bench, an optimal-lineup
+win/loss record (recomputed against the opponent's REAL actual score),
+and manager-caused-loss detection. `pages/4_Lineup_Efficiency.py`.
+
+**Schema change needed real data captured that wasn't being stored:**
+per-player slot eligibility (`Player.eligibleSlots` from espn-api) is
+required to know which slots a player could legally have filled, and it
+wasn't in `weekly_rosters` before this phase. Added `weekly_rosters.
+eligible_slots` (JSON, snapshotted per week since ESPN eligibility can
+shift mid-season) and 4 new `metrics_weekly` columns for the
+lineup-efficiency fields. **Both tables already held real ingested
+data**, so `db.py` gained its first schema migration helper
+(`_apply_migrations` / `MIGRATIONS` dict, `ALTER TABLE ... ADD COLUMN`,
+idempotent) rather than the drop-and-recreate approach used earlier in
+Phase 3 when `metrics_weekly` was still empty - future column additions
+to a populated table should use this same pattern, not a destructive
+recreate.
+
+Backfilled `eligible_slots` for all existing 2019-2026 weeks via a full
+re-ingest (`python refresh_data.py 2019 2020 2021 2022 2023 2024 2025
+2026`, ~207s) - necessary because this data wasn't being captured
+before, same category of "wish we'd captured this from the start" as
+the week-14 bye-week bug back in Phase 2. Validated against real data:
+zero rows with `lineup_efficiency > 1.0` (would indicate the optimal
+solver is broken - actual can never legitimately exceed a correctly-
+computed optimal), 2025 season efficiency range 87-94% across all 12
+teams (a plausible real-world range - nobody starts a perfect lineup
+every week, but nobody is wildly far off either). Confirmed correct
+rendering in-browser via Playwright.
+
+Only computable for year>=2019 (needs box-score-derived per-player
+data, same constraint as Roster Strength/player-level ingestion
+generally) and only for weeks with `eligible_slots` captured (now true
+for all of 2019-2026 after the backfill above). `compute_and_store_
+lineup_efficiency()` UPDATES existing `metrics_weekly` rows rather than
+inserting fresh ones - it has a hard ordering dependency on
+`compute_and_store_season_metrics()` having already run for that season
+(otherwise an upsert of a partial column set would INSERT a new row
+with every OTHER column NULL) - `compute_and_store_all_seasons()`
+enforces this ordering already, don't call
+`compute_and_store_lineup_efficiency()` standalone without checking
+that dependency still holds.
+
+**Phases 6-8:** Not started (History/Hall of Fame/head-to-head; Playoff
+simulation; Weekly recap + Claude commentary).
+
+**In progress (2026-09-13): FantasyPros API integration.** The user
+purchased FantasyPros API access (their real, licensed API - see the
+Roster Strength section above for why we declined to scrape their
+public pages without one). Asked the user to paste their API key next;
+once received, wire it in as `FANTASYPROS_API_KEY` in `.env` (same
+gitignored-credential pattern as `ESPN_S2`/`SWID`/the GroupMe token used
+earlier this session - store it, never commit it, never log it). Plan:
+do a live test call against `api.fantasypros.com/public/v2/json` first
+to confirm the actual response shape (don't assume the structure from
+the public webpage matches the API), THEN update Roster Strength's
+`SIGNAL_WEIGHTS` to reincorporate FantasyPros ROS rankings at the
+originally-designed ~40% weight (see the "Roster Strength" section
+above for the full original 4-source weighting rationale: FantasyPros
+40%, Yahoo 25% (still not pursuing - no generic API), ESPN weekly
+projection reduced from 20%, ESPN season rank reduced from 15%,
+reweighted proportionally now that a 3rd source is available). Yahoo
+remains out of scope (no generic ROS-rankings API endpoint exists,
+confirmed earlier this session).
 Note: the user has begun gathering manager personality/context material
 from GroupMe (`Salted by Quincy` and `Pike Fantasy football` group chats)
 for eventual use in Phase 8 commentary - reviewed in chat, NOT yet

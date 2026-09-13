@@ -97,5 +97,12 @@ stats and optional Claude-generated commentary.
 - Only reflects the current week of the current season - see the page's
   own methodology expander for details and limitations
 
+**Lineup Efficiency (done)**
+- `pages/4_Lineup_Efficiency.py`: Actual vs. Optimal starter points using
+  an exact optimal-lineup solver (scipy Hungarian algorithm, not a
+  greedy heuristic), lineup efficiency %, points left on bench, an
+  optimal-lineup win/loss record, and manager-caused-loss counts
+- Available for 2019+ seasons
+
 Later phases (lineup efficiency, History/Hall of Fame, playoff
 simulation, Claude commentary) will be documented here as they land.
