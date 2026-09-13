@@ -11,6 +11,7 @@ from fantasy_football.metrics.season_metrics import (
     compute_median_results,
     compute_season_metrics,
 )
+from fantasy_football.metrics.win_probability import TeamProjection, win_probability
 
 
 def test_all_play_no_ties():
@@ -143,6 +144,32 @@ def test_median_scoring_toggle_changes_actual_win_pct_but_not_luck():
     pd.testing.assert_series_equal(
         off["luck_wins"].reset_index(drop=True), on["luck_wins"].reset_index(drop=True)
     )
+
+
+def test_win_probability_equal_teams_is_fifty_fifty():
+    a = TeamProjection(team_pk=1, expected_score=100.0, stdev=15.0)
+    b = TeamProjection(team_pk=2, expected_score=100.0, stdev=15.0)
+    assert win_probability(a, b) == pytest.approx(0.5)
+
+
+def test_win_probability_favors_higher_expected_score():
+    a = TeamProjection(team_pk=1, expected_score=120.0, stdev=15.0)
+    b = TeamProjection(team_pk=2, expected_score=100.0, stdev=15.0)
+    assert win_probability(a, b) > 0.5
+    # symmetry: P(A beats B) + P(B beats A) == 1
+    assert win_probability(a, b) + win_probability(b, a) == pytest.approx(1.0)
+
+
+def test_win_probability_tighter_stdev_increases_confidence():
+    a = TeamProjection(team_pk=1, expected_score=110.0, stdev=5.0)
+    b = TeamProjection(team_pk=2, expected_score=100.0, stdev=5.0)
+    tight = win_probability(a, b)
+
+    a_wide = TeamProjection(team_pk=1, expected_score=110.0, stdev=40.0)
+    b_wide = TeamProjection(team_pk=2, expected_score=100.0, stdev=40.0)
+    wide = win_probability(a_wide, b_wide)
+
+    assert tight > wide > 0.5
 
 
 def test_compute_season_metrics_empty_input_returns_empty():

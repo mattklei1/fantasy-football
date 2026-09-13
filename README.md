@@ -45,7 +45,14 @@ stats and optional Claude-generated commentary.
    This prints league name, season, current week, team count/names, and
    which previous seasons ESPN reports as available.
 
-4. Run the dashboard:
+4. Pull data from ESPN into the local database (idempotent - safe to
+   re-run any time):
+   ```bash
+   python refresh_data.py          # all seasons ESPN reports as available
+   python refresh_data.py 2026     # just one season
+   ```
+
+5. Run the dashboard:
    ```bash
    streamlit run Home.py
    ```
@@ -57,5 +64,30 @@ stats and optional Claude-generated commentary.
 - Reusable ESPN client wrapper (`fantasy_football/espn_client.py`)
 - `test_connection.py` validates credentials and prints a league summary
 
-Later phases (SQLite persistence, metrics, dashboard pages, playoff
+**Phase 2 - SQLite persistence & ingestion (done)**
+- Full schema in `fantasy_football/db.py` (seasons, managers, teams,
+  matchups, weekly scores, rosters, player scores, draft picks,
+  transactions, refresh log)
+- `fantasy_football/ingest.py` pulls everything from ESPN idempotently
+- `refresh_data.py` CLI to run it
+
+**Phase 3 - Metrics (done)**
+- `fantasy_football/metrics/` computes All-Play record, Luck Wins, Fraud
+  Index, and Power Score per team per week (regular season only)
+- Handles this league's rule history: PPR/roster/flex changes across
+  seasons, and the top-half "median" bonus win format added in 2025
+- Unit tested with mock data (`tests/test_metrics.py`) - no live ESPN
+  calls needed to run the test suite
+
+**Phase 4 - Dashboard: Home, Matchups, Luck (done)**
+- `Home.py`: headline cards (Best Team, Biggest Fraud, Unluckiest Team)
+  + full standings/power rankings table with week-over-week rank change
+- `pages/1_Matchups.py`: per-week matchup cards with a custom (non-ESPN)
+  win probability for games that haven't been played yet
+- `pages/2_Luck.py`: Luck/Fraud table, matchup-vs-median record
+  breakdown, and notable stat callouts (highest score in a loss, etc.)
+- Sidebar: season switcher, week selector, last-refresh timestamp, and a
+  "Refresh ESPN Data" button
+
+Later phases (lineup efficiency, History/Hall of Fame, playoff
 simulation, Claude commentary) will be documented here as they land.

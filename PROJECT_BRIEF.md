@@ -456,9 +456,72 @@ Metrics currently computed for all 11 completed seasons (2015-2025);
 - this is expected, not a bug, and will populate on the next refresh
 after week 1 concludes.
 
-**Phases 4-8:** Not started. Next up: Phase 4 (Streamlit Home, Luck
-dashboard, Matchups pages) - this is where `metrics_weekly` actually gets
-displayed for the first time.
+**Phase 4 (DONE 2026-09-13):** Streamlit Home, Matchups, and Luck pages.
+New: `Home.py` (entrypoint), `pages/1_Matchups.py`, `pages/2_Luck.py`,
+`fantasy_football/dashboard_data.py` (Streamlit-cached read-model queries
+- this layer IS allowed to depend on Streamlit, unlike `metrics/`),
+`fantasy_football/ui_common.py` (shared CSS/cards/badges/sidebar),
+`fantasy_football/badges.py` (Fraud Index thresholds), and
+`fantasy_football/metrics/win_probability.py` (+ unit tests) for the
+Matchups page's custom (non-ESPN) win probability on not-yet-played
+games. Also extended `ingest.py` with `ingest_future_schedule()` so the
+current season's upcoming regular-season matchup pairings (score=NULL,
+completed=0) get pulled - previously ingestion only went up through
+`current_week`, which meant no schedule existed yet for future weeks.
+
+**Tested by actually running the app** (per project convention - not just
+"should work"): started the Streamlit server, drove it with Playwright
+(headless Chromium at `/opt/pw-browsers/chromium`), and found three real
+bugs this way that unit tests / code review would not have caught:
+1. `dashboard_data.get_connection()` was wrapped in `@st.cache_resource`,
+   caching a raw `sqlite3.Connection` - but Streamlit can rerun a
+   session's script on a different thread, and sqlite3 connections are
+   thread-affine, so this threw `SQLite objects created in a thread can
+   only be used in that same thread` on the second page load. Fixed by
+   NOT caching the connection (opening a fresh one per call is cheap for
+   a local file).
+2. The sidebar's season/week selectors reset to the default every time
+   you navigated to a different page (Home -> Luck -> Matchups), because
+   each page's `st.selectbox(..., index=seasons.index(seasons[0]))` call
+   recomputed a hardcoded default with no persistence. Tried
+   `st.query_params` first - discovered empirically that Streamlit's
+   built-in multipage sidebar nav links reset the URL's query string on
+   every page switch (a known Streamlit limitation, not something we can
+   fix from app code), so that approach can't work here. Fixed instead
+   with `st.session_state` (confirmed with an isolated minimal 2-page
+   repro app that state genuinely persists across page navigation via
+   session_state, unlike query_params).
+3. A team name with a trailing space ("The Brown Downs ") broke Markdown
+   bold rendering (`**The Brown Downs **` isn't valid CommonMark bold,
+   since a closing `**` can't be preceded by whitespace) - showed up as
+   literal asterisks on the Matchups page. Fixed with `.strip()` before
+   wrapping in `**`.
+
+Validated against real data on the 2025 season (fully completed): Home
+page standings/power rankings/headline cards render correctly and match
+previously-validated metrics; Luck page's Actual/Expected/All-Play
+records, Fraud badges, and the matchup-vs-median breakdown expander all
+check out; Matchups page renders played-game scores correctly, and the
+win-probability function for not-yet-played games was verified directly
+against real data (`dd.project_matchup_win_probability` returns a valid
+0-1 probability). The "not enough data yet" empty states for the
+in-progress 2026 season (0 completed weeks so far) render correctly
+without crashing rather than showing fabricated data.
+
+**Known gaps intentionally left for later phases** (not bugs - matches
+spec's "never fabricate missing data" principle): no Playoff Probability
+column or Projected Champion card (Phase 7, needs Monte Carlo sim), no
+per-team short commentary on Home (Phase 8, needs the commentary
+module), no historical head-to-head on Matchups cards (Phase 6).
+
+**Phases 5-8:** Not started (Manager lineup efficiency; History/Hall of
+Fame/head-to-head; Playoff simulation; Weekly recap + Claude commentary).
+Note: the user has begun gathering manager personality/context material
+from GroupMe (`Salted by Quincy` and `Pike Fantasy football` group chats)
+for eventual use in Phase 8 commentary - reviewed in chat, NOT yet
+written to the database per the user's explicit request ("will come back
+and edit later"). Don't add a personalities/bios table or column on your
+own initiative; wait for the user to provide the finalized version.
 
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist

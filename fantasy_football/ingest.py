@@ -340,6 +340,51 @@ def ingest_recent_activity(
         offset += page_size
 
 
+def ingest_future_schedule(
+    conn, league, season: int, team_pk_by_espn_id: dict, from_week: int, through_week: int, log=print
+) -> None:
+    """Pull just the pairing (no scores) for not-yet-played REGULAR SEASON
+    weeks of the CURRENT season, so the Matchups page can show upcoming
+    games and a win-probability projection. Only regular season - playoff
+    pairings aren't real fixed matchups until the bracket is seeded, so
+    showing a "future" playoff matchup here would be fabricating a game
+    that might never happen. Scores are stored as NULL (not 0 - a 0 would
+    look like a real, very bad score), completed is always 0."""
+    for week in range(from_week, through_week + 1):
+        try:
+            matchups = league.scoreboard(week)
+        except Exception as exc:  # noqa: BLE001
+            log(f"[warn] season {season} future week {week}: {exc}")
+            continue
+        for m in matchups:
+            home_team = getattr(m, "home_team", None)
+            away_team = getattr(m, "away_team", None)
+            home_pk = (
+                team_pk_by_espn_id.get(home_team.team_id) if isinstance(home_team, ESPNTeam) else None
+            )
+            away_pk = (
+                team_pk_by_espn_id.get(away_team.team_id) if isinstance(away_team, ESPNTeam) else None
+            )
+            if home_pk is None or away_pk is None:
+                continue
+            db.upsert(
+                conn,
+                "matchups",
+                {
+                    "season_id": season,
+                    "week": week,
+                    "home_team_pk": home_pk,
+                    "away_team_pk": away_pk,
+                    "home_score": None,
+                    "away_score": None,
+                    "is_playoff": 0,
+                    "matchup_type": "NONE",
+                    "completed": 0,
+                },
+                conflict_cols=["season_id", "week", "home_team_pk", "away_team_pk"],
+            )
+
+
 def ingest_season(conn, client: ESPNClient, season: int, log=print) -> None:
     league = client.get_league(season)
     current_season = client.credentials.current_season
@@ -365,6 +410,16 @@ def ingest_season(conn, client: ESPNClient, season: int, log=print) -> None:
         log(f"[warn] season {season} draft: {exc}")
 
     if season == current_season:
+        reg_season_count = league.settings.reg_season_count
+        if last_week < reg_season_count:
+            try:
+                ingest_future_schedule(
+                    conn, league, season, team_pk_by_espn_id,
+                    from_week=last_week + 1, through_week=reg_season_count, log=log,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log(f"[warn] season {season} future schedule: {exc}")
+
         try:
             ingest_recent_activity(conn, league, season, team_pk_by_espn_id)
         except Exception as exc:  # noqa: BLE001
