@@ -247,6 +247,21 @@ CREATE TABLE IF NOT EXISTS roster_strength_weekly (
     UNIQUE(season_id, week, team_pk)
 );
 
+CREATE TABLE IF NOT EXISTS weekly_recaps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season_id INTEGER NOT NULL REFERENCES seasons(season_id),
+    week INTEGER NOT NULL,
+    -- structured facts this recap was generated from (weekly awards,
+    -- standings movers, next week's projected game to watch, etc.) -
+    -- saved alongside the prose so the exact inputs Claude/the
+    -- placeholder saw are always inspectable, not just the output.
+    facts_json TEXT NOT NULL,
+    commentary_text TEXT NOT NULL,
+    source TEXT NOT NULL,  -- 'claude' | 'placeholder' (no API key, or Claude call failed/refused)
+    generated_at TEXT NOT NULL,
+    UNIQUE(season_id, week)
+);
+
 CREATE TABLE IF NOT EXISTS refresh_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at TEXT NOT NULL,

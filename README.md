@@ -146,5 +146,13 @@ stats and optional Claude-generated commentary.
   account id changes (a real thing that happened for 2 managers in
   2026 - see `db.primary_owner_join_sql`)
 
-Later phases (lineup efficiency, History/Hall of Fame, playoff
-simulation, Claude commentary) will be documented here as they land.
+**Weekly Recap (done)**
+- `pages/7_Weekly_Recap.py`: a recap of the selected week, built ONLY from stats already
+  calculated elsewhere - Claude (or a deterministic placeholder, when `ANTHROPIC_API_KEY` isn't
+  set) never computes a single number, only the writeup
+- Sections: Headline, Game of the Week, Beatdown of the Week, Bad Beat, Manager of the Week,
+  Coaching Disaster, Fraud Watch, Power Ranking Movers, Next Week's Game to Watch
+- Generated once per season/week and stored (`weekly_recaps` table) - a page view never
+  re-triggers a Claude call; use the "Regenerate" button to force a fresh one
+- An "Underlying facts" expander shows the exact structured JSON the recap was written from
+- Requires a completed regular-season week to recap - no partial-week recaps

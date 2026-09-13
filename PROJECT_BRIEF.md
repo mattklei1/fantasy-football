@@ -788,7 +788,82 @@ than guessing if a season ever used a different format (none has, but
 per the spec's "document the limitation, don't guess" instruction this
 isn't assumed away).
 
-**Phase 8:** Not started (Weekly recap + Claude commentary).
+**Phase 8 (DONE 2026-09-13):** Weekly recap + Claude commentary. New:
+`fantasy_football/metrics/weekly_awards.py` (+ unit tests - pure,
+single-WEEK, not cumulative: Manager of the Week, Highest/Lowest Score,
+Biggest Blowout, Closest Game, Bad Beat, Luckiest Win, Unluckiest Loss,
+Coaching Disaster, Best/Worst Lineup Efficiency), `fantasy_football/
+commentary.py` (+ unit tests - structured facts builder, deterministic
+placeholder writer, Claude writer, and `get_or_generate_weekly_recap()`
+which persists to a new `weekly_recaps` table so a recap is generated
+ONCE per season/week, never re-triggered by a page view), `pages/
+7_Weekly_Recap.py`.
+
+**"Luckiest Win"/"Unluckiest Loss" use that week's ALL-PLAY record**
+(reusing `season_metrics.compute_all_play` directly), not just raw
+score - the team that won despite the WEAKEST all-play record that week
+(luckiest) / lost despite the STRONGEST (unluckiest). This is a more
+rigorous "how lucky" signal than plain score comparison and can't
+silently disagree with the Luck page's own all-play-based definition,
+since it's the same underlying function. "Biggest Fraud" is
+deliberately NOT recomputed as a one-week stat - it pulls the existing
+season-to-date `fraud_index` straight from that week's `metrics_weekly`
+row, so FRAUD WATCH always agrees with the Luck page.
+
+**Coaching Disaster** only fires as a genuine "this lineup call flipped
+a loss into what would've been a win" when the optimal lineup's points
+that week would have topped the opponent's REAL score - not just
+"biggest points left on bench" (which could belong to a team that won
+anyway, or would have lost either way). Falls back to the single
+biggest points-left-on-bench of the week when no result-flipping
+mistake happened - a real, documented stat, not a fabricated disaster.
+Verified with two unit tests engineering both outcomes from the same
+base matchup (one where the bench points DON'T beat the opponent's real
+score, one where they do).
+
+**Weekly recap is scoped to REGULAR SEASON weeks only** (same
+convention as the rest of the app) and requires that week's
+`weekly_team_scores` rows to show `completed=1` - returns `None` rather
+than fabricating a recap from a partially-played week.
+
+**Storage/regeneration design:** `weekly_recaps` stores the exact
+`facts_json` a recap was generated from alongside the `commentary_text`
+and a `source` flag (`'claude'` vs `'placeholder'`) - the page's
+"Underlying facts" expander shows exactly what Claude/the placeholder
+saw, useful for catching a bad AI take without re-deriving the stats by
+hand. `get_or_generate_weekly_recap()` checks this table FIRST and only
+computes+calls Claude when no row exists (or `force_regenerate=True`,
+wired to the page's "Regenerate" button) - a page view can never
+silently re-spend API budget. Any Claude failure (auth error, rate
+limit, network error, or a `stop_reason == "refusal"`) is caught broadly
+and falls back to the placeholder rather than crashing the page or
+leaving the week un-recapped - logged as a `[warn]` line, same
+convention as `ingest.py`'s per-source error handling.
+
+**Claude call uses `claude-opus-5`** (adaptive thinking, no beta
+features needed - this is a single, non-agentic text-generation call),
+prompted with the exact structured `facts_json` and an explicit
+"NEVER invent a stat, score, or name not present in the JSON" instruction, matching
+the spec's tone requirement (ESPN/The Athletic crossed with group-chat
+trash talk) and exact section list (HEADLINE, GAME OF THE WEEK, BEATDOWN
+OF THE WEEK, BAD BEAT, MANAGER OF THE WEEK, COACHING DISASTER, FRAUD
+WATCH, POWER RANKING MOVERS, NEXT WEEK'S GAME TO WATCH). Not yet tested
+against the REAL API in this session (no `ANTHROPIC_API_KEY` configured
+in this environment) - the placeholder path (which uses the identical
+facts-building and storage code, just a different final writer) was
+validated end-to-end against real 2025 season data instead, including
+the DB round-trip and in-browser rendering. If a future session has a
+real key, spot-check `source == 'claude'` renders sensibly before
+trusting it blindly.
+
+**"Next Week's Game to Watch"** reuses the exact same `expected_score`/
+`win_probability`/`MIN_STDEV` model as the Matchups page (metrics/
+win_probability.py) - projected from stats as of the week just
+completed - and picks whichever scheduled matchup has a win probability
+closest to 50/50. Correctly returns `None` ("Schedule not available
+yet") for the season's final regular-season week (no week-after-that to
+project), rather than reaching into playoff weeks it was never asked to
+handle.
 
 **FantasyPros integration into Roster Strength (DONE 2026-09-13).** The
 user purchased FantasyPros API access; the key is stored as
