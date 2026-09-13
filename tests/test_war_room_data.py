@@ -9,7 +9,12 @@ import json
 import pandas as pd
 import pytest
 
-from fantasy_football.war_room_data import blend_trade_value, evaluate_trade, optimal_roster_value
+from fantasy_football.war_room_data import (
+    blend_trade_value,
+    build_waiver_suggestion_reasoning,
+    evaluate_trade,
+    optimal_roster_value,
+)
 
 
 def test_blends_both_signals_when_present():
@@ -146,3 +151,40 @@ def test_evaluate_trade_no_bench_impact_when_receiving_player_still_sits():
     # player, so he just sits - gain should be 0, not +25.
     assert result["Team A"]["gain"] == pytest.approx(0.0)
     assert result["Team A"]["newly_starting"] == []
+
+
+# --- build_waiver_suggestion_reasoning -------------------------------------
+
+def test_reasoning_flags_missing_position_entirely():
+    text = build_waiver_suggestion_reasoning("TE", 40.0, None, 0, 10.0, 50.0)
+    assert "nobody rostered at TE" in text
+
+
+def test_reasoning_flags_real_starter_upgrade():
+    text = build_waiver_suggestion_reasoning("WR", 70.0, 50.0, 2, 15.0, 50.0)
+    assert "upgrade" in text
+    assert "70" in text and "50" in text
+
+
+def test_reasoning_does_not_claim_upgrade_when_worse_than_current_best():
+    text = build_waiver_suggestion_reasoning("WR", 30.0, 50.0, 2, 15.0, 50.0)
+    assert "upgrade" not in text
+
+
+def test_reasoning_flags_thin_bench_depth():
+    zero_depth = build_waiver_suggestion_reasoning("RB", 20.0, 60.0, 0, 10.0, 50.0)
+    one_depth = build_waiver_suggestion_reasoning("RB", 20.0, 60.0, 1, 10.0, 50.0)
+    two_depth = build_waiver_suggestion_reasoning("RB", 20.0, 60.0, 2, 10.0, 50.0)
+    assert "zero bench depth" in zero_depth
+    assert "only one bench player" in one_depth
+    assert "bench depth" not in two_depth and "bench player" not in two_depth
+
+
+def test_reasoning_flags_bid_exceeding_remaining_budget():
+    text = build_waiver_suggestion_reasoning("RB", 20.0, 60.0, 2, 75.0, 50.0)
+    assert "exceeds your $50" in text
+
+
+def test_reasoning_falls_back_to_generic_when_nothing_else_applies():
+    text = build_waiver_suggestion_reasoning("K", 20.0, 60.0, 2, 5.0, 50.0)
+    assert text == "best available K on waivers right now"

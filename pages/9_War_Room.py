@@ -38,7 +38,9 @@ if not config.fantasypros_api_key():
         "will be empty. Trade Calculator still works off ESPN's own positional rank alone."
     )
 
-tab_rankings, tab_waiver, tab_trade = st.tabs(["Rankings Browser", "Waiver Board", "Trade Calculator"])
+tab_rankings, tab_waiver, tab_mine, tab_trade = st.tabs(
+    ["Rankings Browser", "Waiver Board", "My Waiver Bids", "Trade Calculator"]
+)
 
 with tab_rankings:
     st.caption(
@@ -129,6 +131,55 @@ useful for sanity-checking a bid, not gospel.
 Free agents with no FantasyPros match (deep bench players, or anyone FantasyPros doesn't rank at
 that position) show no suggested bid rather than a fabricated one.
                 """
+            )
+
+with tab_mine:
+    st.caption(
+        "Your top waiver targets, ranked and diversified across positions (max 3 per position so a "
+        "superflex QB run doesn't crowd out everything else), each with a specific suggested drop "
+        "from your own roster and plain-language reasoning - position need, whether it's a real "
+        "starter upgrade or just bench insurance, and your real remaining FAAB budget (pulled "
+        "straight from ESPN's own per-team spend tracker). Every number is a real computed fact - "
+        "nothing here is LLM-generated."
+    )
+    trade_rosters_for_teams = wr.get_trade_rosters(season)
+    if trade_rosters_for_teams.empty:
+        st.info("No roster data available yet this season.")
+    else:
+        my_teams = sorted(trade_rosters_for_teams["team_name"].dropna().unique().tolist())
+        my_team_name = st.selectbox("Your team", my_teams, key="wr_my_team")
+        my_team_pk = int(
+            trade_rosters_for_teams.loc[trade_rosters_for_teams["team_name"] == my_team_name, "team_pk"].iloc[0]
+        )
+
+        with st.spinner("Building suggestions..."):
+            suggestions = wr.get_my_waiver_suggestions(season, my_team_pk, top_n=10)
+
+        if not suggestions:
+            st.info("No suggestions available right now - check FANTASYPROS_API_KEY, or try again later.")
+        else:
+            for i, s in enumerate(suggestions, start=1):
+                with st.container(border=True):
+                    cols = st.columns([3, 2, 2])
+                    with cols[0]:
+                        st.markdown(f"**#{i}. {s['player_name']}** ({s['position']}, {s['pro_team']})")
+                        st.caption(s["reasoning"])
+                    with cols[1]:
+                        bid_label = f"${s['suggested_bid']:.0f}"
+                        if not s["affordable"]:
+                            bid_label += " ⚠️"
+                        st.metric("Suggested bid", bid_label)
+                    with cols[2]:
+                        if s["suggested_drop"]:
+                            st.metric("Suggested drop", s["suggested_drop"], f"{s['suggested_drop_value']:.0f} val")
+                        else:
+                            st.caption("No clear drop candidate (empty bench)")
+
+            st.caption(
+                "This list doesn't submit anything to ESPN yet - the auto-submit piece (a real, "
+                "money-moving write to ESPN's undocumented waiver-claim endpoint) is still being "
+                "built and verified. For now, review this list and place your picks yourself in the "
+                "ESPN app."
             )
 
 GAIN_NEUTRAL_THRESHOLD = 5.0  # value-score points; a "gain" smaller than this counts as a wash for that side

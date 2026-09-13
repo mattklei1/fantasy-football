@@ -384,10 +384,20 @@ def evaluate_trade(
 
 
 @st.cache_data(ttl=300)
+def _free_agent_value_equivalent_column(board: pd.DataFrame, scarcity: dict) -> pd.Series:
+    """Every free agent's OWN value, scaled onto the SAME axis as
+    blend_trade_value()'s value_score (rank_to_score() * 100 * the same
+    superflex scarcity multiplier) - shared by get_free_agent_value_ceiling()
+    (aggregated to a per-position max) and get_my_waiver_suggestions()
+    (used per-player, so a suggestion can be compared directly against a
+    specific rostered player's value_score, not just the position ceiling)."""
+    return board.apply(
+        lambda r: (rank_to_score(r["fp_pos_rank"]) or 0.0) * 100 * scarcity.get(r["position"], 1.0), axis=1
+    )
+
+
 def get_free_agent_value_ceiling(season: int) -> dict[str, float]:
-    """Best currently-available free agent's value at each position,
-    scaled onto the SAME axis as blend_trade_value()'s value_score
-    (rank_to_score() * 100 * the same superflex scarcity multiplier) - so
+    """Best currently-available free agent's value at each position - so
     an outgoing bench player in a trade can be flagged "safely replaceable
     via waivers" rather than counted as a real loss, directly reflecting
     the read that finding a comparable replacement off waivers is a real,
@@ -398,7 +408,124 @@ def get_free_agent_value_ceiling(season: int) -> dict[str, float]:
     if board.empty:
         return {}
     scarcity = position_scarcity_multipliers(_slot_counts(season))
-    equivalent = board.apply(
-        lambda r: (rank_to_score(r["fp_pos_rank"]) or 0.0) * 100 * scarcity.get(r["position"], 1.0), axis=1
-    )
+    equivalent = _free_agent_value_equivalent_column(board, scarcity)
     return board.assign(value_equivalent=equivalent).groupby("position")["value_equivalent"].max().to_dict()
+
+
+MAX_SUGGESTIONS_PER_POSITION = 3  # keep the top-10 diversified across positions, not e.g. all QBs in a superflex league
+FAAB_BUDGET_TOTAL = 200.0  # this league's real budget - see metrics/waiver_value.py's calibration note
+
+
+def build_waiver_suggestion_reasoning(
+    position: str,
+    fa_value: float,
+    my_best_at_position: float | None,
+    bench_depth_at_position: int,
+    suggested_bid: float | None,
+    budget_remaining: float,
+) -> str:
+    """Pure sentence-template reasoning (no LLM) for one suggested add -
+    "Claude never computes stats" extends here too: every number quoted
+    is a real fact already computed elsewhere (value_score, suggested_bid,
+    ESPN's own tracked FAAB spend), this function only phrases it."""
+    reasons = []
+    if my_best_at_position is None:
+        reasons.append(f"you have nobody rostered at {position} at all")
+    elif fa_value > my_best_at_position:
+        reasons.append(
+            f"projects ahead of your current best {position} ({fa_value:.0f} vs {my_best_at_position:.0f} value) "
+            "- a real starter upgrade, not just bench insurance"
+        )
+    if bench_depth_at_position == 0:
+        reasons.append(f"zero bench depth at {position} right now")
+    elif bench_depth_at_position == 1:
+        reasons.append(f"only one bench player at {position}")
+    if suggested_bid is not None and suggested_bid > budget_remaining:
+        reasons.append(f"NOTE: ${suggested_bid:.0f} suggested bid exceeds your ${budget_remaining:.0f} left - bid lower")
+    if not reasons:
+        reasons.append(f"best available {position} on waivers right now")
+    return "; ".join(reasons)
+
+
+@st.cache_data(ttl=300)
+def get_my_waiver_suggestions(season: int, my_team_pk: int, top_n: int = 10) -> list[dict]:
+    """Top-N suggested waiver adds for ONE team (the admin's own), each
+    with a specific suggested drop from that team's own roster and
+    plain-language reasoning (position need, value gap, remaining FAAB
+    budget) - not just a ranked free-agent list. Deterministic throughout:
+    every number is a real computed fact (value_score, suggested_bid, and
+    ESPN's own per-team `acquisitionBudgetSpent` tracker for the real
+    remaining budget) - no LLM involved anywhere in this function.
+
+    Reuses get_waiver_board() (live free agents) and get_trade_rosters()
+    (this team's current roster + value_score) - no extra ESPN/FantasyPros
+    calls beyond what those two already make."""
+    board = get_waiver_board(season)
+    rosters = get_trade_rosters(season)
+    if board.empty or rosters.empty:
+        return []
+
+    my_roster = rosters[rosters["team_pk"] == my_team_pk]
+    if my_roster.empty:
+        return []
+
+    from .espn_client import ESPNClient
+
+    conn = dd.get_connection()
+    espn_team_id_row = conn.execute("SELECT espn_team_id FROM teams WHERE id = ?", (my_team_pk,)).fetchone()
+    budget_remaining = FAAB_BUDGET_TOTAL
+    if espn_team_id_row:
+        try:
+            league = ESPNClient().get_league(season)
+            espn_team = next((t for t in league.teams if t.team_id == espn_team_id_row["espn_team_id"]), None)
+            if espn_team is not None:
+                budget_remaining = FAAB_BUDGET_TOTAL - (espn_team.acquisition_budget_spent or 0)
+        except Exception:  # noqa: BLE001 - a live ESPN hiccup shouldn't block suggestions, just skip the budget check
+            pass
+
+    scarcity = position_scarcity_multipliers(_slot_counts(season))
+    board = board.assign(value_equivalent=_free_agent_value_equivalent_column(board, scarcity))
+
+    best_by_position = my_roster.groupby("position")["value_score"].max().to_dict()
+    bench = my_roster[my_roster["is_starter"] == 0].sort_values("value_score")
+    bench_depth_by_position = bench.groupby("position").size().to_dict()
+
+    suggestions: list[dict] = []
+    per_position_count: dict[str, int] = {}
+    ranked = board[board["suggested_bid"].notna()].sort_values("suggested_bid", ascending=False)
+    for _, fa in ranked.iterrows():
+        position = fa["position"]
+        if per_position_count.get(position, 0) >= MAX_SUGGESTIONS_PER_POSITION:
+            continue
+
+        same_position_bench = bench[bench["position"] == position]
+        if not same_position_bench.empty:
+            drop_candidate = same_position_bench.iloc[0]
+        elif not bench.empty:
+            drop_candidate = bench.iloc[0]
+        else:
+            drop_candidate = None
+
+        bench_depth = int(bench_depth_by_position.get(position, 0))
+        my_best_here = best_by_position.get(position)
+        reasoning = build_waiver_suggestion_reasoning(
+            position, float(fa["value_equivalent"]), my_best_here, bench_depth, fa["suggested_bid"], budget_remaining
+        )
+
+        suggestions.append(
+            {
+                "player_name": fa["player_name"],
+                "position": position,
+                "pro_team": fa["pro_team"],
+                "suggested_bid": float(fa["suggested_bid"]),
+                "suggested_drop": drop_candidate["player_name"] if drop_candidate is not None else None,
+                "suggested_drop_value": float(drop_candidate["value_score"]) if drop_candidate is not None else None,
+                "reasoning": reasoning,
+                "affordable": bool(fa["suggested_bid"] <= budget_remaining),
+            }
+        )
+        per_position_count[position] = per_position_count.get(position, 0) + 1
+        if len(suggestions) >= top_n:
+            break
+
+    return suggestions

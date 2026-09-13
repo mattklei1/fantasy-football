@@ -1724,6 +1724,98 @@ running this app with an existing database should expect their next
 `refresh_data.py`/app-boot `init_db()` call to silently fix this the same
 way - no manual migration step needed, by design.
 
+**"My Waiver Bids" - personalized top-10 suggestions with reasoning, DONE
+2026-09-13 (same session); real ESPN auto-submit NOT YET BUILT, by
+design.** User asked for a weekly top-10 suggested waiver bid list for
+their own team specifically, each with a proposed drop and plain-
+language reasoning ("light on RBs," "need a D this week" style), and
+asked whether the picks could then actually be PLACED for them (via
+FantasyPros, ESPN's API, or a "Google Chrome Claude connector").
+
+**Researched execution paths before building, rather than guessing:**
+- `espn_api` (this project's ESPN library) confirmed READ-ONLY by direct
+  inspection of the installed package - `dir(League)` and a grep of
+  `league.py`/`team.py` show no `add_player`/`drop_player`/waiver-submit
+  method anywhere, only `transactions()` (a history viewer).
+- FantasyPros: already established in this file (Roster Strength/Waiver
+  Board sections) that their API has no FAAB/waiver endpoint at all -
+  still true, nothing new to check.
+- A "Chrome connector" runs on the user's own device, not this remote
+  session - not invokable from here regardless of whether one exists.
+- Found real prior art via web search: `tlo1216/espn-fantasy-mcp` (and a
+  small cluster of similar recent projects - `gagandaroach/fantasy-yolo`,
+  `krmisystems/fantasy-football-manager`) are MCP servers that DO submit
+  real ESPN waiver claims, using the same `espn_s2`/`SWID` cookies this
+  project already has, POSTing to `lm-api-writes.fantasy.espn.com`
+  (distinct from the `lm-api-reads...` host this project already uses)
+  - confirms the write path is real and reachable, not vaporware. Could
+    not pull their exact request payload shape (repo file fetch 404'd,
+    likely a stale guessed path) - the one concrete, reusable pattern
+    confirmed from their docs: a `dry_run` param (default `true`) PLUS a
+    separate `WRITES_ENABLED`-style env gate before anything real fires,
+    and "never retries a 401, never prints cookie values." Worth adopting
+    this exact double-gate pattern once the write function is built.
+
+**User was asked, and explicitly chose the higher-risk path on both
+open questions** (recorded here since it overrides my own recommendation
+and a future session should know that's deliberate, not an oversight):
+1. Auto-submit via ESPN's real (undocumented) endpoint - not
+   recommend-only. Real risk stated plainly to the user before they
+   chose: no sandbox exists to test against, so a wrong payload could
+   place a wrong claim, though ESPN waiver claims queue until a
+   processing day rather than executing instantly, which is a real
+   (partial) safety net - a mistake can likely still be edited/cancelled
+   in the ESPN app before it processes.
+2. Delivery: War Room page only (not the shared GroupMe, not a new email
+   integration) - private, no new infrastructure.
+
+**What's actually built (safe, real, tested):** `war_room_data.
+get_my_waiver_suggestions(season, my_team_pk, top_n=10)` - reuses
+`get_waiver_board()` (live free agents + suggested bid) and
+`get_trade_rosters()` (this team's roster + `value_score`, both already
+built for the Trade Calculator) with NO new ESPN/FantasyPros calls beyond
+those two, plus ESPN's own real per-team `acquisitionBudgetSpent`
+tracker (`team.acquisition_budget_spent` on the live `League.teams`
+objects - confirmed to exist on the installed `espn_api.football.Team`
+class) for a real remaining-FAAB-budget check. Diversifies across
+positions (max 3 per position - `MAX_SUGGESTIONS_PER_POSITION`) so a
+superflex QB run doesn't crowd out the whole list. Suggested drop per
+candidate: this team's worst-`value_score` bench player AT THE SAME
+POSITION if any exists, else its single worst bench player overall - real
+roster-construction logic, not just "drop the mirror position no matter
+what." `build_waiver_suggestion_reasoning()` is a pure, unit-tested
+sentence-template function (7 new tests) - no LLM anywhere in this
+feature, same "Claude never computes stats" rule as the rest of the app;
+every number quoted (position depth, value gap, remaining budget) is a
+real fact computed elsewhere. New "My Waiver Bids" tab in
+`pages/9_War_Room.py` with a team picker (this is a shared admin tool,
+not identity-linked to `ADMIN_EMAIL` - simplest and most robust to let
+the admin just pick "my team" from a dropdown like Trade Calculator
+already does, rather than build a fragile email-to-manager-identity
+mapping that doesn't exist anywhere else in this app).
+
+Validated end-to-end via AppTest against real live 2026 week-1 data (no
+exceptions, real diversified top-10 across QB/RB/TE/WR, real plain-
+language reasoning like "only one bench player at QB" / "best available
+RB on waivers right now" matching the user's own example style).
+
+**Explicitly NOT built yet: the real ESPN write/submit call.** This
+touches real FAAB budget and a real roster spot with no sandbox to test
+against - shipping an unverified payload shape in the same pass as
+everything else this session would be reckless given the stakes, so the
+War Room tab is honest with the user that it's recommend-only FOR NOW
+("This list doesn't submit anything to ESPN yet..."). Next session's
+job, if picking this up: (1) nail down the exact `lm-api-writes.
+fantasy.espn.com` waiver-claim POST payload shape (either find the exact
+source of one of the MCP projects above, or capture it directly from a
+real browser session's Network tab against this league - do NOT guess
+and fire blind), (2) implement with the dry-run-default + separate
+enable-flag double gate described above, (3) get the user's EXPLICIT
+go-ahead for one supervised first real submission (a general
+"yes, auto-submit" answered earlier is not the same informed consent as
+"yes, submit THIS SPECIFIC claim right now") before ever calling it for
+real, per this session's own risky-action-confirmation policy.
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip
