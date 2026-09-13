@@ -57,6 +57,19 @@ def conn():
             "INSERT INTO metrics_weekly (season_id, week, team_pk, power_score, ppg, last3_ppg, fraud_index) "
             "VALUES (2099, 1, ?, ?, ?, ?, 0.1)", (team_pk, power, ppg, ppg),
         )
+
+    # week 1 starting lineups for team 1 (Team A) - used by starting_rosters
+    c.execute("INSERT INTO players (player_id, player_name, default_position) VALUES (1, 'Star QB', 'QB')")
+    c.execute("INSERT INTO players (player_id, player_name, default_position) VALUES (2, 'Bench RB', 'RB')")
+    c.execute(
+        "INSERT INTO weekly_rosters (season_id, week, team_pk, player_id, slot_position, is_starter, eligible_slots) "
+        "VALUES (2099, 1, 1, 1, 'QB', 1, '[\"QB\", \"BE\"]')"
+    )
+    c.execute(
+        "INSERT INTO weekly_rosters (season_id, week, team_pk, player_id, slot_position, is_starter, eligible_slots) "
+        "VALUES (2099, 1, 1, 2, 'BE', 0, '[\"RB\", \"BE\"]')"
+    )
+    c.execute("INSERT INTO player_week_scores (season_id, week, player_id, points) VALUES (2099, 1, 1, 45.2)")
     c.commit()
     return c
 
@@ -74,6 +87,32 @@ def test_build_weekly_facts_returns_populated_facts(conn):
     assert facts["awards"]["highest_score"]["team"]["manager_name"] == "Alice"
     # no metrics_weekly row for week 0 -> movers list is empty, not a crash
     assert facts["next_week_game_to_watch"] is not None
+
+
+def test_starting_rosters_includes_starters_only_with_real_points(conn):
+    facts = commentary.build_weekly_facts(conn, 2099, 1)
+    team_a_roster = next(r for r in facts["starting_rosters"] if r["team"]["team_name"] == "Team A")
+    names = {p["name"] for p in team_a_roster["players"]}
+    assert names == {"Star QB"}  # Bench RB is is_starter=0, excluded
+    star = next(p for p in team_a_roster["players"] if p["name"] == "Star QB")
+    assert star["points"] == pytest.approx(45.2)
+    assert star["position"] == "QB"
+
+
+def test_starting_rosters_empty_for_team_with_no_roster_data(conn):
+    facts = commentary.build_weekly_facts(conn, 2099, 1)
+    team_b_rosters = [r for r in facts["starting_rosters"] if r["team"]["team_name"] == "Team B"]
+    assert team_b_rosters == []  # no weekly_rosters rows inserted for Team B in the fixture
+
+
+def test_strip_preamble_removes_text_before_first_section_header():
+    text = "I'll search for real bad beats now.\n\n**HEADLINE**\n\nWeek 1 recap here."
+    assert commentary._strip_preamble(text) == "**HEADLINE**\n\nWeek 1 recap here."
+
+
+def test_strip_preamble_leaves_clean_output_unchanged():
+    text = "**HEADLINE**\n\nWeek 1 recap here."
+    assert commentary._strip_preamble(text) == text
 
 
 def test_placeholder_commentary_includes_every_section(conn):

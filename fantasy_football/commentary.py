@@ -1,7 +1,13 @@
 """Weekly recap generation. Consumes structured facts computed elsewhere
 (metrics/weekly_awards.py, metrics_weekly, standings) - never computes
-stats itself, per the project's core rule that Claude is used ONLY for
-written commentary, never for calculating anything. Two writers:
+FANTASY stats itself, per the project's core rule that Claude is used
+ONLY for written commentary, never for calculating anything. The one
+deliberate exception (2026-09-13, user-requested): the BAD BEAT section
+gives Claude a real web_search tool to look up actual NFL news for that
+real-world week and correlate it against `starting_rosters` (a plain,
+deterministic roster+score lookup we already compute) - this is Claude
+finding and reporting REAL external facts, not calculating a fantasy
+stat, so it doesn't violate the rule above. Two writers:
 
 - generate_placeholder_commentary(): deterministic, no API key needed -
   the app must fully work without ANTHROPIC_API_KEY.
@@ -133,6 +139,39 @@ def _game_to_watch(conn: sqlite3.Connection, season: int, week: int, names: dict
     return best
 
 
+def _starting_rosters(conn: sqlite3.Connection, season: int, week: int, names: dict) -> list[dict]:
+    """Real starting lineups for the week (team, player name/position/
+    points) - not a calculated stat, a plain roster+score lookup. Exists
+    so the BAD BEAT section's web-search step (see _build_claude_prompt)
+    has real, ground-truth player names to check real NFL news against,
+    rather than guessing who was rostered. Empty list (not an error) for
+    seasons/weeks with no eligible_slots-era roster data."""
+    query = """
+        SELECT wr.team_pk, p.player_name, p.default_position AS position,
+               COALESCE(pws.points, 0) AS points
+        FROM weekly_rosters wr
+        JOIN players p ON p.player_id = wr.player_id
+        LEFT JOIN player_week_scores pws
+            ON pws.season_id = wr.season_id AND pws.week = wr.week AND pws.player_id = wr.player_id
+        WHERE wr.season_id = ? AND wr.week = ? AND wr.is_starter = 1
+    """
+    rows = pd.read_sql_query(query, conn, params=(season, week))
+    if rows.empty:
+        return []
+    rosters = []
+    for team_pk, group in rows.groupby("team_pk"):
+        rosters.append(
+            {
+                "team": _label(names, int(team_pk)),
+                "players": [
+                    {"name": r.player_name, "position": r.position, "points": round(float(r.points), 1)}
+                    for r in group.itertuples()
+                ],
+            }
+        )
+    return rosters
+
+
 def build_weekly_facts(conn: sqlite3.Connection, season: int, week: int) -> dict | None:
     """Structured facts for one completed regular-season week. Returns
     None if that week hasn't completed yet (nothing to recap) - never
@@ -190,6 +229,7 @@ def build_weekly_facts(conn: sqlite3.Connection, season: int, week: int) -> dict
         "biggest_fraud": biggest_fraud,
         "power_rank_movers": _power_rank_movers(conn, season, week, names),
         "next_week_game_to_watch": _game_to_watch(conn, season, week, names),
+        "starting_rosters": _starting_rosters(conn, season, week, names),
     }
 
 
@@ -283,24 +323,56 @@ def generate_placeholder_commentary(facts: dict) -> str:
 
 
 def _build_claude_prompt(facts: dict) -> str:
+    season, week = facts["season"], facts["week"]
+    bad_beat_instructions = (
+        "For the BAD BEAT section specifically, you have a `web_search` tool - use it to look up REAL NFL "
+        f"news from the actual {season} NFL season, Week {week} (in-game injuries, overturned/reviewed "
+        "plays, garbage-time or kneel-down finishes, officiating controversies, or any other real 'bad "
+        "beat' storyline from that week's real games). Then check `starting_rosters` below: if a player "
+        "named in a real search result is ALSO a player some team here actually STARTED that week, name "
+        "them, describe only what your search results actually support (never embellish beyond them), and "
+        "connect it to that team/manager's real result that week. Only make this connection when a "
+        "rostered player's name is an unambiguous match to what you found via search - if nothing search-"
+        "worthy correlates to a rostered player this week, fall back to `awards.bad_beat` (highest score "
+        "among that week's losing teams) instead of forcing a connection that isn't real. Do not narrate "
+        "your search process (no \"I'll search for...\") - output only the final recap text below."
+    )
     return (
         "You are writing a fantasy football weekly recap for a private league. Tone: ESPN/The Athletic "
-        "crossed with friendly group-chat trash talk - funny, punchy, concise. Base every joke and claim "
-        "ONLY on the JSON facts below. NEVER invent a stat, score, or name not present in the JSON. If a "
-        "section's data is null/missing, skip that section's details gracefully (don't pretend it exists).\n\n"
+        "crossed with friendly group-chat trash talk - funny, punchy, concise. Base every claim about "
+        "THIS LEAGUE'S stats ONLY on the JSON facts below - NEVER invent a fantasy stat, score, or name "
+        "not present in the JSON. The one exception is BAD BEAT, where real web search results are "
+        "allowed (see instructions below) - even there, never fabricate a search result. If a section's "
+        "data is null/missing, skip that section's details gracefully (don't pretend it exists).\n\n"
         "Write exactly these sections, in this order, using these exact headers formatted as Markdown bold "
         "on their own line (e.g. \"**HEADLINE**\"), followed by a blank line before that section's text:\n"
         + "\n".join(SECTION_ORDER)
+        + "\n\n" + bad_beat_instructions
         + "\n\nFACTS (JSON):\n"
         + json.dumps(facts, indent=2)
     )
+
+
+def _strip_preamble(text: str) -> str:
+    """The web-search tool loop can emit narration text ("I'll search
+    for...") as its own `text` content block before the final answer -
+    generate_claude_commentary() concatenates all text blocks in order,
+    so trim anything before the first real section header rather than
+    relying solely on the prompt's "don't narrate" instruction."""
+    anchor = f"**{SECTION_ORDER[0]}**"
+    idx = text.find(anchor)
+    return text[idx:] if idx > 0 else text
 
 
 def generate_claude_commentary(facts: dict, api_key: str) -> str:
     """Raises on any failure - get_or_generate_weekly_recap() catches
     broadly and falls back to the placeholder, per the spec's "must work
     without an API key" requirement extended to "must degrade gracefully
-    if the API call fails too"."""
+    if the API call fails too". Includes Anthropic's server-side
+    web_search tool (see module docstring) so the BAD BEAT section can
+    ground itself in real NFL news - capped at 3 searches, more than
+    enough for one well-scoped "what happened this week" question per
+    Anthropic's own sizing guidance."""
     import anthropic
 
     client = anthropic.Anthropic(api_key=api_key)
@@ -308,11 +380,12 @@ def generate_claude_commentary(facts: dict, api_key: str) -> str:
         model=CLAUDE_MODEL,
         max_tokens=MAX_TOKENS,
         thinking={"type": "adaptive"},
+        tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}],
         messages=[{"role": "user", "content": _build_claude_prompt(facts)}],
     )
     if response.stop_reason == "refusal":
         raise RuntimeError(f"Claude declined to generate this recap: {response.stop_details}")
-    text = "".join(block.text for block in response.content if block.type == "text")
+    text = _strip_preamble("".join(block.text for block in response.content if block.type == "text"))
     if not text.strip():
         raise RuntimeError("Claude returned an empty recap")
     return text

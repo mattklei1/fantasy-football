@@ -1567,6 +1567,70 @@ correctly named the bumped starter, and correctly tagged real bench
 players as waiver-replaceable against the live free-agent pool. 162/162
 tests passing.
 
+**GroupMe slate updates now sort by PROJECTED finish, not score-so-far
+margin (2026-09-13, same session).** Real bug the user reported: "a lot
+of times people have big leads because noone on the other team has
+played" - a 60-10 score-so-far gap can be a near-toss-up once the
+trailing team's not-yet-played players are accounted for.
+`slate_report.MatchupSnapshot` now carries `home_projected`/
+`away_projected` (ESPN's own live BoxScore field, already proven
+elsewhere in this project to BE the right "how will this actually end up"
+number - see the Matchups page's win-probability work); `build_message()`
+ranks "closest games" by `projected_margin` instead of raw `margin`, and
+each line shows the projected final score alongside the current one. 8
+tests total (`tests/test_slate_report.py`), including one that
+constructs the exact false-blowout-vs-real-toss-up scenario and asserts
+the ranking flips correctly. Re-validated against real live week-1 data.
+
+**Weekly Recap's BAD BEAT section can now ground itself in real NFL news
+via Claude's web_search tool (2026-09-13, same session).** The user's
+ask: correlate real "bad beats" (injuries, blown calls, garbage-time/
+kneel-down finishes) against this league's actual rosters for the week,
+not just the existing purely-statistical "highest score among losing
+teams" definition. Researched the mechanism before building (Anthropic's
+docs for the server-side `web_search_20250305` tool) rather than assuming
+a shape - confirmed the exact tool-definition JSON and response block
+structure, and validated the installed `anthropic` SDK (1.5.0) accepts a
+plain dict tool definition by sending one with a deliberately-invalid API
+key and confirming a clean 401 (proves the request reached the network
+layer, not a client-side shape rejection) - same "can't hit the real key
+locally, verify what you can" approach used for the Gemini AMA
+integration.
+
+New: `commentary._starting_rosters()` - a plain, deterministic roster+
+score lookup (NOT a calculated stat) added to `build_weekly_facts()`'s
+output as `starting_rosters`, giving Claude real ground-truth player
+names to check real search results against. `_build_claude_prompt()` now
+instructs Claude to web-search real NFL news for that real calendar week
+and only report a BAD BEAT connection when a search result's player name
+unambiguously matches someone in `starting_rosters` - explicitly told to
+fall back to the existing statistical `awards.bad_beat` fact rather than
+forcing a connection that isn't real. `generate_claude_commentary()` now
+passes `tools=[{"type": "web_search_20250305", "name": "web_search",
+"max_uses": 3}]`.
+
+**A real formatting risk caught before it could ship**: the server-side
+tool loop can emit its own "I'll search for..." narration as a separate
+`text` content block before the final answer, and the existing text
+extraction (`"".join(block.text for block in response.content if
+block.type == "text")`) concatenates ALL text blocks in order - so that
+narration would land as a stray preamble before "**HEADLINE**" even
+though the prompt also asks Claude not to narrate. Added `_strip_preamble()`
+as a defensive second layer (finds the first real section header and
+discards anything before it) rather than trusting the prompt instruction
+alone. This module doesn't call the real Claude API in this sandbox (no
+`ANTHROPIC_API_KEY` configured, same limitation as the rest of Phase 8) -
+`_strip_preamble()` and `_starting_rosters()` are both fully unit tested
+(4 new tests in `tests/test_commentary.py`, plus the existing fixture
+extended with real roster rows), and `_starting_rosters()` was also
+run against the real, fully-completed 2025 season (week 14) to confirm
+it produces clean, JSON-serializable, correctly-shaped output (12 real
+teams, real starter names/positions/points) - not just a synthetic-
+fixture check. If a future session gets a real API key, spot-check a
+BAD BEAT section renders sensibly (searches actually happen, no stray
+narration leaks through) before trusting it blindly, same as every other
+"can't test the real model locally" note in this file.
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip
