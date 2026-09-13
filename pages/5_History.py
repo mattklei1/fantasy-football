@@ -23,26 +23,31 @@ tab_hof, tab_records, tab_h2h = st.tabs(["Hall of Fame", "League Records", "Head
 
 with tab_hof:
     st.caption(
-        "Championships/playoff appearances/career record are exact facts. Best/Worst Season "
-        "use season-relative PPG percentile, NOT raw points - this league's scoring rules have "
-        "changed over time (PPR value, roster/flex slots), so raw point totals from different "
-        "eras aren't a fair comparison. Career Points is shown for reference only, not for "
-        "ranking - same reason."
+        "Championships/finals/playoff appearances and both records are exact facts. Playoff "
+        "appearances/record count only the real playoff bracket (including placement games "
+        "among teams that qualified) - NOT the separate consolation bracket ESPN runs for "
+        "teams that missed the playoffs, even though ESPN tags both as \"playoff\" weeks. "
+        "Best/Worst Season and Normalized Points use season-relative percentile, NOT raw "
+        "points - this league's scoring rules have changed over time (PPR value, roster/flex "
+        "slots), so raw point totals from different eras aren't a fair comparison; percentile "
+        "compares each season only to its own field. Raw Career Points is shown for reference "
+        "only, not for ranking - same reason."
     )
     hof = hd.get_hall_of_fame()
     if hof.empty:
         st.info("No history data available yet.")
     else:
         display = hof.copy()
-        display["Career Record"] = display.apply(
-            lambda r: ui.format_record(r["career_wins"], r["career_losses"], r["career_ties"]), axis=1
+        display["Regular Season Record"] = display.apply(
+            lambda r: ui.format_record(r["reg_wins"], r["reg_losses"], r["reg_ties"]), axis=1
         )
-        display["Career Win%"] = (
-            (display["career_wins"] + 0.5 * display["career_ties"])
-            / (display["career_wins"] + display["career_losses"] + display["career_ties"]).replace(0, 1)
-            * 100
-        ).round(1).astype(str) + "%"
-        display["Career Points (raw)"] = display["career_points"].round(0).astype(int)
+        display["Playoff Record"] = display.apply(
+            lambda r: ui.format_record(r["playoff_wins"], r["playoff_losses"], r["playoff_ties"]), axis=1
+        )
+        display["Career Points For (raw)"] = display["career_points_for"].round(0).astype(int)
+        display["Career Points Against (raw)"] = display["career_points_against"].round(0).astype(int)
+        display["Normalized Points For"] = (display["career_points_for_pct"] * 100).round(0).astype(int).astype(str) + "th pct avg"
+        display["Normalized Points Against"] = (display["career_points_against_pct"] * 100).round(0).astype(int).astype(str) + "th pct avg"
         display["Best Season"] = display.apply(
             lambda r: (
                 f"{int(r['best_season'])} ({r['best_season_team']}, "
@@ -60,7 +65,9 @@ with tab_hof:
 
         table = display[
             ["manager_name", "championships", "finals_appearances", "playoff_appearances",
-             "seasons_played", "Career Record", "Career Win%", "Career Points (raw)",
+             "seasons_played", "Regular Season Record", "Playoff Record",
+             "Career Points For (raw)", "Career Points Against (raw)",
+             "Normalized Points For", "Normalized Points Against",
              "Best Season", "Worst Season"]
         ].rename(columns={
             "manager_name": "Manager", "championships": "🏆", "finals_appearances": "Finals",

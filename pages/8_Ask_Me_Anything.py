@@ -32,9 +32,17 @@ if not api_key:
     )
     st.stop()
 
-teams = dd.get_standings(season)
+from fantasy_football import history_data as hd
+
+# Manager list comes from ALL seasons (not dd.get_standings(season), which
+# is scoped to whatever season the sidebar currently has selected - that's
+# often the CURRENT season, which has zero completed weeks early on and
+# returned an empty team list, leaving only "Just browsing" with no
+# explanation. "Asking as" is a persistent identity, not a single-season
+# snapshot, and this page already answers cross-season questions anyway.
+managers = hd.get_managers()
 team_options = ["Just browsing"] + (
-    teams["manager_name"].dropna().unique().tolist() if not teams.empty else []
+    managers["display_name"].dropna().unique().tolist() if not managers.empty else []
 )
 asking_as = st.selectbox(
     "Ask as",
