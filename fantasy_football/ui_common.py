@@ -133,6 +133,19 @@ def fraud_badge_html(fraud_index: float | None) -> str:
     return badge_html(fraud_badge(fraud_index))
 
 
+#: Eye-friendly (not pure-saturated) green/red for the Matchups page's
+#: win/loss "bubbles" - same muted palette as BADGE_COLORS above, not a
+#: separate design language.
+STATUS_COLORS = {"win": "#2e7d32", "loss": "#b71c1c", "neutral": "#6b7280"}
+
+
+def status_bubble_html(label: str, tone: str) -> str:
+    """A small colored pill for game status (leading/trailing, favored/
+    underdog, won/lost) - tone is one of "win"/"loss"/"neutral"."""
+    color = STATUS_COLORS.get(tone, STATUS_COLORS["neutral"])
+    return f'<span class="ff-badge" style="background:{color}">{label}</span>'
+
+
 def trend_arrow(change) -> str:
     """Plain-text (no HTML) rank-trend arrow - for st.dataframe/column_config
     cells, which render HTML tags as literal text rather than parsing them

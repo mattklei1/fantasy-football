@@ -1,5 +1,12 @@
-"""MATCHUPS page: per-matchup cards for a selected week, with a custom
-(non-ESPN) win probability for weeks that haven't been played yet."""
+"""MATCHUPS page: per-matchup cards for a selected week. Weeks already
+fully processed into metrics (week <= latest_metrics_week) show the
+final score. Everything else (the current live week, or a future week)
+pulls LIVE ESPN box scores so it shows real-time score + a genuinely
+"right now" projected total - deliberately NOT just the raw score, since
+a big early lead is often just "the other team's players haven't played
+yet," not a real edge. Win probability is our own model (ESPN exposes no
+win-probability field at all - confirmed against the installed espn_api
+source), centered on that live projected total once one exists."""
 from __future__ import annotations
 
 import streamlit as st
@@ -50,42 +57,85 @@ def team_context_line(team_pk: int) -> str:
     )
 
 
-played = matchups["completed"].iloc[0] == 1 if not matchups.empty else False
+is_final_week = latest_metrics_week is not None and week <= latest_metrics_week
+
+live_by_team: dict[int, dict] = {}
+snapshots: dict[int, float] = {}
+live_error = False
+if not is_final_week:
+    try:
+        live_df = dd.get_live_box_scores(season, week)
+        snapshots = dd.get_projection_snapshots(season, week)
+        for _, r in live_df.iterrows():
+            live_by_team[r["home_team_pk"]] = {
+                "score": r["home_score"], "projected": r["home_projected"], "opp": r["away_team_pk"],
+            }
+            live_by_team[r["away_team_pk"]] = {
+                "score": r["away_score"], "projected": r["away_projected"], "opp": r["home_team_pk"],
+            }
+    except Exception:  # noqa: BLE001 - ESPN hiccup shouldn't take the whole page down
+        live_error = True
 
 for _, m in matchups.iterrows():
     with st.container(border=True):
         col_home, col_vs, col_away = st.columns([5, 1, 5])
+        home_pk, away_pk = m["home_team_pk"], m["away_team_pk"]
 
         with col_home:
             # .strip() matters: a trailing space before the closing ** breaks
             # CommonMark bold parsing (some ESPN team names have one)
             st.markdown(f"**{m['home_team_name'].strip()}**")
-            st.caption(team_context_line(m["home_team_pk"]))
+            st.caption(team_context_line(home_pk))
         with col_away:
             st.markdown(f"**{m['away_team_name'].strip()}**")
-            st.caption(team_context_line(m["away_team_pk"]))
+            st.caption(team_context_line(away_pk))
+        with col_vs:
+            st.markdown("<div style='text-align:center'>VS</div>", unsafe_allow_html=True)
 
-        if m["home_score"] is not None and m["away_score"] is not None:
-            with col_vs:
-                st.markdown("<div style='text-align:center'>VS</div>", unsafe_allow_html=True)
-            col_home.metric("Score", f"{m['home_score']:.1f}")
-            col_away.metric("Score", f"{m['away_score']:.1f}")
+        if is_final_week:
+            home_score, away_score = m["home_score"], m["away_score"]
+            col_home.metric("Final", f"{home_score:.1f}")
+            col_away.metric("Final", f"{away_score:.1f}")
+            if home_score is not None and away_score is not None and home_score != away_score:
+                winner_col, loser_col = (col_home, col_away) if home_score > away_score else (col_away, col_home)
+                winner_col.markdown(ui.status_bubble_html("WON", "win"), unsafe_allow_html=True)
+                loser_col.markdown(ui.status_bubble_html("LOST", "loss"), unsafe_allow_html=True)
+        elif live_error or home_pk not in live_by_team:
+            st.caption("Live data not available right now - try refreshing in a moment.")
         else:
-            prob = None
-            if latest_metrics_week:
-                prob = dd.project_matchup_win_probability(
-                    season, m["home_team_pk"], m["away_team_pk"], latest_metrics_week
-                )
-            with col_vs:
-                st.markdown("<div style='text-align:center'>VS</div>", unsafe_allow_html=True)
-            if prob is not None:
-                col_home.progress(prob, text=f"{prob*100:.0f}% win prob.")
-                col_away.progress(1 - prob, text=f"{(1-prob)*100:.0f}% win prob.")
-            else:
-                st.caption("Not enough data yet for a projection.")
+            home_live, away_live = live_by_team[home_pk], live_by_team[away_pk]
+            home_proj, away_proj = home_live["projected"], away_live["projected"]
+            home_snap, away_snap = snapshots.get(home_pk), snapshots.get(away_pk)
 
-if not played and matchups["completed"].iloc[0] == 0:
+            col_home.metric(
+                "Score", f"{home_live['score']:.1f}",
+                delta=f"proj {home_proj:.1f}" + (f" ({home_proj - home_snap:+.1f} vs wk start)" if home_snap is not None else ""),
+                delta_color="off",
+            )
+            col_away.metric(
+                "Score", f"{away_live['score']:.1f}",
+                delta=f"proj {away_proj:.1f}" + (f" ({away_proj - away_snap:+.1f} vs wk start)" if away_snap is not None else ""),
+                delta_color="off",
+            )
+
+            if home_proj > away_proj:
+                col_home.markdown(ui.status_bubble_html("FAVORED", "win"), unsafe_allow_html=True)
+                col_away.markdown(ui.status_bubble_html("UNDERDOG", "loss"), unsafe_allow_html=True)
+            elif away_proj > home_proj:
+                col_away.markdown(ui.status_bubble_html("FAVORED", "win"), unsafe_allow_html=True)
+                col_home.markdown(ui.status_bubble_html("UNDERDOG", "loss"), unsafe_allow_html=True)
+
+            prob = dd.live_win_probability(season, home_pk, away_pk, home_proj, away_proj)
+            col_home.progress(prob, text=f"{prob*100:.0f}% win prob.")
+            col_away.progress(1 - prob, text=f"{(1-prob)*100:.0f}% win prob.")
+
+if not is_final_week:
     st.caption(
-        "Win probability is our own projection (60% season PPG + 40% last-3-week PPG, each "
-        "team's observed scoring variance) - not ESPN's projected score."
+        "Score/projection update live from ESPN (refreshes about once a minute). \"proj\" is each "
+        "team's CURRENT projected total - points scored so far plus the rest of the lineup's "
+        "projections - not just the raw score, so a big early lead from one team's players simply "
+        "having played first doesn't look like a bigger edge than it is. \"vs wk start\" compares "
+        "that to the first projection this app ever saw for the week. Win probability is our own "
+        "model (60%/40% blend of each team's projected total and scoring variance) - ESPN "
+        "publishes no win probability of its own."
     )

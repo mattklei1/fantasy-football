@@ -359,5 +359,90 @@ def project_matchup_win_probability(
     return win_probability(home_proj, away_proj)
 
 
+@st.cache_data(ttl=60)
+def get_live_box_scores(season: int, week: int) -> pd.DataFrame:
+    """Live ESPN box scores for a week - unlike the rest of this module,
+    this hits ESPN directly (cached briefly, 60s) rather than reading the
+    local DB, since the DB only refreshes on a restart or a manual
+    button-click and this is what gives the Matchups page a genuinely
+    "right now" score/projection during live Sunday games. Also records
+    each team's CURRENT projected score as that week's "start of week"
+    snapshot the first time it's ever seen (see
+    matchup_projection_snapshots' schema comment) - a side effect inside
+    a cached read, same pattern ensure_data_bootstrapped() already uses
+    elsewhere in this app.
+
+    espn_api's BoxScore has no separate "pre-week" vs "live" projected
+    field - home_projected/away_projected is ONE number that's the summed
+    starter projections before kickoff and ESPN's live-updating total
+    once games start (confirmed against the installed espn_api source,
+    2026-09-13) - which is exactly why the snapshot table above exists."""
+    from .espn_client import ESPNClient
+
+    client = ESPNClient()
+    league = client.get_league(season)
+    conn = get_connection()
+    rows = []
+    for bs in league.box_scores(week):
+        if bs.home_team is None or bs.away_team is None:
+            continue  # playoff bye - no real second team
+        home_pk = db.get_team_pk(conn, season, bs.home_team.team_id)
+        away_pk = db.get_team_pk(conn, season, bs.away_team.team_id)
+        if home_pk is None or away_pk is None:
+            continue
+        home_proj, away_proj = bs.home_projected or 0.0, bs.away_projected or 0.0
+        db.record_projection_snapshot(conn, season, week, home_pk, home_proj)
+        db.record_projection_snapshot(conn, season, week, away_pk, away_proj)
+        rows.append(
+            {
+                "home_team_pk": home_pk, "away_team_pk": away_pk,
+                "home_score": bs.home_score or 0.0, "away_score": bs.away_score or 0.0,
+                "home_projected": home_proj, "away_projected": away_proj,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def get_projection_snapshots(season: int, week: int) -> dict[int, float]:
+    return db.get_projection_snapshots(get_connection(), season, week)
+
+
+#: Fallback scoring stdev for a team with no observed games yet this
+#: season (week 1, or a brand-new season). win_probability.MIN_STDEV
+#: (5.0) is NOT reused here on purpose - that floor is shared with the
+#: Playoff Odds Monte Carlo sim (see playoff_sim.py) and calibrated for a
+#: team with 1 real game played, not zero. Using it here produced
+#: near-certain 0%/100% probabilities for week 1 (real full-lineup
+#: projected-score gaps between two random teams are routinely 20-40+
+#: points - checked against this league's real 2025 team-level score
+#: stdevs, which ranged ~14-28 with a ~22 average, confirming 5.0 is far
+#: too tight for a genuine no-data fallback). Deliberately a separate
+#: constant so it can't accidentally affect Playoff Odds' calibration.
+LIVE_PROB_FALLBACK_STDEV = 20.0
+
+
+def live_win_probability(
+    season: int, home_team_pk: int, away_team_pk: int, home_projected: float, away_projected: float
+) -> float:
+    """Same closed-form model as project_matchup_win_probability, but
+    centered on each team's CURRENT live-projected score instead of a
+    season-PPG blend - a better "chance to win right now" estimate once a
+    week has live data (home_projected already factors in points
+    actually scored so far plus the rest of the lineup's projections, see
+    get_live_box_scores). Still explicitly NOT ESPN's own number - ESPN's
+    API exposes no win probability at all (confirmed against the
+    installed espn_api source)."""
+    stdevs = team_stdev_map(season)
+    home_proj = TeamProjection(
+        team_pk=home_team_pk, expected_score=home_projected,
+        stdev=stdevs.get(home_team_pk) or LIVE_PROB_FALLBACK_STDEV,
+    )
+    away_proj = TeamProjection(
+        team_pk=away_team_pk, expected_score=away_projected,
+        stdev=stdevs.get(away_team_pk) or LIVE_PROB_FALLBACK_STDEV,
+    )
+    return win_probability(home_proj, away_proj)
+
+
 def clear_all_caches() -> None:
     st.cache_data.clear()
