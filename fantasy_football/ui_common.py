@@ -331,7 +331,7 @@ def render_sidebar() -> tuple[int, int | None]:
     # handling is unaffected. Picking it jumps straight to History, which
     # already covers all seasons on its own and ignores this selector.
     ALL_TIME = "All time"
-    options = seasons + [ALL_TIME]
+    options = [ALL_TIME] + seasons
 
     # A key'd widget's session_state value persists across pages and
     # overrides the `index` param on every render after the first mount -

@@ -70,6 +70,18 @@ def team_context_line(team_pk: int) -> str:
     )
 
 
+def playoff_round_label(season_id: int, week: int) -> str:
+    """Quarterfinals/Semifinals/Finals instead of a raw week number - the
+    standard 6-team, top-2-seed-bye, 3-week ESPN playoff bracket shape.
+    Falls back to a raw week number if a season's real reg_season_count
+    doesn't line up with that shape (e.g. a different playoff format)."""
+    reg_count = dd.get_season_meta(season_id).get("reg_season_count")
+    if not reg_count:
+        return f"Wk{week}"
+    round_num = week - reg_count
+    return {1: "Quarterfinals", 2: "Semifinals", 3: "Finals"}.get(round_num, f"Playoff Wk{week}")
+
+
 def render_last_meetings(home_pk: int, away_pk: int, home_name: str, away_name: str) -> None:
     """Last 5 head-to-head meetings between these two teams' MANAGERS
     (not team_pk, which resets every season - a rivalry spans team-name
@@ -87,7 +99,11 @@ def render_last_meetings(home_pk: int, away_pk: int, home_name: str, away_name: 
             return
         last5 = h2h["history"].sort_values(["season_id", "week"], ascending=False).head(5)
         for _, g in last5.iterrows():
-            label = f"{int(g['season_id'])} Wk{int(g['week'])}" + (" (playoff)" if g["is_playoff"] else "")
+            week_label = (
+                playoff_round_label(int(g["season_id"]), int(g["week"]))
+                if g["is_playoff"] else f"Wk{int(g['week'])}"
+            )
+            label = f"{int(g['season_id'])} {week_label}"
             if g["a_result"] == "T":
                 home_badge = ui.status_bubble_html("T", "neutral")
                 away_badge = ui.status_bubble_html("T", "neutral")
@@ -160,8 +176,7 @@ if meta.get("median_scoring") and not is_final_week and not is_future_week and n
                 st.caption(f"{eighth[2]} · {eighth[3]:.1f} proj ({sixth[3]-eighth[3]:.1f} back)")
             st.caption(
                 "Based on current PROJECTED totals, not scores-so-far - this will keep moving "
-                "as games finish. Median bonus = top-half of the league that week wins an extra "
-                "half-game in the standings."
+                "as games finish."
             )
 
 for _, m in matchups.iterrows():
