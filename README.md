@@ -89,5 +89,13 @@ stats and optional Claude-generated commentary.
 - Sidebar: season switcher, week selector, last-refresh timestamp, and a
   "Refresh ESPN Data" button
 
+**Roster Strength (done)**
+- `pages/3_Roster_Strength.py`: forward-looking roster quality (not past
+  performance) blending this week's ESPN projection with ESPN's
+  season-long positional rank, with a starter/bench weighting that shifts
+  across the season as bye weeks come and go
+- Only reflects the current week of the current season - see the page's
+  own methodology expander for details and limitations
+
 Later phases (lineup efficiency, History/Hall of Fame, playoff
 simulation, Claude commentary) will be documented here as they land.

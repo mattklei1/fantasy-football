@@ -189,6 +189,30 @@ CREATE TABLE IF NOT EXISTS metrics_weekly (
     UNIQUE(season_id, week, team_pk)
 );
 
+CREATE TABLE IF NOT EXISTS player_rankings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season_id INTEGER NOT NULL REFERENCES seasons(season_id),
+    week INTEGER NOT NULL,
+    player_id INTEGER NOT NULL REFERENCES players(player_id),
+    pos_rank INTEGER,
+    percent_owned REAL,
+    percent_started REAL,
+    UNIQUE(season_id, week, player_id)
+);
+
+CREATE TABLE IF NOT EXISTS roster_strength_weekly (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season_id INTEGER NOT NULL REFERENCES seasons(season_id),
+    week INTEGER NOT NULL,
+    team_pk INTEGER NOT NULL REFERENCES teams(id),
+    starter_value REAL,
+    bench_value REAL,
+    starter_weight REAL,
+    bench_weight REAL,
+    roster_strength REAL,
+    UNIQUE(season_id, week, team_pk)
+);
+
 CREATE TABLE IF NOT EXISTS refresh_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at TEXT NOT NULL,

@@ -514,6 +514,55 @@ column or Projected Champion card (Phase 7, needs Monte Carlo sim), no
 per-team short commentary on Home (Phase 8, needs the commentary
 module), no historical head-to-head on Matchups cards (Phase 6).
 
+**Roster Strength (DONE 2026-09-13, out-of-sequence addition):** A new
+forward-looking metric, requested mid-Phase-4 - distinct from Power
+Score (backward-looking, based on results already produced). New:
+`fantasy_football/metrics/roster_strength.py` (+ unit tests),
+`pages/3_Roster_Strength.py`, `player_rankings` and
+`roster_strength_weekly` tables, `ingest.py:ingest_player_rankings()`.
+
+**Data sourcing decision (important, don't revisit without checking
+this first):** the user originally wanted 4 sources blended (ESPN
+weekly projection, ESPN season rank, FantasyPros ROS rankings, Yahoo ROS
+rankings). Investigated both before building: FantasyPros'
+`/about/legal/` Terms of Use explicitly prohibit automated reproduction
+("you may not copy, reproduce, modify, republish, upload, post,
+transmit, or distribute any documents or information from this site"
+beyond "a single copy made for personal use") - their `robots.txt`
+doesn't block the rankings pages, but ToS is the controlling document,
+not robots.txt, so an automated scraper is out unless/until the user
+gets licensed API access (`fantasypros.com/api-data/`, requires
+signup/partnership, not free/instant). Yahoo has no generic
+rest-of-season-rankings endpoint - their Fantasy Sports API is scoped to
+leagues you're an OAuth-authenticated participant in, not a general
+rankings feed. **Decision: v1 ships ESPN-only** (weekly projection +
+`posRank` from `league.player_info()`, weights 20:15 carried over
+proportionally from the original 4-source design). Revisit FantasyPros
+only if the user actually obtains a licensed API key - don't scrape
+around the ToS.
+
+`league.player_info(playerId=<list>)` accepts a batched list and
+returns `posRank`/`percent_owned`/`percent_started` for every ID in one
+call (confirmed: 207 rostered players in ~1s) - use this, not one call
+per player. `posRank` comes back as `0` (not populated/unranked) for
+un-droppable... actually for undrafted/deep bench rookies - store as
+NULL, not 0, since 0 reads as "rank zero" if anyone queries the raw
+table directly (`rank_to_score()` already guarded against this
+correctly, but the raw storage was cleaned up too for clarity).
+
+Bench-vs-starter weighting: bench share decays from 35% (week 1) to a
+10% floor by the end of the regular season and HOLDS at that floor
+through the playoffs - it does not go to zero. This was a direct user
+correction to the first design: bye-week-driven bench value fades once
+byes are over (~week 14, confirmed via 2026 NFL bye schedule research:
+byes run weeks 5-14), but injury-replacement value never disappears.
+See `bench_weight_for_week()` in `roster_strength.py`.
+
+Only ever populated for the CURRENT week of the CURRENT season -
+`posRank` has no history in ESPN's API, same backfill limitation as
+`recent_activity()`. Empty-state handled gracefully on the page (not
+fabricated) for any season/week combo where it hasn't run.
+
 **Phases 5-8:** Not started (Manager lineup efficiency; History/Hall of
 Fame/head-to-head; Playoff simulation; Weekly recap + Claude commentary).
 Note: the user has begun gathering manager personality/context material

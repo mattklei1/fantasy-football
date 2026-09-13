@@ -12,6 +12,12 @@ from fantasy_football.metrics.season_metrics import (
     compute_season_metrics,
 )
 from fantasy_football.metrics.win_probability import TeamProjection, win_probability
+from fantasy_football.metrics.roster_strength import (
+    bench_weight_for_week,
+    compute_player_values,
+    compute_team_roster_strength,
+    rank_to_score,
+)
 
 
 def test_all_play_no_ties():
@@ -170,6 +176,69 @@ def test_win_probability_tighter_stdev_increases_confidence():
     wide = win_probability(a_wide, b_wide)
 
     assert tight > wide > 0.5
+
+
+def test_bench_weight_decays_to_floor_and_holds():
+    # week 1: full bye-season value; week 14 (end of reg season): floor only
+    assert bench_weight_for_week(1, reg_season_count=14) == pytest.approx(0.35)
+    assert bench_weight_for_week(14, reg_season_count=14) == pytest.approx(0.10)
+    # playoffs (beyond reg season) - floor persists, never hits zero (injury risk doesn't stop)
+    assert bench_weight_for_week(17, reg_season_count=14) == pytest.approx(0.10)
+    # monotonically non-increasing across the regular season
+    weights = [bench_weight_for_week(w, reg_season_count=14) for w in range(1, 15)]
+    assert all(weights[i] >= weights[i + 1] for i in range(len(weights) - 1))
+
+
+def test_rank_to_score_monotonic_and_bounded():
+    assert rank_to_score(1) == pytest.approx(1.0)
+    assert rank_to_score(None) is None
+    assert rank_to_score(0) is None
+    r13 = rank_to_score(13)
+    r25 = rank_to_score(25)
+    assert 0 < r25 < r13 < 1.0
+
+
+def test_player_values_percentile_computed_within_position():
+    # a QB with a mediocre raw projection among QBs should NOT be dragged
+    # down by comparison to a much-higher-scoring RB position group
+    roster = pd.DataFrame(
+        {
+            "team_pk": [1, 1, 1, 1],
+            "player_id": [1, 2, 3, 4],
+            "position": ["QB", "QB", "RB", "RB"],
+            "slot_position": ["QB", "BE", "RB", "BE"],
+            "is_starter": [1, 0, 1, 0],
+            "projected_points": [20.0, 15.0, 25.0, 5.0],
+            "pos_rank": [None, None, None, None],
+        }
+    )
+    result = compute_player_values(roster)
+    qb_best = result[result["player_id"] == 1]["projection_percentile"].iloc[0]
+    # best QB (20 pts, top of the QB group) should get the top QB percentile
+    # regardless of RB scores being numerically higher
+    assert qb_best == pytest.approx(1.0)
+
+
+def test_team_roster_strength_excludes_ir_and_splits_starter_bench():
+    roster = pd.DataFrame(
+        {
+            "team_pk": [1, 1, 1],
+            "player_id": [1, 2, 3],
+            "position": ["QB", "QB", "QB"],
+            "slot_position": ["QB", "BE", "IR"],
+            "is_starter": [1, 0, 0],
+            "projected_points": [20.0, 10.0, 0.0],
+            "pos_rank": [1, 20, 999],
+        }
+    )
+    valued = compute_player_values(roster)
+    result = compute_team_roster_strength(valued, week=1, reg_season_count=14)
+    row = result.iloc[0]
+    # IR player must not appear in either pool - only 1 starter, 1 bench player feed the averages
+    assert row["starter_value"] == valued[valued["player_id"] == 1]["player_value"].iloc[0]
+    assert row["bench_value"] == valued[valued["player_id"] == 2]["player_value"].iloc[0]
+    assert row["bench_weight"] == pytest.approx(0.35)
+    assert 0 <= row["roster_strength"] <= 100
 
 
 def test_compute_season_metrics_empty_input_returns_empty():

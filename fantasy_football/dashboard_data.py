@@ -203,6 +203,24 @@ def get_luck_page_extras(season: int) -> dict:
     }
 
 
+@st.cache_data(ttl=60)
+def get_roster_strength(season: int) -> pd.DataFrame:
+    """Roster Strength is only ever computed for the current week of the
+    current season (ESPN's posRank has no history to backfill) - one row
+    per team, or empty if it hasn't been computed yet this season."""
+    conn = get_connection()
+    query = f"""
+        SELECT rs.week, t.id AS team_pk, t.team_name, mgr.display_name AS manager_name,
+               rs.starter_value, rs.bench_value, rs.starter_weight, rs.bench_weight, rs.roster_strength
+        FROM roster_strength_weekly rs
+        JOIN teams t ON t.id = rs.team_pk
+        {_team_manager_join_sql()}
+        WHERE rs.season_id = ?
+        ORDER BY rs.roster_strength DESC
+    """
+    return pd.read_sql_query(query, conn, params=(season,))
+
+
 def team_stdev_map(season: int) -> dict[int, float]:
     scores = get_team_weekly_scores(season)
     if scores.empty:

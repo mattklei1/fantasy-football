@@ -385,6 +385,51 @@ def ingest_future_schedule(
             )
 
 
+def ingest_player_rankings(conn, league, season: int, week: int, log=print) -> None:
+    """Snapshot of ESPN's positional rank + ownership% for every rostered
+    player, as of right now - used for the Roster Strength metric's
+    "season-long rank" signal. Only meaningful for the CURRENT week (ESPN
+    doesn't expose historical posRank), so this only ever fills in going
+    forward from whenever this feature first ran - no backfill possible,
+    same category of limitation as recent_activity(). One batched
+    player_info() call covers every rostered player (confirmed: 207
+    players in ~1s), not one call per player."""
+    player_ids = [
+        row[0]
+        for row in conn.execute(
+            "SELECT DISTINCT player_id FROM weekly_rosters WHERE season_id = ? AND week = ?",
+            (season, week),
+        ).fetchall()
+    ]
+    if not player_ids:
+        return
+    try:
+        players = league.player_info(playerId=player_ids)
+    except Exception as exc:  # noqa: BLE001
+        log(f"[warn] season {season} week {week} player rankings: {exc}")
+        return
+    if players is None:
+        return
+    if not isinstance(players, list):
+        players = [players]
+
+    for p in players:
+        pos_rank = p.posRank if isinstance(p.posRank, int) and p.posRank > 0 else None
+        db.upsert(
+            conn,
+            "player_rankings",
+            {
+                "season_id": season,
+                "week": week,
+                "player_id": p.playerId,
+                "pos_rank": pos_rank,
+                "percent_owned": p.percent_owned if p.percent_owned != -1 else None,
+                "percent_started": p.percent_started if p.percent_started != -1 else None,
+            },
+            conflict_cols=["season_id", "week", "player_id"],
+        )
+
+
 def ingest_season(conn, client: ESPNClient, season: int, log=print) -> None:
     league = client.get_league(season)
     current_season = client.credentials.current_season
@@ -424,6 +469,11 @@ def ingest_season(conn, client: ESPNClient, season: int, log=print) -> None:
             ingest_recent_activity(conn, league, season, team_pk_by_espn_id)
         except Exception as exc:  # noqa: BLE001
             log(f"[warn] season {season} recent_activity: {exc}")
+
+        try:
+            ingest_player_rankings(conn, league, season, last_week, log=log)
+        except Exception as exc:  # noqa: BLE001
+            log(f"[warn] season {season} player rankings: {exc}")
 
     conn.commit()
 

@@ -50,3 +50,21 @@ def season_uses_median_scoring(conn: sqlite3.Connection, season: int) -> bool:
         "SELECT median_scoring FROM seasons WHERE season_id = ?", (season,)
     ).fetchone()
     return bool(row[0]) if row else False
+
+
+def load_roster_for_week(conn: sqlite3.Connection, season: int, week: int) -> pd.DataFrame:
+    """One row per rostered player for Roster Strength: team_pk, player_id,
+    position, slot_position, is_starter, projected_points, pos_rank."""
+    query = """
+        SELECT wr.team_pk, wr.player_id, p.default_position AS position,
+               wr.slot_position, wr.is_starter,
+               pws.projected_points, pr.pos_rank
+        FROM weekly_rosters wr
+        JOIN players p ON p.player_id = wr.player_id
+        LEFT JOIN player_week_scores pws
+            ON pws.season_id = wr.season_id AND pws.week = wr.week AND pws.player_id = wr.player_id
+        LEFT JOIN player_rankings pr
+            ON pr.season_id = wr.season_id AND pr.week = wr.week AND pr.player_id = wr.player_id
+        WHERE wr.season_id = ? AND wr.week = ?
+    """
+    return pd.read_sql_query(query, conn, params=(season, week))
