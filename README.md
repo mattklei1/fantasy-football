@@ -121,6 +121,19 @@ stats and optional Claude-generated commentary.
   a bug (fewer shots at it).
 - Available for 2019+ seasons
 
+**Playoff Odds (done)**
+- `pages/6_Playoff_Odds.py`: Monte Carlo simulation (10,000 trials) of every remaining
+  regular-season game plus the full playoff bracket - Playoff %, Bye %, #1 Seed %, and
+  Championship % per team
+- Each simulated game's score is drawn from the same model as the Matchups page's win
+  probability (`60% season PPG + 40% last-3-week PPG`, Normal distribution using each team's
+  own scoring stdev); seeding and the playoff bracket shape (fixed, not reseeded - confirmed
+  against 10 real completed seasons) exactly match this league's real ESPN settings
+- Validated against the real, fully-completed 2025 season: reproduced the exact real playoff
+  field, bye teams, and #1 seed (all deterministic once the season is over), and gave the real
+  champion a strong, plausible title probability rather than a degenerate result
+- Requires at least 1 completed regular-season week this season to project from
+
 **History (done)**
 - `pages/5_History.py`: Hall of Fame (championships, finals/playoff
   appearances, career record, best/worst season by era-normalized PPG

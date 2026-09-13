@@ -144,6 +144,52 @@ def load_roster_with_points_by_scope(conn: sqlite3.Connection, season: int, scop
     return df
 
 
+def load_playoff_sim_state(conn: sqlite3.Connection, season: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Inputs for the Playoff Odds page's Monte Carlo simulation (see
+    metrics/playoff_sim.py). Returns (team_state, remaining_matchups):
+
+    team_state: one row per team - season_ppg/last3_ppg/points_for and
+    the real matchup+median win/loss/tie record, all taken directly from
+    the LATEST completed week's metrics_weekly row (already-validated,
+    single source of truth - not recomputed here), plus score_stdev
+    freshly computed from raw weekly scores (playoff_sim.
+    compute_score_stdev). Empty if no regular-season week has completed
+    yet this season (can't project without at least one real data point).
+
+    remaining_matchups: week, home_team_pk, away_team_pk for every
+    not-yet-completed regular-season matchup - includes the current
+    in-progress week (simulated like any other remaining game, a
+    deliberate v1 simplification - see playoff_sim.py)."""
+    from .playoff_sim import compute_score_stdev
+
+    latest_week = conn.execute(
+        "SELECT MAX(week) FROM metrics_weekly WHERE season_id = ?", (season,)
+    ).fetchone()[0]
+    if latest_week is None:
+        return pd.DataFrame(), pd.DataFrame()
+
+    team_state = pd.read_sql_query(
+        """
+        SELECT team_pk, ppg AS season_ppg, last3_ppg, points_for,
+               matchup_wins, matchup_losses, matchup_ties,
+               median_wins, median_losses, median_ties
+        FROM metrics_weekly WHERE season_id = ? AND week = ?
+        """,
+        conn,
+        params=(season, latest_week),
+    )
+    stdev = compute_score_stdev(load_weekly_scores(conn, season))
+    team_state = team_state.merge(stdev, on="team_pk", how="left")
+
+    remaining_matchups = pd.read_sql_query(
+        "SELECT week, home_team_pk, away_team_pk FROM matchups "
+        "WHERE season_id = ? AND completed = 0 AND matchup_type = 'NONE' ORDER BY week",
+        conn,
+        params=(season,),
+    )
+    return team_state, remaining_matchups
+
+
 def load_roster_for_week(conn: sqlite3.Connection, season: int, week: int) -> pd.DataFrame:
     """One row per rostered player for Roster Strength: team_pk, player_id,
     position, slot_position, is_starter, projected_points, pos_rank

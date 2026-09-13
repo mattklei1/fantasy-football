@@ -278,6 +278,44 @@ def get_roster_strength(season: int) -> pd.DataFrame:
     return pd.read_sql_query(query, conn, params=(season,))
 
 
+@st.cache_data(ttl=300)
+def get_playoff_simulation(season: int) -> pd.DataFrame:
+    """Monte Carlo playoff odds (see metrics/playoff_sim.py) - one row
+    per team: playoff_pct, bye_pct, seed1_pct, championship_pct. Empty if
+    no regular-season week has completed yet this season, or if this
+    season's playoff_team_count isn't the 6-team/top-2-bye format the
+    simulator supports (every season this league has ever run, but
+    checked explicitly rather than assumed). A longer cache TTL than the
+    rest of this module (5 min vs 60s) since 10,000 simulated seasons is
+    real compute, not a cheap query - the odds don't need to be
+    second-fresh anyway."""
+    from .metrics import loaders as metric_loaders
+    from .metrics.playoff_sim import simulate_season
+
+    meta = get_season_meta(season)
+    if not meta or meta.get("playoff_team_count") != 6:
+        return pd.DataFrame()
+
+    team_state, remaining_matchups = metric_loaders.load_playoff_sim_state(get_connection(), season)
+    if team_state.empty:
+        return pd.DataFrame()
+
+    result = simulate_season(
+        team_state,
+        remaining_matchups,
+        median_scoring=bool(meta.get("median_scoring")),
+        reg_season_count=meta["reg_season_count"],
+    )
+
+    teams_query = f"""
+        SELECT t.id AS team_pk, t.team_name, mgr.display_name AS manager_name
+        FROM teams t {_team_manager_join_sql()} WHERE t.season_id = ?
+    """
+    teams_df = pd.read_sql_query(teams_query, get_connection(), params=(season,))
+    merged = result.merge(teams_df, on="team_pk", how="left")
+    return merged.sort_values("championship_pct", ascending=False).reset_index(drop=True)
+
+
 def team_stdev_map(season: int) -> dict[int, float]:
     scores = get_team_weekly_scores(season)
     if scores.empty:

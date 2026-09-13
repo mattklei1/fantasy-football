@@ -714,8 +714,81 @@ chat references found during the personality-mining conversation - a
 good independent confirmation the History calculations are correct,
 not just internally consistent.
 
-**Phases 7-8:** Not started (Playoff simulation; Weekly recap + Claude
-commentary).
+**Phase 7 (DONE 2026-09-13):** Playoff probabilities via Monte Carlo
+simulation (>=10,000 trials). New: `fantasy_football/metrics/
+playoff_sim.py` (+ unit tests), `metrics/loaders.py:
+load_playoff_sim_state()`, `dashboard_data.get_playoff_simulation()`,
+`pages/6_Playoff_Odds.py`.
+
+**Bracket structure had to be reverse-engineered from real data, not
+assumed** - ESPN's API doesn't document HOW the playoff bracket pairs
+teams after round 1 (fixed vs. reseeded), and guessing wrong would
+silently produce a plausible-looking but incorrect simulation. Walked
+all 10 completed seasons' real bracket results (seeds derived from each
+season's final `metrics_weekly` row + `points_for` tiebreak, matched
+against real `matchups.matchup_type='WINNERS_BRACKET'` results) and
+found 4 seasons (2017, 2019, 2020, 2023) where a lower seed upset a
+higher seed in round 1 - in every one of those, the upsetting team
+still played the SAME seed (1 or 2) a non-reseeded bracket would
+predict, not a re-ranked opponent. Confirmed: this league's bracket is
+**fixed, not reseeded** - seed1 always plays the winner of seed4 vs
+seed5, seed2 always plays the winner of seed3 vs seed6. Also confirmed
+via `league.settings`: single division (`division_map` has 1 key, so no
+divisional-seeding complexity), `playoff_seed_tie_rule=
+TOTAL_POINTS_SCORED` (matches the seed reconstruction exactly for all
+10 seasons), `playoff_team_count=6` and a 3-round/1-week-per-round
+bracket every season 2015-present (no historical format changes to
+account for), and a full 12-team round-robin with NO bye weeks in any
+regular season (always exactly 6 matchups/week) - confirmed by querying
+matchup counts directly, not assumed.
+
+**Model** (per PROJECT_BRIEF spec): each remaining game's score ~
+Normal(`0.6*season_ppg + 0.4*last3_ppg`, team's own weekly stdev,
+floored at `win_probability.MIN_STDEV`=5 for a team with 0-1 real games
+- reused directly from the existing Matchups-page win-probability model
+so the two features agree with each other, not a second competing
+formula). A team's projection is frozen at its current real value for
+the whole trial, including any playoff run it reaches - not recomputed
+mid-trial from that trial's own simulated results (a stated
+simplification, not a silent one). Seeding matches the real
+`playoff_seed_tie_rule` exactly. Vectorized the expensive part (score
+sampling across all remaining weeks) with numpy across all n_sims at
+once; the final per-trial seeding + 3-round bracket walk is a plain
+Python loop over trials since it isn't the bottleneck - benchmarked at
+10,000 trials with 9 remaining weeks (54 games) of real 2025 data: 0.23s
+end to end, no caching tricks needed.
+
+**Validated against the real, fully-completed 2025 season** (0
+remaining games, so playoff/bye/#1-seed outcomes are already
+deterministic - the best possible ground truth): simulation reproduced
+the exact real 6 playoff teams (100%/0% split, no in-between), the
+exact real bye teams (top 2 seeds only), and the exact real #1 seed -
+all bit-exact, not just close. `championship_pct` correctly gave the
+real 2025 champion ("The Quest for Three", a #4 seed who beat both the
+#1 and #2 seed in the real bracket) the 2nd-highest title odds among
+the 6 playoff teams (20.0%) - a plausible, non-degenerate distribution,
+not naively favoring the #1 seed just because it's #1 (the #2 seed had
+a higher current PPG and correctly showed the highest title odds at
+36.9%, since playoff SEEDING is by record but championship odds are
+driven by current scoring pace - these are legitimately different
+things and the model treats them as such). Also confirmed two
+invariants hold exactly (not approximately) over both the real-data
+check and a synthetic unit test: `playoff_pct` sums to exactly
+`playoff_team_count` across all teams, `championship_pct` sums to
+exactly 1.0 - a bug that double-counted or dropped a team would show up
+immediately here.
+
+Requires >=1 completed regular-season week this season to have
+anything to project from (2026 is currently week 1, in progress, 0
+completed weeks - the page correctly shows an empty state, not
+fabricated 1/12-for-everyone percentages). Only supports this league's
+real 6-team/top-2-bye format - checked explicitly via
+`seasons.playoff_team_count` and raises/shows an empty state rather
+than guessing if a season ever used a different format (none has, but
+per the spec's "document the limitation, don't guess" instruction this
+isn't assumed away).
+
+**Phase 8:** Not started (Weekly recap + Claude commentary).
 
 **FantasyPros integration into Roster Strength (DONE 2026-09-13).** The
 user purchased FantasyPros API access; the key is stored as
