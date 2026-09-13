@@ -41,6 +41,18 @@ context_by_team = {}
 if standings is not None and not standings.empty:
     context_by_team = standings.set_index("team_pk").to_dict(orient="index")
 
+# Manager names resolved independent of standings (which don't exist yet
+# in week 1 before any games are played) - same persistent-identity/
+# real-full-name lookup the History page uses, not the ESPN account
+# display name/username.
+_managers_df = hd.get_managers()
+_name_by_manager_id = dict(zip(_managers_df["manager_id"], _managers_df["display_name"]))
+
+
+def manager_name_for(team_pk: int) -> str:
+    mgr_id = hd.get_primary_manager_id(team_pk)
+    return _name_by_manager_id.get(mgr_id, "Unknown manager")
+
 
 def team_context_line(team_pk: int) -> str:
     ctx = context_by_team.get(team_pk)
@@ -90,11 +102,17 @@ def render_last_meetings(home_pk: int, away_pk: int, home_name: str, away_name: 
 
 
 is_final_week = latest_metrics_week is not None and week <= latest_metrics_week
+# A real, verified ESPN API quirk (checked directly against the installed
+# espn_api library, 2026-09-13): league.box_scores(week) for any week
+# PAST the real current week silently returns the CURRENT week's box
+# scores instead of an error or zeros - there's no reliable live data
+# source for a week that hasn't started yet, so don't even ask for it.
+is_future_week = week > current_week
 
 live_by_team: dict[int, dict] = {}
 snapshots: dict[int, float] = {}
 live_error = False
-if not is_final_week:
+if not is_final_week and not is_future_week:
     try:
         live_df = dd.get_live_box_scores(season, week)
         snapshots = dd.get_projection_snapshots(season, week)
@@ -117,9 +135,11 @@ for _, m in matchups.iterrows():
             # .strip() matters: a trailing space before the closing ** breaks
             # CommonMark bold parsing (some ESPN team names have one)
             st.markdown(f"**{m['home_team_name'].strip()}**")
+            st.caption(manager_name_for(home_pk))
             st.caption(team_context_line(home_pk))
         with col_away:
             st.markdown(f"**{m['away_team_name'].strip()}**")
+            st.caption(manager_name_for(away_pk))
             st.caption(team_context_line(away_pk))
         with col_vs:
             st.markdown("<div style='text-align:center'>VS</div>", unsafe_allow_html=True)
@@ -132,6 +152,10 @@ for _, m in matchups.iterrows():
                 winner_col, loser_col = (col_home, col_away) if home_score > away_score else (col_away, col_home)
                 winner_col.markdown(ui.status_bubble_html("WON", "win"), unsafe_allow_html=True)
                 loser_col.markdown(ui.status_bubble_html("LOST", "loss"), unsafe_allow_html=True)
+        elif is_future_week:
+            col_home.metric("Score", "0.0")
+            col_away.metric("Score", "0.0")
+            st.caption("This week hasn't started yet.")
         elif live_error or home_pk not in live_by_team:
             st.caption("Live data not available right now - try refreshing in a moment.")
         else:
@@ -150,12 +174,22 @@ for _, m in matchups.iterrows():
                 delta_color="off",
             )
 
-            if home_proj > away_proj:
-                col_home.markdown(ui.status_bubble_html("FAVORED", "win"), unsafe_allow_html=True)
-                col_away.markdown(ui.status_bubble_html("UNDERDOG", "loss"), unsafe_allow_html=True)
-            elif away_proj > home_proj:
-                col_away.markdown(ui.status_bubble_html("FAVORED", "win"), unsafe_allow_html=True)
-                col_home.markdown(ui.status_bubble_html("UNDERDOG", "loss"), unsafe_allow_html=True)
+            # FAVORED/UNDERDOG is Power Rank based (this season's overall
+            # team strength through the latest completed week) - NOT the
+            # live projected total above, which is a different, live-only
+            # "who's ahead in THIS matchup right now" signal (that's what
+            # the win probability bar below reflects). The two can
+            # legitimately disagree - a strong team can still be behind
+            # in projection for one week.
+            home_power = context_by_team.get(home_pk, {}).get("power_score")
+            away_power = context_by_team.get(away_pk, {}).get("power_score")
+            if home_power is not None and away_power is not None and home_power != away_power:
+                if home_power > away_power:
+                    col_home.markdown(ui.status_bubble_html("FAVORED", "win"), unsafe_allow_html=True)
+                    col_away.markdown(ui.status_bubble_html("UNDERDOG", "loss"), unsafe_allow_html=True)
+                else:
+                    col_away.markdown(ui.status_bubble_html("FAVORED", "win"), unsafe_allow_html=True)
+                    col_home.markdown(ui.status_bubble_html("UNDERDOG", "loss"), unsafe_allow_html=True)
 
             prob = dd.live_win_probability(season, home_pk, away_pk, home_proj, away_proj)
             col_home.progress(prob, text=f"{prob*100:.0f}% win prob.")
@@ -165,13 +199,17 @@ for _, m in matchups.iterrows():
             home_pk, away_pk, m["home_team_name"].strip(), m["away_team_name"].strip()
         )
 
-if not is_final_week:
+if is_future_week:
+    st.caption("Future week - no live data available yet (ESPN doesn't publish box scores this far ahead).")
+elif not is_final_week:
     st.caption(
         "Score/projection update live from ESPN (refreshes about once a minute). \"proj\" is each "
         "team's CURRENT projected total - points scored so far plus the rest of the lineup's "
         "projections - not just the raw score, so a big early lead from one team's players simply "
         "having played first doesn't look like a bigger edge than it is. \"vs wk start\" compares "
-        "that to the first projection this app ever saw for the week. Win probability is our own "
-        "model (60%/40% blend of each team's projected total and scoring variance) - ESPN "
-        "publishes no win probability of its own."
+        "that to the first projection this app ever saw for the week. FAVORED/UNDERDOG is based "
+        "on Power Rank (this season's overall team strength) - win probability % is a separate, "
+        "live signal based on this week's projected totals and scoring variance (ESPN publishes "
+        "no win probability of its own) - the two can disagree, e.g. a strong team can still be "
+        "projected behind for one week."
     )

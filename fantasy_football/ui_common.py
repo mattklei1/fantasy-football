@@ -339,6 +339,15 @@ def render_sidebar() -> tuple[int, int | None]:
         key="season_selectbox",
     )
     if season_choice == ALL_TIME:
+        # Streamlit widgets with a `key` persist their OWN value in
+        # session_state and that persisted value overrides the `index`
+        # param on every future render (index only seeds the very first
+        # mount) - without this reset, the selectbox stayed stuck showing
+        # "All time" forever on every subsequent page, silently feeding
+        # the literal string "All time" into every page's `season`
+        # variable instead of a real season int (broke Lineup Efficiency
+        # and anything else that actually uses it - found 2026-09-13).
+        st.session_state["season_selectbox"] = st.session_state.selected_season
         st.switch_page("pages/5_History.py")
     season = season_choice
     st.session_state.selected_season = season
