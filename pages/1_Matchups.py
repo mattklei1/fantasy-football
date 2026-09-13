@@ -12,6 +12,7 @@ from __future__ import annotations
 import streamlit as st
 
 from fantasy_football import dashboard_data as dd
+from fantasy_football import history_data as hd
 from fantasy_football import ui_common as ui
 
 st.set_page_config(page_title="Matchups", page_icon="🏈", layout="wide")
@@ -55,6 +56,37 @@ def team_context_line(team_pk: int) -> str:
         f"PPG {ctx['ppg']:.0f} · Last 3 {ctx['last3_ppg']:.0f} · "
         f"All-Play {ctx['all_play_win_pct']*100:.0f}%"
     )
+
+
+def render_last_meetings(home_pk: int, away_pk: int, home_name: str, away_name: str) -> None:
+    """Last 5 head-to-head meetings between these two teams' MANAGERS
+    (not team_pk, which resets every season - a rivalry spans team-name
+    changes) - a persistent-identity lookup, same approach as the History
+    page's Head-to-Head tab."""
+    home_mgr = hd.get_primary_manager_id(home_pk)
+    away_mgr = hd.get_primary_manager_id(away_pk)
+    with st.expander("Last 5 meetings"):
+        if not home_mgr or not away_mgr:
+            st.caption("No manager history available.")
+            return
+        h2h = hd.get_head_to_head(home_mgr, away_mgr)
+        if h2h.get("games_played", 0) == 0:
+            st.caption("These two have never played each other.")
+            return
+        last5 = h2h["history"].sort_values(["season_id", "week"], ascending=False).head(5)
+        for _, g in last5.iterrows():
+            label = f"{int(g['season_id'])} Wk{int(g['week'])}" + (" (playoff)" if g["is_playoff"] else "")
+            if g["a_result"] == "T":
+                home_badge = ui.status_bubble_html("T", "neutral")
+                away_badge = ui.status_bubble_html("T", "neutral")
+            else:
+                home_won = g["a_result"] == "W"
+                home_badge = ui.status_bubble_html("W" if home_won else "L", "win" if home_won else "loss")
+                away_badge = ui.status_bubble_html("L" if home_won else "W", "loss" if home_won else "win")
+            row = st.columns([2, 3, 3])
+            row[0].caption(label)
+            row[1].markdown(f"{home_badge} {home_name} {g['a_score']:.1f}", unsafe_allow_html=True)
+            row[2].markdown(f"{away_badge} {away_name} {g['b_score']:.1f}", unsafe_allow_html=True)
 
 
 is_final_week = latest_metrics_week is not None and week <= latest_metrics_week
@@ -128,6 +160,10 @@ for _, m in matchups.iterrows():
             prob = dd.live_win_probability(season, home_pk, away_pk, home_proj, away_proj)
             col_home.progress(prob, text=f"{prob*100:.0f}% win prob.")
             col_away.progress(1 - prob, text=f"{(1-prob)*100:.0f}% win prob.")
+
+        render_last_meetings(
+            home_pk, away_pk, m["home_team_name"].strip(), m["away_team_name"].strip()
+        )
 
 if not is_final_week:
     st.caption(

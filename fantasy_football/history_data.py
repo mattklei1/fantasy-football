@@ -19,6 +19,20 @@ def _primary_manager_sql(team_alias: str) -> str:
 
 
 @st.cache_data(ttl=300)
+def get_primary_manager_id(team_pk: int) -> str | None:
+    """Resolve a SEASON-SPECIFIC team_pk to its primary manager's
+    persistent identity - used by the Matchups page to look up a
+    cross-season head-to-head for two teams that only exist as team_pk
+    within one season."""
+    conn = dd.get_connection()
+    row = conn.execute(
+        f"SELECT t_mgr.manager_id FROM teams t {_primary_manager_sql('t')} WHERE t.id = ?",
+        (team_pk,),
+    ).fetchone()
+    return row[0] if row else None
+
+
+@st.cache_data(ttl=300)
 def get_managers() -> pd.DataFrame:
     """Only PRIMARY manager identities - excludes secondary co-owner
     aliases (see db.primary_owner_join_sql) that would otherwise show up
