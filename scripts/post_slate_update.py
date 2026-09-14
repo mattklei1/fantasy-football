@@ -20,12 +20,12 @@ from fantasy_football.espn_client import ESPNClient
 from fantasy_football.groupme_client import send_long_message
 from fantasy_football.schedule_guard import is_target_time_now
 from fantasy_football.slate_report import (
-    bench_would_be_winning,
     build_matchup_snapshots,
     build_message,
     fetch_box_scores,
     median_cutline,
     top_individual_scores,
+    worst_lineup_decision,
 )
 
 
@@ -62,9 +62,9 @@ def main() -> int:
         return 0
 
     tops = top_individual_scores(box_scores, limit=3)
-    bench_flips = bench_would_be_winning(box_scores)
+    worst_decision = worst_lineup_decision(box_scores, league.settings.position_slot_counts)
     cutline = median_cutline(league, box_scores)
-    message = build_message(args.label, matchups, tops, bench_flips=bench_flips, cutline=cutline)
+    message = build_message(args.label, matchups, tops, worst_decision=worst_decision, cutline=cutline)
     send_long_message(bot_id, message)
     print(f"Posted: {args.label}")
     return 0

@@ -1858,6 +1858,57 @@ the raw list), and Bench Would Be Winning correctly found 3 real teams
 losing on the actual scoreboard whose bench would flip it. 186/186 tests
 passing.
 
+**Slate update refinements per real user feedback, DONE 2026-09-14 (same
+session, minutes after the 3 sections above first shipped).** User
+reviewed the actual sent message and gave 3 concrete corrections:
+
+1. **Bench Would Be Winning was not REAL** - it summed every bench
+   player's raw points as if any of them could substitute for any
+   starter, which is illegal (e.g. a bench D/ST's points can't fill a
+   flex spot). Renamed to `worst_lineup_decision()` and rewritten to run
+   the EXACT SAME Hungarian-algorithm optimal-lineup solver
+   (`metrics/lineup_optimizer.optimal_lineup()`) Lineup Efficiency uses
+   for real weekly points - fed every rostered player's real points AND
+   real `eligibleSlots` from the live BoxScore lineup (`bp.playerId`,
+   `bp.eligibleSlots` - same attributes `ingest.py` already reads from
+   the same object type), against the season's real
+   `league.settings.position_slot_counts`. Also cut from "up to 3 teams"
+   to exactly ONE - the team with the single largest gap between actual
+   and optimal score among currently-losing teams whose optimal lineup
+   would flip the result - "just highlight 1 team that made the worse
+   decisions," not a list of maybes.
+2. **Biggest Blowout should be projected, not raw** - flipped
+   `biggest_blowouts()`'s sort key from raw `margin` to `projected_margin`,
+   consistent with Closest Games and the same underlying reasoning (a
+   big CURRENT gap is often just "hasn't played yet," not a real
+   blowout). Message text changed from "X is running away with it, Y
+   down Z" (raw) to "X projected to beat Y by Z" (projected).
+3. **On the Bubble should show all 12 teams, not just 3** - `median_
+   cutline()` rewritten to return the FULL ranked list (every team with
+   rank, projected total, and real point distance from the cutline -
+   positive if clear of the cut, negative if short), generalized from
+   the old hardcoded "rank 6/7/8" to `n // 2` (still resolves to 6 for
+   this league's real 12 teams, but no longer assumes it). `build_
+   message()` prints every team with a literal "--- CUTLINE ---"
+   separator line inserted at the actual cut, so the whole league can
+   see exactly how many points ahead or behind they are - not just the
+   3 teams nearest the line.
+
+18 tests rewritten/added for the new logic (small hand-built espn_api
+BoxScore/Player stand-ins now also carry `playerId`/`eligibleSlots`, not
+just `slot_position` - needed once `worst_lineup_decision()` started
+feeding them through the real lineup optimizer), including a dedicated
+test confirming an IR-slotted player's points are correctly excluded
+even when huge, and a two-matchup test confirming the single-worst
+selection picks the larger of two qualifying gaps rather than the
+first one found. Re-validated end to end against real live 2026 week-1
+data: Worst Lineup Decision correctly surfaced exactly one real team
+with a real optimal-lineup total (not a bench-sum approximation),
+Biggest Blowout now cites a real projected margin different from the
+old raw-margin pick, and On the Bubble printed a real, hand-verifiable
+12-team list with the cutline marker landing between the correct real
+ranks. 189/189 tests passing.
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip

@@ -1,6 +1,6 @@
 """Unit tests for fantasy_football.slate_report - pure MatchupSnapshot/
 build_message logic tested directly; the box_scores-consuming functions
-(top_individual_scores, bench_would_be_winning, median_cutline) are
+(top_individual_scores, worst_lineup_decision, median_cutline) are
 tested here against small hand-built stand-ins for espn_api's BoxScore/
 Team/Player/League objects (just the attributes these functions actually
 read), and also validated against real live espn_api objects separately
@@ -8,10 +8,10 @@ read), and also validated against real live espn_api objects separately
 mismatch."""
 from fantasy_football.slate_report import (
     MatchupSnapshot,
-    bench_would_be_winning,
     biggest_blowouts,
     build_message,
     median_cutline,
+    worst_lineup_decision,
 )
 
 
@@ -21,10 +21,12 @@ class _MockTeam:
 
 
 class _MockPlayer:
-    def __init__(self, name, points, slot_position):
+    def __init__(self, player_id, name, points, slot_position, eligible_slots):
+        self.playerId = player_id
         self.name = name
         self.points = points
         self.slot_position = slot_position
+        self.eligibleSlots = eligible_slots
 
 
 class _MockBoxScore:
@@ -50,6 +52,9 @@ class _MockSettings:
 class _MockLeague:
     def __init__(self, median_scoring):
         self.settings = _MockSettings(median_scoring)
+
+
+SLOT_COUNTS = {"RB": 1, "D/ST": 1}
 
 
 def test_margin_is_absolute():
@@ -112,66 +117,124 @@ def test_build_message_no_markdown_leaks_in():
     assert "**" not in msg
 
 
-# --- biggest_blowouts -------------------------------------------------
+# --- biggest_blowouts (now projected, not raw) -----------------------
 
-def test_biggest_blowouts_sorted_by_raw_margin_descending():
+def test_biggest_blowouts_sorted_by_projected_margin_descending():
     matchups = [
-        MatchupSnapshot("Close A", 50.0, "Close B", 48.0),
-        MatchupSnapshot("Rout A", 100.0, "Rout B", 20.0),
-        MatchupSnapshot("Mid A", 60.0, "Mid B", 40.0),
+        MatchupSnapshot("Close A", 50.0, "Close B", 48.0, home_projected=95.0, away_projected=25.0),  # big proj gap
+        MatchupSnapshot("Rout A", 100.0, "Rout B", 20.0, home_projected=105.0, away_projected=100.0),  # small proj gap
+        MatchupSnapshot("Mid A", 60.0, "Mid B", 40.0, home_projected=90.0, away_projected=60.0),
     ]
     result = biggest_blowouts(matchups, limit=2)
-    assert [m.home_team for m in result] == ["Rout A", "Mid A"]
+    # raw margins would rank Rout(80) > Mid(20) > Close(2); projected margins
+    # correctly rank Close(70) > Mid(30) > Rout(5)
+    assert [m.home_team for m in result] == ["Close A", "Mid A"]
 
 
-def test_build_message_includes_biggest_blowout_section():
-    matchups = [MatchupSnapshot("Rout A", 100.0, "Rout B", 20.0)]
+def test_build_message_includes_biggest_blowout_section_by_projection():
+    matchups = [MatchupSnapshot("Rout A", 60.0, "Rout B", 55.0, home_projected=140.0, away_projected=80.0)]
     msg = build_message("Early slate update", matchups, [])
-    assert "BIGGEST BLOWOUT RIGHT NOW" in msg
-    assert "Rout A is running away with it" in msg
+    assert "BIGGEST BLOWOUT (BY PROJECTED FINISH)" in msg
+    assert "Rout A projected to beat Rout B by 60.0" in msg
 
 
-# --- bench_would_be_winning ---------------------------------------------
+# --- worst_lineup_decision -------------------------------------------------
 
-def test_bench_flags_losing_team_whose_bench_would_flip_the_result():
+def test_worst_lineup_decision_flags_team_whose_real_optimal_lineup_would_flip_result():
     home = _MockTeam("Home Team")
     away = _MockTeam("Away Team")
-    home_lineup = [_MockPlayer("Home Starter", 50.0, "QB"), _MockPlayer("Home Bench", 40.0, "BE")]
-    away_lineup = [_MockPlayer("Away Starter", 80.0, "QB")]
-    bs = _MockBoxScore(home, 50.0, home_lineup, away, 80.0, away_lineup)
-    result = bench_would_be_winning([bs])
-    assert len(result) == 1
-    assert result[0]["team"] == "Home Team"
-    assert result[0]["bench_points"] == 40.0
+    home_lineup = [
+        _MockPlayer(1, "RB Starter", 30.0, "RB", ["RB", "BE"]),
+        _MockPlayer(2, "DST Starter", 5.0, "D/ST", ["D/ST", "BE"]),
+        _MockPlayer(3, "RB Bench", 60.0, "BE", ["RB", "BE"]),  # legal RB replacement, way better
+    ]
+    away_lineup = [_MockPlayer(4, "Away Starter", 50.0, "RB", ["RB", "BE"])]
+    bs = _MockBoxScore(home, 35.0, home_lineup, away, 50.0, away_lineup)  # 35 = 30+5 actual
+    result = worst_lineup_decision([bs], SLOT_COUNTS)
+    assert result is not None
+    assert result["team"] == "Home Team"
+    assert result["optimal_score"] == 65.0  # 60 (better RB) + 5 (DST) > 50
 
 
-def test_bench_does_not_flag_team_whose_bench_would_not_flip_result():
+def test_worst_lineup_decision_none_when_bench_upgrade_still_not_enough():
     home = _MockTeam("Home Team")
     away = _MockTeam("Away Team")
-    home_lineup = [_MockPlayer("Home Starter", 50.0, "QB"), _MockPlayer("Home Bench", 5.0, "BE")]
-    away_lineup = [_MockPlayer("Away Starter", 80.0, "QB")]
-    bs = _MockBoxScore(home, 50.0, home_lineup, away, 80.0, away_lineup)
-    assert bench_would_be_winning([bs]) == []
+    home_lineup = [
+        _MockPlayer(1, "RB Starter", 30.0, "RB", ["RB", "BE"]),
+        _MockPlayer(2, "DST Starter", 5.0, "D/ST", ["D/ST", "BE"]),
+        _MockPlayer(3, "RB Bench", 10.0, "BE", ["RB", "BE"]),  # worse than starter - no real upgrade
+    ]
+    away_lineup = [_MockPlayer(4, "Away Starter", 50.0, "RB", ["RB", "BE"])]
+    bs = _MockBoxScore(home, 35.0, home_lineup, away, 50.0, away_lineup)
+    assert worst_lineup_decision([bs], SLOT_COUNTS) is None
 
 
-def test_bench_never_flags_a_team_currently_winning():
+def test_worst_lineup_decision_never_flags_a_team_currently_winning():
     home = _MockTeam("Home Team")
     away = _MockTeam("Away Team")
-    home_lineup = [_MockPlayer("Home Starter", 90.0, "QB"), _MockPlayer("Home Bench", 100.0, "BE")]
-    away_lineup = [_MockPlayer("Away Starter", 80.0, "QB")]
+    home_lineup = [
+        _MockPlayer(1, "RB Starter", 90.0, "RB", ["RB", "BE"]),
+        _MockPlayer(2, "RB Bench", 100.0, "BE", ["RB", "BE"]),
+    ]
+    away_lineup = [_MockPlayer(3, "Away Starter", 80.0, "RB", ["RB", "BE"])]
     bs = _MockBoxScore(home, 90.0, home_lineup, away, 80.0, away_lineup)
-    assert bench_would_be_winning([bs]) == []  # Home is already winning - not eligible
+    assert worst_lineup_decision([bs], SLOT_COUNTS) is None  # Home already winning
 
 
-def test_build_message_includes_bench_would_be_winning_section():
+def test_worst_lineup_decision_ignores_ir_players_even_with_huge_points():
+    home = _MockTeam("Home Team")
+    away = _MockTeam("Away Team")
+    home_lineup = [
+        _MockPlayer(1, "RB Starter", 30.0, "RB", ["RB", "BE"]),
+        _MockPlayer(2, "DST Starter", 5.0, "D/ST", ["D/ST", "BE"]),
+        _MockPlayer(3, "IR Stash", 200.0, "IR", ["RB", "IR"]),  # can't legally be used
+    ]
+    away_lineup = [_MockPlayer(4, "Away Starter", 50.0, "RB", ["RB", "BE"])]
+    bs = _MockBoxScore(home, 35.0, home_lineup, away, 50.0, away_lineup)
+    assert worst_lineup_decision([bs], SLOT_COUNTS) is None
+
+
+def test_worst_lineup_decision_picks_the_single_largest_gap_across_teams():
+    # Team A: actual 35, optimal 65 vs opp 50 -> gap 30
+    home_a, away_a = _MockTeam("Team A"), _MockTeam("Opp A")
+    lineup_a = [
+        _MockPlayer(1, "A RB", 30.0, "RB", ["RB", "BE"]),
+        _MockPlayer(2, "A DST", 5.0, "D/ST", ["D/ST", "BE"]),
+        _MockPlayer(3, "A Bench RB", 60.0, "BE", ["RB", "BE"]),
+    ]
+    opp_lineup_a = [_MockPlayer(4, "Opp A Starter", 50.0, "RB", ["RB", "BE"])]
+    bs_a = _MockBoxScore(home_a, 35.0, lineup_a, away_a, 50.0, opp_lineup_a)
+
+    # Team B: actual 20, optimal 40 vs opp 25 -> gap 20 (smaller than Team A's)
+    home_b, away_b = _MockTeam("Team B"), _MockTeam("Opp B")
+    lineup_b = [
+        _MockPlayer(5, "B RB", 15.0, "RB", ["RB", "BE"]),
+        _MockPlayer(6, "B DST", 5.0, "D/ST", ["D/ST", "BE"]),
+        _MockPlayer(7, "B Bench RB", 35.0, "BE", ["RB", "BE"]),
+    ]
+    opp_lineup_b = [_MockPlayer(8, "Opp B Starter", 25.0, "RB", ["RB", "BE"])]
+    bs_b = _MockBoxScore(home_b, 20.0, lineup_b, away_b, 25.0, opp_lineup_b)
+
+    result = worst_lineup_decision([bs_a, bs_b], SLOT_COUNTS)
+    assert result["team"] == "Team A"
+
+
+def test_build_message_includes_worst_lineup_decision_section():
     matchups = [MatchupSnapshot("A", 10.0, "B", 5.0)]
-    flips = [{"team": "Team A", "score": 50.0, "opp_score": 80.0, "bench_points": 40.0}]
-    msg = build_message("Early slate update", matchups, [], bench_flips=flips)
-    assert "BENCH WOULD BE WINNING" in msg
+    worst = {"team": "Team A", "score": 50.0, "opp_score": 80.0, "optimal_score": 85.0}
+    msg = build_message("Early slate update", matchups, [], worst_decision=worst)
+    assert "WORST LINEUP DECISION THIS WEEK" in msg
     assert "Team A" in msg
+    assert "85.0" in msg
 
 
-# --- median_cutline -------------------------------------------------------
+def test_build_message_omits_worst_lineup_decision_section_when_none():
+    matchups = [MatchupSnapshot("A", 10.0, "B", 5.0)]
+    msg = build_message("Early slate update", matchups, [], worst_decision=None)
+    assert "WORST LINEUP DECISION" not in msg
+
+
+# --- median_cutline (full 12-team list) ------------------------------------
 
 def _make_ranked_box_scores(projected_totals: list[float]) -> list[_MockBoxScore]:
     """One box score per pair of consecutive projected totals."""
@@ -194,29 +257,57 @@ def test_median_cutline_none_when_season_is_not_median_scoring():
     assert median_cutline(league, box_scores) is None
 
 
-def test_median_cutline_none_with_fewer_than_8_teams():
+def test_median_cutline_none_with_fewer_than_2_teams():
     league = _MockLeague(median_scoring=True)
-    box_scores = _make_ranked_box_scores([100, 90, 80, 70, 60, 50])  # only 6 teams
+    # a single real team (e.g. a playoff bye on the other side) - no
+    # meaningful cutline can be drawn
+    box_scores = [_MockBoxScore(_MockTeam("Team 0"), 0.0, [], None, 0.0, [], home_projected=100.0)]
     assert median_cutline(league, box_scores) is None
 
 
-def test_median_cutline_picks_ranks_6_7_8_by_projected_total():
+def test_median_cutline_returns_all_12_teams_with_correct_diffs():
     league = _MockLeague(median_scoring=True)
     # 12 teams, projected totals 120 down to 10 in steps of 10
     totals = [120, 110, 100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
     box_scores = _make_ranked_box_scores(totals)
     result = median_cutline(league, box_scores)
-    assert result["making_it"] == ("Team 5", 70)   # 6th highest
-    assert result["missing_it"] == ("Team 6", 60)  # 7th highest
-    assert result["also_missing_it"] == ("Team 7", 50)  # 8th highest
+    assert len(result["teams"]) == 12
+    assert result["cut_index"] == 6
+
+    top = result["teams"][0]
+    assert top["rank"] == 1 and top["team"] == "Team 0" and top["projected"] == 120
+    assert top["diff"] == 50.0  # 120 - cutline(70)
+    assert top["making_it"] is True
+
+    cutline_team = result["teams"][5]  # rank 6
+    assert cutline_team["team"] == "Team 5" and cutline_team["projected"] == 70
+    assert cutline_team["diff"] == 0.0
+    assert cutline_team["making_it"] is True
+
+    first_out = result["teams"][6]  # rank 7
+    assert first_out["team"] == "Team 6" and first_out["projected"] == 60
+    assert first_out["diff"] == -10.0
+    assert first_out["making_it"] is False
+
+    last = result["teams"][11]  # rank 12
+    assert last["diff"] == -60.0  # 10 - 70
 
 
-def test_build_message_includes_cutline_section_when_present():
+def test_build_message_includes_full_cutline_list_with_marker():
     matchups = [MatchupSnapshot("A", 10.0, "B", 5.0)]
-    cutline = {"making_it": ("Team In", 90.0), "missing_it": ("Team Out", 80.0), "also_missing_it": ("Team Out2", 70.0)}
+    cutline = {
+        "teams": [
+            {"rank": 1, "team": "Team In 1", "projected": 100.0, "diff": 30.0, "making_it": True},
+            {"rank": 2, "team": "Team Cut", "projected": 70.0, "diff": 0.0, "making_it": True},
+            {"rank": 3, "team": "Team Out 1", "projected": 60.0, "diff": -10.0, "making_it": False},
+        ],
+        "cut_index": 2,
+    }
     msg = build_message("Early slate update", matchups, [], cutline=cutline)
     assert "ON THE BUBBLE" in msg
-    assert "Team In" in msg and "Team Out" in msg and "Team Out2" in msg
+    assert "Team In 1" in msg and "Team Cut" in msg and "Team Out 1" in msg
+    cut_marker_idx = msg.index("--- CUTLINE ---")
+    assert msg.index("Team Cut") < cut_marker_idx < msg.index("Team Out 1")
 
 
 def test_build_message_omits_cutline_section_when_none():
