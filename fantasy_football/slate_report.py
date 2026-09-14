@@ -211,15 +211,15 @@ def build_message(
     cutline: dict | None = None,
 ) -> str:
     if not matchups:
-        return f"{label}: no games in progress yet."
+        return f"🏈 **{label}**: no games in progress yet."
 
-    lines = [f"{label.upper()}", ""]
+    lines = [f"🏈 **{label.upper()}**", ""]
 
     # Sorted by PROJECTED final margin, not the raw score-so-far margin -
     # see module docstring for why (a big score-so-far gap is often just
     # "the other team hasn't played yet," not a real edge).
     closest = sorted(matchups, key=lambda m: m.projected_margin)[:3]
-    lines.append("CLOSEST GAMES (BY PROJECTED FINISH):")
+    lines.append("🔥 **CLOSEST GAMES (BY PROJECTED FINISH)**:")
     for m in closest:
         lines.append(f"- {m}")
     lines.append("")
@@ -230,27 +230,27 @@ def build_message(
         proj_leader, proj_trailer = (
             (b.home_team, b.away_team) if b.home_projected >= b.away_projected else (b.away_team, b.home_team)
         )
-        lines.append("BIGGEST BLOWOUT (BY PROJECTED FINISH):")
-        lines.append(f"- {b} - {proj_leader} projected to beat {proj_trailer} by {b.projected_margin:.1f}")
+        lines.append("💥 **BIGGEST BLOWOUT (BY PROJECTED FINISH)**:")
+        lines.append(f"- {b} - **{proj_leader}** projected to beat {proj_trailer} by **{b.projected_margin:.1f}**")
         lines.append("")
 
     if top_scores:
-        lines.append("TOP SCORES SO FAR:")
+        lines.append("⭐ **TOP SCORES SO FAR**:")
         for name, team, points in top_scores:
-            lines.append(f"- {name} ({team}): {points:.1f}")
+            lines.append(f"- {name} ({team}): **{points:.1f}**")
         lines.append("")
 
     if worst_decision:
         r = worst_decision
-        lines.append("WORST LINEUP DECISION THIS WEEK:")
+        lines.append("🤦 **WORST LINEUP DECISION THIS WEEK**:")
         lines.append(
-            f"- {r['team']} is losing {r['score']:.1f}-{r['opp_score']:.1f}, but their real optimal legal "
-            f"lineup scores {r['optimal_score']:.1f} - enough to win this one"
+            f"- **{r['team']}** is losing {r['score']:.1f}-{r['opp_score']:.1f}, but their real optimal legal "
+            f"lineup scores **{r['optimal_score']:.1f}** - enough to win this one"
         )
         lines.append("")
 
     if cutline:
-        lines.append("ON THE BUBBLE (median bonus cutline, projected):")
+        lines.append("📊 **ON THE BUBBLE (median bonus cutline, projected)**:")
         for t in cutline["teams"]:
             lines.append(f"{t['rank']}. {t['team']} {t['projected']:.1f} pts ({t['diff']:+.1f})")
             if t["rank"] == cutline["cut_index"]:

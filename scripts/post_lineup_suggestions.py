@@ -78,7 +78,7 @@ def main() -> int:
 
         result = wr.build_ideal_lineup(season, team_pk)
 
-    message = build_wednesday_message(result, my_team.team_name)
+    message = build_wednesday_message(result, my_team.team_name, league_name=league.settings.name)
     send_long_message(bot_id, message)
     print(f"Posted week {result['week']} lineup check for {my_team.team_name} ({len(result['changes'])} suggested changes)")
     return 0

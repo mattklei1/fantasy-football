@@ -52,14 +52,31 @@ def test_send_long_message_splits_on_paragraph_boundaries(monkeypatch):
         assert p in rejoined
 
 
-def test_to_groupme_text_strips_markdown_bold():
+def test_to_groupme_text_converts_markdown_bold_to_unicode_bold():
     text = "**HEADLINE**\n\nWeek 6 is in the books."
-    assert groupme_client.to_groupme_text(text) == "HEADLINE\n\nWeek 6 is in the books."
+    result = groupme_client.to_groupme_text(text)
+    assert "**" not in result  # no literal asterisks leak through
+    assert result == "𝐇𝐄𝐀𝐃𝐋𝐈𝐍𝐄\n\nWeek 6 is in the books."
 
 
 def test_to_groupme_text_leaves_plain_text_unchanged():
     text = "No markdown here at all."
     assert groupme_client.to_groupme_text(text) == text
+
+
+def test_to_bold_unicode_converts_letters_and_digits():
+    assert groupme_client.to_bold_unicode("Week 1") == "𝐖𝐞𝐞𝐤 𝟏"
+
+
+def test_to_bold_unicode_leaves_punctuation_spaces_and_emoji_unchanged():
+    assert groupme_client.to_bold_unicode("hi! 🏈 $5") == "𝐡𝐢! 🏈 $𝟓"
+
+
+def test_to_bold_unicode_round_trips_back_via_a_second_call_is_a_noop():
+    # already-bold text has no plain ASCII left to convert - calling
+    # again should be idempotent, not double-convert or error
+    once = groupme_client.to_bold_unicode("Week 1")
+    assert groupme_client.to_bold_unicode(once) == once
 
 
 def test_send_long_message_hard_cuts_a_single_oversized_paragraph(monkeypatch):

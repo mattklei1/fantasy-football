@@ -126,4 +126,6 @@ def test_build_message_highlights_contested_and_overspent():
     assert "STEALS" in msg
     assert "Bargain Bin Bijan" in msg
     assert "Nobody Cares" in msg  # still listed under all executed claims
-    assert "**" not in msg  # GroupMe doesn't render markdown - must never leak into messages
+    # **bold** markup is intentional - groupme_client.send_long_message
+    # converts it to real Unicode bold before posting.
+    assert "**Daniel Jones**" in msg

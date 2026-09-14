@@ -109,7 +109,9 @@ def main() -> int:
             except Exception as exc:  # noqa: BLE001 - the cross-check is a nice-to-have, never block our own real recommendations
                 print(f"[warn] ESPN/Yahoo cross-check failed: {exc}")
 
-    message = build_message(suggestions, overlooked, week, budget_remaining, my_team.team_name)
+    message = build_message(
+        suggestions, overlooked, week, budget_remaining, my_team.team_name, league_name=league.settings.name
+    )
     send_long_message(bot_id, message)
     print(f"Posted week {week} waiver recommendations for {my_team.team_name} ({len(suggestions)} picks, {len(overlooked)} overlooked)")
     return 0

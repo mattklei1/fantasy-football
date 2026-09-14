@@ -13,9 +13,10 @@ completely separate, ephemeral environment from the deployed Streamlit
 app, so it has no access to (and no dependency on) that app's local
 database file anyway.
 
-GroupMe doesn't render Markdown, so messages here are plain text with
-emoji/caps for emphasis - not **bold** syntax, which would just show up
-as literal asterisks.
+Messages mark up key phrases with **bold** and a couple of section-
+header emoji - groupme_client.send_long_message converts the markup to
+real Unicode bold before posting (see that module for why GroupMe itself
+has no native formatting).
 """
 from __future__ import annotations
 
@@ -142,37 +143,37 @@ def build_message(claims: list[PlayerClaimResult], week: int) -> str:
 
     executed.sort(key=lambda c: c.winning_bid or 0, reverse=True)
 
-    lines = [f"WEEK {week} WAIVER WIRE REPORT", ""]
+    lines = [f"💰 **WEEK {week} WAIVER WIRE REPORT**", ""]
 
     contested = [c for c in executed if c.contested]
     if contested:
-        lines.append("CONTESTED CLAIMS:")
+        lines.append("⚔️ **CONTESTED CLAIMS**:")
         for c in contested:
             bids = ", ".join(f"{team} ${bid:.0f}" for team, bid in sorted(c.all_bids, key=lambda x: -x[1]))
-            lines.append(f"- {c.player_name}: {c.winner_team} won at ${c.winning_bid:.0f} ({len(c.all_bids)} bidders: {bids})")
+            lines.append(f"- **{c.player_name}**: {c.winner_team} won at **${c.winning_bid:.0f}** ({len(c.all_bids)} bidders: {bids})")
         lines.append("")
 
     overspent = [c for c in executed if c.overspent]
     if overspent:
-        lines.append("PAID TOO MUCH (per our own suggested value):")
+        lines.append("📈 **PAID TOO MUCH** (per our own suggested value):")
         for c in overspent:
             lines.append(
-                f"- {c.winner_team} spent ${c.winning_bid:.0f} on {c.player_name} "
+                f"- {c.winner_team} spent **${c.winning_bid:.0f}** on **{c.player_name}** "
                 f"(we'd have suggested ~${c.suggested_bid:.0f})"
             )
         lines.append("")
 
     steals = [c for c in executed if c.steal]
     if steals:
-        lines.append("STEALS (we had them pegged for way more):")
+        lines.append("🎯 **STEALS** (we had them pegged for way more):")
         for c in steals:
             lines.append(
-                f"- {c.winner_team} got {c.player_name} for just ${c.winning_bid:.0f} "
+                f"- {c.winner_team} got **{c.player_name}** for just **${c.winning_bid:.0f}** "
                 f"(we'd have suggested ~${c.suggested_bid:.0f})"
             )
         lines.append("")
 
-    lines.append("ALL EXECUTED CLAIMS:")
+    lines.append("📋 **ALL EXECUTED CLAIMS**:")
     for c in executed:
         lines.append(f"- {c.winner_team}: {c.player_name} for ${c.winning_bid:.0f}")
 

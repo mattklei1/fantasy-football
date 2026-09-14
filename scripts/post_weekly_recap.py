@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fantasy_football import commentary, config, db
 from fantasy_football.espn_client import ESPNClient
-from fantasy_football.groupme_client import send_long_message, to_groupme_text
+from fantasy_football.groupme_client import send_long_message
 from fantasy_football.ingest import ingest_season
 from fantasy_football.metrics.pipeline import compute_and_store_lineup_efficiency, compute_and_store_season_metrics
 from fantasy_football.schedule_guard import is_target_time_now
@@ -77,7 +77,7 @@ def main() -> int:
         print(f"No recap available for week {week} - skipping post.")
         return 0
 
-    message = f"WEEK {week} RECAP\n\n" + to_groupme_text(result["commentary"])
+    message = f"WEEK {week} RECAP\n\n" + result["commentary"]
     send_long_message(bot_id, message)
     print(f"Posted weekly recap for week {week} (source={result['source']})")
     return 0

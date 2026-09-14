@@ -111,10 +111,13 @@ def test_build_message_includes_top_scores():
     assert "35.2" in msg
 
 
-def test_build_message_no_markdown_leaks_in():
+def test_build_message_bold_markup_wraps_headers_and_key_stats():
+    # **bold** markup is intentional here - GroupMe posting converts it to
+    # real Unicode bold via groupme_client.to_groupme_text() before send.
     matchups = [MatchupSnapshot("A", 10.0, "B", 5.0)]
     msg = build_message("Early slate update", matchups, [("P", "T", 1.0)])
-    assert "**" not in msg
+    assert "**EARLY SLATE UPDATE**" in msg
+    assert "**1.0**" in msg
 
 
 # --- biggest_blowouts (now projected, not raw) -----------------------
@@ -135,7 +138,7 @@ def test_build_message_includes_biggest_blowout_section_by_projection():
     matchups = [MatchupSnapshot("Rout A", 60.0, "Rout B", 55.0, home_projected=140.0, away_projected=80.0)]
     msg = build_message("Early slate update", matchups, [])
     assert "BIGGEST BLOWOUT (BY PROJECTED FINISH)" in msg
-    assert "Rout A projected to beat Rout B by 60.0" in msg
+    assert "**Rout A** projected to beat Rout B by **60.0**" in msg
 
 
 # --- worst_lineup_decision -------------------------------------------------

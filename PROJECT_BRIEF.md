@@ -2449,6 +2449,42 @@ scheduled script here.
   actually fire (already added earlier this session for the Tuesday
   waiver script, so no further action needed there).
 
+**GroupMe message formatting + league-name prefix (2026-09-14):**
+GroupMe has NO real text-formatting - confirmed against their own
+official Bot API docs: message "attachments" only support image/
+location/split/emoji types, nothing for bold/italic, and Markdown isn't
+rendered (an unstripped `**word**` shows up as literal asterisks). Real
+working substitute: Unicode's Mathematical Bold block (U+1D400 range)
+- ordinary, distinct codepoints, not a formatting instruction, so they
+render as genuinely bold text on any platform with normal Unicode font
+support (same trick already used for the "Christian²" team name).
+
+- `groupme_client.to_bold_unicode()` converts ASCII A-Z/a-z/0-9 to
+  their Mathematical Bold equivalents; `to_groupme_text()` now converts
+  `**bold**` markdown into real Unicode bold via that function (it used
+  to just strip the asterisks to plain text).
+- Centralized in `send_long_message()` itself - it runs
+  `to_groupme_text()` on the full message BEFORE splitting into chunks,
+  so every `scripts/post_*.py` message builder gets real bold for free
+  just by marking up its own text with `**word**`; no per-script wiring
+  needed, and `commentary.py` (already producing `**HEADER**` markdown
+  for the weekly recap) needed zero code changes.
+- Every message builder (`slate_report.py`, `waiver_report.py`,
+  `waiver_recommendations_report.py`, `lineup_alert_report.py`) now
+  marks up section headers and key stats with `**bold**` plus a couple
+  of section-header emoji, matching the user's ask ("bold the important
+  stuff, maybe a couple emojis, hard to read plain text").
+- League-name prefix: the 3 PERSONAL-bot scripts (waiver
+  recommendations, Wednesday/Sunday lineup alerts) now prepend a brief
+  `🏆 {league.settings.name}` line via a new `league_name` param on each
+  builder - the shared-group scripts (slate updates, waiver recap,
+  weekly recap) don't need it, since they only ever serve this one
+  league. Confirmed live: `league.settings.name` = "Salted by Quincy".
+- 233/233 tests passing (existing exact-text assertions in
+  `test_slate_report.py`/`test_waiver_report.py` updated to expect the
+  new `**bold**` markup instead of asserting no markdown leaks in - that
+  was last week's intentional design, now superseded).
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip
