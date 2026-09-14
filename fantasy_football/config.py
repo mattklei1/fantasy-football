@@ -124,6 +124,17 @@ def groupme_bot_id() -> str | None:
     return bot_id or None
 
 
+def groupme_personal_bot_id() -> str | None:
+    """A SEPARATE GroupMe bot, bound to a private group containing only
+    the commissioner - used for the Tuesday waiver-recommendations
+    notification (and anything else that shouldn't go to the whole
+    league's shared bot/group). A GroupMe bot can only post to the one
+    group it was created for (confirmed - see groupme_client.py's
+    module docstring), so this can't just reuse groupme_bot_id()."""
+    bot_id = os.getenv("GROUPME_PERSONAL_BOT_ID", "").strip()
+    return bot_id or None
+
+
 def gemini_model() -> str:
     """Configurable rather than hardcoded - Gemini model names change
     fast (verified 'gemini-2.5-flash' is real and current as of
