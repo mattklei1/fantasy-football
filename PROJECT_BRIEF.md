@@ -2093,15 +2093,22 @@ weekly boundary to wait for. Since GitHub Actions can't reach the live
 deployed site's local DB (see the filesystem-persistence note above -
 only the app's own running process can touch its own disk),
 "refresh daily" had to be wired as an in-app auto-check instead of an
-external cron: `ingest.refresh_roster_strength_if_due(conn, league,
-season, log)` is a new standalone function (extracted out of
-`ingest_season`'s existing weekly-gated block, same should_refresh_daily
-gate) that does ONLY the FantasyPros/ESPN-rank pull - deliberately NOT
-the full week-by-week ESPN backfill `refresh_all()` does, since that's
-too slow to run on every page load. `ui_common.ensure_roster_strength_fresh()`
-calls it from `render_sidebar()` (so every page load), gated by the same
-daily check before even fetching a `League` object - a no-op after the
-first page load each day. `ensure_data_bootstrapped()` (empty-DB full
+external cron: `ingest.refresh_daily_data_if_due(conn, league, season,
+log)` is a new standalone function (extracted out of `ingest_season`'s
+existing weekly-gated block, same should_refresh_daily gate) that does
+the FantasyPros/ESPN-rank pull PLUS team metadata (name/record, cheap -
+reuses the already-fetched `league` object, no extra ESPN call) -
+deliberately NOT the full week-by-week roster/score backfill
+`refresh_all()` does, since that's too slow to run on every page load.
+`ui_common.ensure_daily_data_fresh()` calls it from `render_sidebar()`
+(so every page load), gated by the same daily check before even
+fetching a `League` object - a no-op after the first page load each
+day. Team metadata was folded into this same daily check on 2026-09-14
+after the user renamed their team in ESPN ("Roses to Flowers" ->
+"McConkey Kong") and the app kept showing the stale name - team info
+was previously only refreshed by the empty-DB bootstrap or a manual
+"Refresh ESPN Data" click, neither of which happens automatically on a
+rename. `ensure_data_bootstrapped()` (empty-DB full
 rebuild) and the manual "Refresh ESPN Data" button are unchanged.
 
 **Matchups page redesign (2026-09-14):**

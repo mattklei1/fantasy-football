@@ -415,16 +415,18 @@ def ensure_data_bootstrapped() -> None:
         dd.clear_all_caches()
 
 
-def ensure_roster_strength_fresh() -> None:
+def ensure_daily_data_fresh() -> None:
     """Companion to ensure_data_bootstrapped(): keeps Roster Strength's
-    FantasyPros/ESPN rank inputs current on the LIVE deployed site
-    without a manual "Refresh ESPN Data" click. GitHub Actions can't
-    reach this site's local DB directly (see ensure_data_bootstrapped's
-    docstring on filesystem persistence), so a daily refresh has to be
-    triggered from inside the app itself - here, on page load. The
-    should_refresh_daily gate (see schedule_guard) makes this a cheap
-    no-op after the first page load each day; only a genuinely due
-    refresh pays the cost of an ESPN + FantasyPros call."""
+    FantasyPros/ESPN rank inputs AND team metadata (name, record - e.g.
+    a manager renaming their team in ESPN) current on the LIVE deployed
+    site without a manual "Refresh ESPN Data" click. GitHub Actions
+    can't reach this site's local DB directly (see
+    ensure_data_bootstrapped's docstring on filesystem persistence), so
+    a daily refresh has to be triggered from inside the app itself -
+    here, on page load. The should_refresh_daily gate (see
+    schedule_guard) makes this a cheap no-op after the first page load
+    each day; only a genuinely due refresh pays the cost of an ESPN +
+    FantasyPros call."""
     conn = dd.get_connection()
     seasons = dd.get_available_seasons()
     if not seasons:
@@ -437,12 +439,12 @@ def ensure_roster_strength_fresh() -> None:
         return
 
     from .espn_client import ESPNClient
-    from .ingest import refresh_roster_strength_if_due
+    from .ingest import refresh_daily_data_if_due
 
-    with st.spinner("Refreshing today's Roster Strength rankings..."):
+    with st.spinner("Refreshing today's team info and Roster Strength rankings..."):
         client = ESPNClient()
         league = client.get_league(season)
-        refresh_roster_strength_if_due(conn, league, season, log=lambda *a: None)
+        refresh_daily_data_if_due(conn, league, season, log=lambda *a: None)
         dd.clear_all_caches()
 
 
@@ -457,7 +459,7 @@ def render_sidebar(support_all_time: bool = False) -> tuple[int | str, int | Non
     require_password()
     require_login()
     ensure_data_bootstrapped()
-    ensure_roster_strength_fresh()
+    ensure_daily_data_fresh()
 
     st.sidebar.title("🏈 Fantasy Dashboard")
 

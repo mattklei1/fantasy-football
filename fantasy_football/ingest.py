@@ -549,24 +549,31 @@ def ingest_season(conn, client: ESPNClient, season: int, log=print) -> None:
         except Exception as exc:  # noqa: BLE001
             log(f"[warn] season {season} recent_activity: {exc}")
 
-        refresh_roster_strength_if_due(conn, league, season, log=log)
+        refresh_daily_data_if_due(conn, league, season, log=log)
 
     conn.commit()
 
 
-def refresh_roster_strength_if_due(conn, league, season: int, log=print) -> bool:
-    """Refreshes ONLY the FantasyPros/ESPN positional-rank inputs behind
-    Roster Strength, gated by schedule_guard.should_refresh_daily so it
-    actually does the FantasyPros/ESPN calls at most once a day no matter
-    how often it's called. Deliberately separate from the rest of
-    ingest_season's week-by-week ESPN backfill (which is comparatively
-    slow) so this can also be called directly from a page load - see
-    ui_common.ensure_roster_strength_fresh(). Returns True if it actually
-    refreshed."""
+def refresh_daily_data_if_due(conn, league, season: int, log=print) -> bool:
+    """Refreshes the FantasyPros/ESPN positional-rank inputs behind
+    Roster Strength, PLUS team metadata (name, record - cheap, from the
+    already-fetched `league` object, no extra ESPN call) so a manager
+    renaming their team in ESPN shows up here too. Gated by
+    schedule_guard.should_refresh_daily so it actually does this work at
+    most once a day no matter how often it's called. Deliberately
+    separate from the rest of ingest_season's week-by-week roster/score
+    backfill (which is comparatively slow) so this can also be called
+    directly from a page load - see ui_common.ensure_daily_data_fresh().
+    Returns True if it actually refreshed."""
     last_rs_refresh = db.get_roster_strength_last_refreshed(conn, season)
     if not should_refresh_daily(last_rs_refresh):
-        log(f"[skip] season {season} Roster Strength inputs: already refreshed today")
+        log(f"[skip] season {season} daily data (roster strength + team info): already refreshed today")
         return False
+
+    try:
+        ingest_teams(conn, league, season)
+    except Exception as exc:  # noqa: BLE001 - a team-metadata hiccup shouldn't block the rank refresh below
+        log(f"[warn] season {season} team info: {exc}")
 
     last_week = league.current_week
     try:
