@@ -38,8 +38,8 @@ if not config.fantasypros_api_key():
         "will be empty. Trade Calculator still works off ESPN's own positional rank alone."
     )
 
-tab_rankings, tab_waiver, tab_mine, tab_trade = st.tabs(
-    ["Rankings Browser", "Waiver Board", "My Waiver Bids", "Trade Calculator"]
+tab_rankings, tab_waiver, tab_mine, tab_trade, tab_lineup = st.tabs(
+    ["Rankings Browser", "Waiver Board", "My Waiver Bids", "Trade Calculator", "Lineup Optimizer"]
 )
 
 with tab_rankings:
@@ -470,3 +470,82 @@ instead. This automatically prices in:
 a snapshot of current rest-of-season value, not a full trade-deadline calculus.
                     """
                 )
+
+with tab_lineup:
+    st.caption(
+        "Compares your CURRENT starting lineup against FantasyPros' weekly consensus rankings "
+        "(not a single named analyst - see Methodology below for why) and real kickoff times, "
+        "flagging any non-optimal starts and anyone in your lineup projected for exactly 0 "
+        "points. Nothing here changes your real ESPN lineup unless you explicitly submit below."
+    )
+    lineup_team_pk = wr.get_my_team_pk(season)
+    if lineup_team_pk is None:
+        st.info("Couldn't resolve your team automatically - check your ESPN credentials.")
+    else:
+        if st.button("Check my lineup", key="wr_lineup_check"):
+            with st.spinner("Pulling weekly rankings and your current lineup..."):
+                st.session_state["wr_lineup_result"] = wr.build_ideal_lineup(season, lineup_team_pk)
+
+        result = st.session_state.get("wr_lineup_result")
+        if result is not None:
+            zero_proj = result["zero_projected_starters"]
+            changes = result["changes"]
+
+            if zero_proj:
+                st.error("⚠️ HIGH PRIORITY - projected for 0 points and currently starting:")
+                for z in zero_proj:
+                    st.markdown(f"- **{z['player_name']}** ({z['projected']:.1f} pts projected)")
+
+            if changes:
+                st.markdown(f"#### Suggested changes (Week {result['week']})")
+                for c in changes:
+                    st.markdown(f"- **{c['player_name']}** ({c['position']}): {c['from_slot']} → {c['to_slot']}")
+
+                real_submit = st.checkbox(
+                    "⚠️ Actually submit this lineup change to ESPN (real transaction)",
+                    value=False, key="wr_lineup_real_submit",
+                    help="Unchecked = dry run only (shows exactly what would be sent, sends nothing). "
+                    "Resets to unchecked every page load.",
+                )
+                submit_label = "Submit lineup change to ESPN" if real_submit else "Preview lineup change (dry run)"
+                if st.button(submit_label, key="wr_lineup_submit"):
+                    moves = [
+                        (c["player_id"], wr.slot_name_to_id(c["from_slot"]), wr.slot_name_to_id(c["to_slot"]))
+                        for c in changes
+                    ]
+                    lineup_result = wr.submit_lineup_changes(season, lineup_team_pk, moves, dry_run=not real_submit)
+                    if lineup_result["dry_run"]:
+                        st.info("Dry run - exact payload that would be sent:")
+                        st.json(lineup_result["payload"])
+                    elif lineup_result["success"]:
+                        st.success(lineup_result["message"])
+                    else:
+                        st.error(lineup_result["message"])
+            elif not zero_proj:
+                st.success("Your current lineup already matches the weekly consensus - no changes suggested.")
+
+        with st.expander("Methodology"):
+            st.markdown(
+                """
+**Who/what decides "optimal"**: FantasyPros' weekly consensus rankings (their blended panel of
+100+ real analysts, currently including Justin Boone of Yahoo! Sports - FantasyPros' #1 overall
+ranker by weekly accuracy as of this writing). The user's original ask was Boone's rankings
+specifically, not a blend - two real constraints changed that: FantasyPros' API parameter for
+isolating one expert's rankings doesn't actually work despite being documented (confirmed live -
+identical results whether filtering to his expert ID, a different expert's, or none at all), and
+he isn't even a registered contributor to FantasyPros' RB/WR/TE weekly panels, only QB/K/DST. A
+broad weekly consensus - which DOES include him for the positions he covers - is what's actually
+usable today.
+
+**QB/OP (superflex)** is decided separately from RB/WR/TE/FLEX, since FantasyPros has no single
+rank scale comparable across QB and skill positions - your top 2 QBs by weekly QB rank fill
+QB+OP, the standard superflex convention (and consistent with this app's own QB scarcity premium
+elsewhere in War Room).
+
+**Slot ordering** (which of your starters sits in a base RB/WR/TE slot vs. the flex slot) is
+chosen by real kickoff time - earlier games get the fixed base slots, the flex slot(s) hold
+whichever starter(s) have the LATEST kickoff, so you keep maximum flexibility for a late swap.
+This has zero effect on scoring - ESPN scores a player identically regardless of which eligible
+slot he's sitting in - it's purely a lineup-management preference.
+                """
+            )

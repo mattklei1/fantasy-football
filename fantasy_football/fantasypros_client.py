@@ -35,6 +35,23 @@ def fetch_ros_rankings(api_key: str, position: str, season: int) -> list[dict]:
     return resp.json().get("players", [])
 
 
+def fetch_weekly_rankings(api_key: str, position: str, season: int, week: int) -> list[dict]:
+    """One position's weekly consensus rankings for a specific week -
+    same shape as fetch_ros_rankings but type=weekly. Used for QB (which
+    has no cross-position weekly list - see fetch_weekly_overall_rankings
+    - so QB decisions use its own position-scoped rank directly, same as
+    ROS's per-position rank is used for anything not needing cross-
+    position comparison)."""
+    resp = requests.get(
+        f"{BASE_URL}/{season}/consensus-rankings",
+        params={"type": "weekly", "week": week, "position": position},
+        headers={"x-api-key": api_key},
+        timeout=TIMEOUT_SECONDS,
+    )
+    resp.raise_for_status()
+    return resp.json().get("players", [])
+
+
 def fetch_all_ros_rankings(api_key: str, season: int) -> dict[str, list[dict]]:
     """All 6 positions' ROS rankings, keyed by position. Raises on the
     first request failure - callers should catch broadly and log, same
@@ -59,6 +76,34 @@ def fetch_overall_ros_rankings(api_key: str, season: int) -> list[dict]:
     resp = requests.get(
         f"{BASE_URL}/{season}/consensus-rankings",
         params={"type": "ROS", "position": "ALL"},
+        headers={"x-api-key": api_key},
+        timeout=TIMEOUT_SECONDS,
+    )
+    resp.raise_for_status()
+    return resp.json().get("players", [])
+
+
+def fetch_weekly_overall_rankings(api_key: str, season: int, week: int) -> list[dict]:
+    """The TRUE cross-position WEEKLY consensus ranking (type=weekly,
+    position=ALL) for one specific week - same "position=ALL gives a
+    real cross-position order, not positional rank restated" property
+    confirmed for ROS rankings (see fetch_overall_ros_rankings), verified
+    live for weekly too (2026-09-14): Week 1 2026 had RBs/WRs correctly
+    interleaved (Jahmyr Gibbs #1, Ja'Marr Chase #12, etc.), not each
+    position's own #1 tied together. This is what drives the lineup-
+    optimization feature's weekly "who should start" comparisons -
+    chosen over a single named analyst's rankings after confirming (a)
+    FantasyPros' `filters` query param for isolating one expert doesn't
+    actually work despite being documented (tested live: identical
+    results whether filtering to expert 317, a different expert, or no
+    filter at all) and (b) Justin Boone (expert_id 317, Yahoo! Sports,
+    FantasyPros' #1 overall weekly accuracy ranker as of 2026-09-14)
+    isn't even a registered contributor for RB/WR/TE, only QB/K/DST - so
+    a broad weekly consensus (which DOES include him for the positions
+    he covers) is what's actually usable."""
+    resp = requests.get(
+        f"{BASE_URL}/{season}/consensus-rankings",
+        params={"type": "weekly", "week": week, "position": "ALL"},
         headers={"x-api-key": api_key},
         timeout=TIMEOUT_SECONDS,
     )

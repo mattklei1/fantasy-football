@@ -820,3 +820,300 @@ def submit_waiver_claim(
         "dry_run": False, "url": url, "payload": payload, "success": False,
         "status_code": resp.status_code, "message": message, "transaction_id": None,
     }
+
+
+# --- Lineup optimization (FantasyPros weekly consensus -> ideal lineup) --
+#
+# Driven by FantasyPros' weekly consensus rankings, NOT a single named
+# analyst - see fantasypros_client.fetch_weekly_overall_rankings's
+# docstring for the full story: the user specifically wanted Justin
+# Boone (Yahoo Fantasy, FantasyPros' #1 overall weekly-accuracy ranker
+# as of 2026-09-14, expert_id 317), but (a) FantasyPros' `filters` query
+# param for isolating one expert's rankings doesn't actually work
+# despite being documented (confirmed live: identical results whether
+# filtering to expert 317, a different expert, or nothing at all), and
+# (b) he isn't even a registered contributor to FantasyPros' RB/WR/TE
+# weekly panels, only QB/K/DST - so a broad weekly consensus (which DOES
+# include him for the positions he covers) is what's actually usable.
+# Decided with the user, 2026-09-14.
+#
+# QB+OP (superflex) vs RB/WR/TE+FLEX are two SEPARATE decisions: there's
+# no single rank scale comparable across QB and skill positions here
+# (FantasyPros' cross-position "ALL" list only covers RB/WR/TE, never
+# QB), so QB+OP are simply filled by this team's top-2 QBs by weekly QB
+# rank - the standard superflex convention, and consistent with this
+# project's own existing QB scarcity premium (metrics/waiver_value.
+# position_scarcity_multipliers). A deliberate simplification, not
+# silently assumed.
+
+
+@st.cache_data(ttl=1800)
+def get_weekly_flex_rankings(season: int, week: int) -> dict[int, int]:
+    """{espn_player_id: cross-position weekly rank} for RB/WR/TE, from
+    FantasyPros' position=ALL weekly consensus - see module note above
+    for why this (not a single named analyst) is what's used. Empty
+    dict on any failure (no API key, request error) - callers should
+    treat missing ranks as "no signal", never crash the page over it."""
+    api_key = config.fantasypros_api_key()
+    if not api_key:
+        return {}
+    from . import fantasypros_client
+
+    try:
+        players = fantasypros_client.fetch_weekly_overall_rankings(api_key, season, week)
+    except Exception:  # noqa: BLE001
+        return {}
+    espn_id_map = get_fp_espn_id_map()
+    return {
+        espn_id_map[p["player_id"]]: p["rank_ecr"]
+        for p in players
+        if p.get("player_id") in espn_id_map and p.get("rank_ecr") is not None
+    }
+
+
+@st.cache_data(ttl=1800)
+def get_weekly_qb_rankings(season: int, week: int) -> dict[int, int]:
+    """{espn_player_id: QB positional weekly rank}. QB has no cross-
+    position weekly list (see module note above), so this uses QB's own
+    position-scoped rank directly - fine since QB/OP decisions are made
+    among this team's QBs only (see build_ideal_lineup)."""
+    api_key = config.fantasypros_api_key()
+    if not api_key:
+        return {}
+    from . import fantasypros_client
+
+    try:
+        players = fantasypros_client.fetch_weekly_rankings(api_key, "QB", season, week)
+    except Exception:  # noqa: BLE001
+        return {}
+    espn_id_map = get_fp_espn_id_map()
+    return {
+        espn_id_map[p["player_id"]]: p["rank_ecr"]
+        for p in players
+        if p.get("player_id") in espn_id_map and p.get("rank_ecr") is not None
+    }
+
+
+QB_ELIGIBLE_SLOT_NAMES = {"QB", "OP"}
+SKILL_SLOT_COUNT_KEYS = ("RB", "WR", "TE", "RB/WR/TE")
+#: Rank-to-value conversion shared by both the QB and skill-pool solves -
+#: lower rank = better = higher value; an unranked player (FantasyPros
+#: has no opinion, e.g. deep bench/practice-squad-adjacent) floors at 0
+#: rather than being excluded outright, so the solver can still legally
+#: fill a slot if literally nothing else is eligible.
+_RANK_VALUE_CEILING = 10_000
+
+
+def _value_from_rank(rank: int | None) -> float:
+    return max(0.0, _RANK_VALUE_CEILING - rank) if rank is not None else 0.0
+
+
+def build_ideal_lineup(season: int, team_pk: int) -> dict:
+    """Computes this team's ideal starting lineup for the CURRENT live
+    week from FantasyPros' weekly consensus rankings (see module note
+    above), then metrics.lineup_order to decide which specific slot
+    label (base RB/WR/TE vs the RB/WR/TE flex slot) each skill-position
+    starter gets, based on real kickoff time (earlier games -> base
+    slots, later games -> flex - see that module's docstring for why).
+
+    A bye-week player (no real game this week) is never placed in a
+    starting slot, regardless of rank - they simply can't play.
+
+    Returns {"changes": [{"player_id", "player_name", "position",
+    "from_slot", "to_slot"}], "zero_projected_starters": [{"player_id",
+    "player_name", "projected"}], "week": int}. "changes" only lists
+    players whose CURRENT real ESPN slot differs from the proposed one -
+    an empty list means the current lineup is already optimal.
+    zero_projected_starters is computed against the CURRENT real lineup
+    (not the proposed one) - a real, live fact independent of whether
+    the user acts on the lineup suggestion at all."""
+    from .espn_client import ESPNClient
+    from .metrics.lineup_order import TimedPlayer, order_flex_pool_by_kickoff
+
+    conn = dd.get_connection()
+    espn_team_id_row = conn.execute("SELECT espn_team_id FROM teams WHERE id = ?", (team_pk,)).fetchone()
+    if not espn_team_id_row:
+        return {"changes": [], "zero_projected_starters": [], "week": None}
+    espn_team_id = espn_team_id_row["espn_team_id"]
+
+    league = ESPNClient().get_league(season)
+    week = league.current_week
+    box_scores = league.box_scores(week)
+    lineup = None
+    for bs in box_scores:
+        if bs.home_team and bs.home_team.team_id == espn_team_id:
+            lineup = bs.home_lineup
+        elif bs.away_team and bs.away_team.team_id == espn_team_id:
+            lineup = bs.away_lineup
+    if lineup is None:
+        return {"changes": [], "zero_projected_starters": [], "week": week}
+
+    zero_projected_starters = [
+        {"player_id": bp.playerId, "player_name": bp.name, "projected": bp.projected_points}
+        for bp in lineup
+        if bp.slot_position not in ("BE", "IR") and (bp.projected_points or 0) == 0 and not bp.on_bye_week
+    ]
+
+    flex_ranks = get_weekly_flex_rankings(season, week)
+    qb_ranks = get_weekly_qb_rankings(season, week)
+    slot_counts = get_position_slot_counts(season)
+
+    playable = [bp for bp in lineup if not bp.on_bye_week and getattr(bp, "game_date", None) is not None]
+    current_slot_by_id = {bp.playerId: bp.slot_position for bp in lineup}
+    name_by_id = {bp.playerId: bp.name for bp in lineup}
+    position_by_id = {bp.playerId: bp.position for bp in lineup}
+
+    qb_pool = [bp for bp in playable if QB_ELIGIBLE_SLOT_NAMES & set(bp.eligibleSlots)]
+    skill_pool = [bp for bp in playable if bp not in qb_pool and set(SKILL_SLOT_COUNT_KEYS) & set(bp.eligibleSlots)]
+
+    proposed_slot_by_id: dict[int, str] = {}
+
+    qb_slot_counts = {k: v for k, v in slot_counts.items() if k in QB_ELIGIBLE_SLOT_NAMES and v}
+    if qb_pool and qb_slot_counts:
+        qb_roster_players = [
+            RosterPlayer(
+                player_id=bp.playerId, points=_value_from_rank(qb_ranks.get(bp.playerId)),
+                eligible_slots=frozenset(bp.eligibleSlots),
+            )
+            for bp in qb_pool
+        ]
+        _, qb_assignment = optimal_lineup(qb_roster_players, qb_slot_counts)
+        for label, player_id in qb_assignment.items():
+            proposed_slot_by_id[player_id] = label.split("#")[0]
+
+    skill_slot_counts = {k: v for k, v in slot_counts.items() if k in SKILL_SLOT_COUNT_KEYS and v}
+    if skill_pool and skill_slot_counts:
+        skill_roster_players = [
+            RosterPlayer(
+                player_id=bp.playerId, points=_value_from_rank(flex_ranks.get(bp.playerId)),
+                eligible_slots=frozenset(bp.eligibleSlots),
+            )
+            for bp in skill_pool
+        ]
+        _, skill_assignment = optimal_lineup(skill_roster_players, skill_slot_counts)
+        chosen_ids = set(skill_assignment.values())
+        chosen_players = [
+            TimedPlayer(player_id=bp.playerId, eligible_slots=frozenset(bp.eligibleSlots), kickoff=bp.game_date)
+            for bp in skill_pool
+            if bp.playerId in chosen_ids
+        ]
+        proposed_slot_by_id.update(order_flex_pool_by_kickoff(chosen_players, skill_slot_counts))
+
+    changes = []
+    for player_id, to_slot in proposed_slot_by_id.items():
+        from_slot = current_slot_by_id.get(player_id)
+        if from_slot is not None and from_slot != to_slot:
+            changes.append(
+                {
+                    "player_id": player_id, "player_name": name_by_id.get(player_id),
+                    "position": position_by_id.get(player_id), "from_slot": from_slot, "to_slot": to_slot,
+                }
+            )
+
+    return {"changes": changes, "zero_projected_starters": zero_projected_starters, "week": week}
+
+
+def slot_name_to_id(slot_name: str) -> int:
+    """ESPN's numeric lineup slot id for a slot name string (e.g. "TE"
+    -> 6, "RB/WR/TE" -> 23, "BE" -> 20) - build_ideal_lineup works in
+    slot name strings throughout (matching league.settings.
+    position_slot_counts' own key naming and espn_api's Player.
+    eligibleSlots), so this is the one place that needs the numeric ids
+    the real write endpoint requires."""
+    from espn_api.football.constant import POSITION_MAP
+
+    return POSITION_MAP[slot_name]
+
+
+LINEUP_WRITE_URL = WAIVER_WRITE_URL  # same transactions endpoint, different "type"/item shape
+
+
+def _lineup_change_payload(team_id: int, moves: list[tuple], scoring_period: int, member_id: str) -> dict:
+    """moves: list of (player_id, from_slot_id, to_slot_id) - NUMERIC
+    ESPN slot ids (see espn_api.football.constant.POSITION_MAP), not
+    slot name strings. Pure payload builder - confirmed live 2026-09-14
+    that a single lineup slot change goes through the SAME transactions
+    endpoint as a waiver claim, but type="ROSTER" with item type=
+    "LINEUP" (fromTeamId/toTeamId both the player's own team, since
+    nobody's roster membership changes, just their slot). Multiple
+    simultaneous LINEUP items in one call were NOT separately live-
+    verified (only a single-item change was, twice) - the waiver-claim
+    endpoint already proved multi-item transactions work in general
+    (ADD+DROP together), so this is a reasonable extrapolation, but
+    worth one supervised live test before depending on it for a real
+    Sunday lineup set."""
+    return {
+        "isLeagueManager": False,
+        "teamId": team_id,
+        "type": "ROSTER",
+        "memberId": member_id,
+        "scoringPeriodId": scoring_period,
+        "executionType": "EXECUTE",
+        "items": [
+            {
+                "playerId": player_id, "type": "LINEUP",
+                "fromLineupSlotId": from_slot_id, "toLineupSlotId": to_slot_id,
+                "fromTeamId": team_id, "toTeamId": team_id,
+            }
+            for player_id, from_slot_id, to_slot_id in moves
+        ],
+    }
+
+
+def submit_lineup_changes(season: int, team_pk: int, moves: list[tuple], dry_run: bool = True) -> dict:
+    """Submit (or, when dry_run, only preview) a batch of real lineup
+    slot changes in ONE transaction. moves: list of (player_id,
+    from_slot_id, to_slot_id) NUMERIC ESPN slot ids. Same real/dry-run
+    semantics and return shape as submit_waiver_claim - defaults to
+    dry_run=True, never sends anything unless a caller explicitly passes
+    dry_run=False after a human has reviewed the exact rendered
+    payload."""
+    from .config import load_espn_credentials
+    from .espn_client import ESPNClient
+
+    conn = dd.get_connection()
+    espn_team_id_row = conn.execute("SELECT espn_team_id FROM teams WHERE id = ?", (team_pk,)).fetchone()
+    if not espn_team_id_row:
+        return {
+            "dry_run": dry_run, "url": None, "payload": None, "success": False,
+            "status_code": None, "message": f"Unknown team_pk {team_pk}", "transaction_id": None,
+        }
+
+    creds = load_espn_credentials()
+    league = ESPNClient().get_league(season)
+    scoring_period = league.current_week
+
+    payload = _lineup_change_payload(espn_team_id_row["espn_team_id"], moves, scoring_period, creds.swid)
+    url = LINEUP_WRITE_URL.format(season=season, league_id=creds.league_id)
+
+    if dry_run:
+        return {
+            "dry_run": True, "url": url, "payload": payload, "success": None,
+            "status_code": None, "message": "DRY RUN - not sent", "transaction_id": None,
+        }
+
+    cookies = {"espn_s2": creds.espn_s2, "SWID": creds.swid}
+    try:
+        resp = requests.post(url, json=payload, cookies=cookies, headers={"Content-Type": "application/json"}, timeout=20)
+    except requests.RequestException as exc:
+        return {
+            "dry_run": False, "url": url, "payload": payload, "success": False,
+            "status_code": None, "message": str(exc), "transaction_id": None,
+        }
+
+    body = {}
+    try:
+        body = resp.json()
+    except ValueError:
+        pass
+
+    if resp.status_code == 200:
+        return {
+            "dry_run": False, "url": url, "payload": payload, "success": True,
+            "status_code": 200, "message": f"PENDING (transaction {body.get('id')})", "transaction_id": body.get("id"),
+        }
+    message = "; ".join(body.get("messages") or []) or resp.text[:300] or f"HTTP {resp.status_code}"
+    return {
+        "dry_run": False, "url": url, "payload": payload, "success": False,
+        "status_code": resp.status_code, "message": message, "transaction_id": None,
+    }

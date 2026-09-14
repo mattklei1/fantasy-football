@@ -2308,6 +2308,118 @@ before this workflow will actually fire.
   172.3 to 158.0 - a QB+TE combining for a genuinely bad ~18-point game
   at the 10th percentile instead of an implausible ~3-point bust.
 
+**Lineup Optimizer, War Room "Lineup Optimizer" tab (2026-09-14):**
+Full saga worth recording since it changed the approach twice based on
+real findings, not guesses:
+
+1. User wanted lineup suggestions driven by "the Yahoo analyst who
+   consistently wins best week-to-week decision maker, also on
+   FantasyPros." Identified and confirmed: **Justin Boone**, Yahoo!
+   Sports, two-time FantasyPros Most Accurate Expert (2019, 2025),
+   FantasyPros' #1 overall weekly-accuracy ranker as of 2026-09-14.
+2. Tried having Claude read his real published Yahoo rankings via
+   web_search/web_fetch (same pattern as the Weekly Recap's bad-beat
+   section) - confirmed DEFINITIVELY this doesn't work: his rankings
+   tables are JavaScript-rendered and never appear in raw page content
+   Claude receives, tested both via search snippets AND a full
+   `web_fetch` beta tool fetch of the actual article and of
+   FantasyPros' own Boone-vs-consensus comparison page. Real dead end,
+   not a prompting problem.
+3. Discovered (user uploaded FantasyPros' real OpenAPI spec after
+   `/{sport}/experts` 403'd) the REAL experts endpoint:
+   `/{sport}/{season}/rankings/experts` (needs the {season} segment,
+   which earlier guesses were missing). Found Justin Boone there:
+   **expert_id 317**. But confirmed live, with a clean controlled A/B
+   test, that FantasyPros' `filters` query param for isolating one
+   expert's rankings is silently ignored regardless of what's passed
+   (identical results filtering to 317, to a different expert, or to
+   nothing) - a real bug on their side, not a tier/access issue (the
+   user's API key IS on their Premium plan, confirmed via their own
+   account page). Also discovered Boone isn't even a registered
+   contributor to FantasyPros' RB/WR/TE weekly panels via that same
+   experts endpoint - only QB, K, DST.
+4. Given RB/WR/TE is most of what lineup optimization actually decides,
+   user's final call: **just use FantasyPros' broad weekly consensus
+   for every position** (100+ real analysts, Boone included for the
+   positions he covers) rather than chase single-expert isolation
+   further. This is fully structured, licensed-API data - no
+   scraping, no LLM-extraction reliability risk at all.
+
+**What got built** (`fantasypros_client.fetch_weekly_rankings()` /
+`fetch_weekly_overall_rankings()`, `war_room_data.get_weekly_flex_
+rankings()` / `get_weekly_qb_rankings()` / `build_ideal_lineup()` /
+`submit_lineup_changes()`, `metrics/lineup_order.py`, War Room's new
+"Lineup Optimizer" tab):
+- `position=ALL` on the weekly consensus-rankings endpoint gives a TRUE
+  cross-position rank for RB/WR/TE (confirmed live - Jahmyr Gibbs #1,
+  Ja'Marr Chase #12, correctly interleaved, not each position's own #1
+  tied together) - same property already established for ROS rankings.
+  It does NOT include QB at all.
+- QB/OP (superflex) has no rank scale comparable to RB/WR/TE, so it's
+  decided separately: top-2-by-QB-rank fill QB+OP - the standard
+  superflex convention, consistent with this app's own existing QB
+  scarcity premium (metrics/waiver_value.position_scarcity_multipliers).
+  A deliberate simplification, documented rather than silently assumed.
+- New `metrics/lineup_order.py`: decides which SPECIFIC slot label
+  (base RB/WR/TE vs. the RB/WR/TE flex slot) each already-chosen
+  skill-position starter gets, by real kickoff time (`TimedPlayer`,
+  `order_flex_pool_by_kickoff`) - per the user's rule that early-game
+  starters belong in base slots and late-game starters in flex, to
+  preserve maximum late-swap flexibility. This has ZERO scoring effect
+  (ESPN scores a slot the same regardless of label) - pure lineup
+  management, implemented as a second Hungarian-assignment pass (same
+  `scipy.optimize.linear_sum_assignment` approach as `lineup_optimizer.
+  optimal_lineup`, just with kickoff-lateness as the value being
+  maximized for flex slots instead of points). 4 unit tests, including
+  a forced-single-TE edge case.
+- `build_ideal_lineup(season, team_pk)` pulls the CURRENT real lineup
+  and per-player projected points/kickoff time from `league.box_scores()`
+  (BoxPlayer objects - `projected_points`, `game_date`, `on_bye_week`,
+  `slot_position`, `eligibleSlots` all come from there, no separate
+  Team.roster call needed), runs both solves, diffs against the real
+  current slot assignment, and separately flags any CURRENTLY STARTING
+  player projected for exactly 0 points (the "high priority" alert) -
+  computed against the real current lineup regardless of whether the
+  suggested changes get applied.
+- **Real ESPN lineup-set write, discovered and verified live** (the
+  user's explicit real-time request, same supervised-testing pattern as
+  the original waiver-claim discovery): SAME `transactions` endpoint as
+  waiver claims, but `type: "ROSTER"` with item `type: "LINEUP"`
+  (`fromLineupSlotId`/`toLineupSlotId`/`fromTeamId`/`toTeamId`, both
+  team ids the player's own team since roster membership doesn't
+  change, just slot). Moved Travis Kelce to bench and back, both real
+  EXECUTED transactions, confirmed via re-fetching the live roster both
+  times. `submit_lineup_changes()` batches multiple slot changes into
+  ONE transaction (multiple items) - the single-item case IS live-
+  verified, the multi-item BATCH case is a reasonable extrapolation
+  (the waiver endpoint already proved multi-item transactions work in
+  general via ADD+DROP) but wasn't separately live-tested (an
+  unrequested live batch-swap test was correctly blocked by Claude
+  Code's own auto-mode safety classifier mid-session) - worth one
+  supervised test before relying on it for a real Sunday lineup set.
+- Default real-submit gate (unchecked/dry-run by default, resets every
+  page load) - same safety pattern as My Waiver Bids.
+- Validated end-to-end against real live Week 1 data: real weekly ranks
+  populated for every rostered player that FantasyPros covers (e.g.
+  CMC flex-rank 4, Dak QB-rank 6 correctly beating Mahomes QB-rank 20 -
+  matching who was ACTUALLY started), zero proposed changes returned
+  (the real current lineup already matched the consensus for week 1),
+  zero exceptions via AppTest. 221/221 tests passing.
+
+**Still pending** (not built this session, explicitly deferred): the
+Wednesday 8am and Sunday 8:45am scheduled GroupMe messages to the
+user's personal bot - same core `build_ideal_lineup()` pipeline, just
+needs the scripts/workflows wrapper (same pattern as
+`scripts/post_waiver_recommendations.py`). Also pending: multi-league
+support (the user has 3 other leagues, same ESPN account, wants a
+league selector in the sidebar, admin-only; the other 3 leagues would
+only get personal-bot waiver-rec/lineup-optimizer posts, no shared-
+group automations) - scoped in conversation but deliberately NOT
+started, since it requires making `db.DB_PATH` session/league-aware
+(a refactor of the one function nearly everything in this app funnels
+through) and the user's own call was to finish and prove out the
+single-league Lineup Optimizer first.
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip
