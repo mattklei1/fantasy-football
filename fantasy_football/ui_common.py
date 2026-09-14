@@ -204,6 +204,20 @@ def score_row_html(actual: str, projected: str | None, tone: str) -> str:
     )
 
 
+def score_detail_html(win_prob_pct: str, range_text: str, tone: str) -> str:
+    """Small line under score_row_html's projected number - win
+    probability (tone-colored, matching the projected number above it)
+    plus the 10th-90th percentile score range, right-aligned so it sits
+    directly under the projected column rather than spanning full width."""
+    color = STATUS_COLORS.get(tone, STATUS_COLORS["neutral"])
+    return (
+        '<div style="text-align:right; font-size:0.78rem; margin-top:1px;">'
+        f'<span style="color:{color}; font-weight:600;">{win_prob_pct}</span>'
+        f'<span style="color:var(--text-muted);"> win · range {range_text}</span>'
+        '</div>'
+    )
+
+
 def trend_arrow(change) -> str:
     """Plain-text (no HTML) rank-trend arrow - for st.dataframe/column_config
     cells, which render HTML tags as literal text rather than parsing them

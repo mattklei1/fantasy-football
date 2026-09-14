@@ -270,16 +270,22 @@ for _, m in matchups.iterrows():
             home_proj, away_proj = home_live["projected"], away_live["projected"]
             prob = dd.live_win_probability(season, home_pk, away_pk, home_proj, away_proj)
             home_tone, away_tone = ui.tone_for_probability(prob), ui.tone_for_probability(1 - prob)
+            home_p10, home_p90 = dd.live_score_percentile_range(season, home_pk, home_proj)
+            away_p10, away_p90 = dd.live_score_percentile_range(season, away_pk, away_proj)
 
             col_home.markdown(
                 ui.score_row_html(f"{home_live['score']:.1f}", f"{home_proj:.1f}", home_tone), unsafe_allow_html=True
             )
+            col_home.markdown(
+                ui.score_detail_html(f"{prob*100:.0f}%", f"{home_p10:.0f}-{home_p90:.0f}", home_tone),
+                unsafe_allow_html=True,
+            )
             col_away.markdown(
                 ui.score_row_html(f"{away_live['score']:.1f}", f"{away_proj:.1f}", away_tone), unsafe_allow_html=True
             )
-            st.caption(
-                f"Win prob: {home_name} {prob*100:.0f}% · {away_name} {(1-prob)*100:.0f}% "
-                "(from current projected totals, updates live)"
+            col_away.markdown(
+                ui.score_detail_html(f"{(1-prob)*100:.0f}%", f"{away_p10:.0f}-{away_p90:.0f}", away_tone),
+                unsafe_allow_html=True,
             )
 
         render_last_meetings(home_pk, away_pk, home_name, away_name)

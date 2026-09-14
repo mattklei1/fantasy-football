@@ -487,5 +487,17 @@ def live_cutline_analysis(season: int, projected_by_team: dict[int, float]) -> d
     return result
 
 
+def live_score_percentile_range(season: int, team_pk: int, projected: float) -> tuple[float, float]:
+    """10th/90th percentile of ONE team's live-projected final score - same
+    Normal(projected, own season stdev) model as live_win_probability/
+    live_cutline_analysis, but closed-form (metrics.cutline_sim.
+    percentile_range) rather than going through the Monte Carlo cutline
+    sim, since a single matchup card just needs this one team's own
+    range, not a cross-team rank probability."""
+    stdevs = team_stdev_map(season)
+    team = TeamScoreModel(team_pk=team_pk, mean=projected, stdev=stdevs.get(team_pk) or LIVE_PROB_FALLBACK_STDEV)
+    return percentile_range(team)
+
+
 def clear_all_caches() -> None:
     st.cache_data.clear()
