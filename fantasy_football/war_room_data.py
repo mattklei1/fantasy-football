@@ -30,25 +30,43 @@ ESPN_POSITIONS = ["QB", "RB", "WR", "TE", "K", "D/ST"]
 
 
 @st.cache_data(ttl=3600)
-def get_fp_rankings_by_position(season: int) -> dict:
-    """Live FantasyPros ROS rankings for all 6 positions, raw player dicts
-    keyed by FantasyPros' own position code (QB/RB/WR/TE/K/DST). Cached an
-    hour - a real hit against a paid API, and rest-of-season consensus
-    rankings don't meaningfully move minute to minute. Empty dict (not an
-    error) when no FANTASYPROS_API_KEY is configured, same "degrade, don't
-    crash" pattern as Roster Strength."""
+def _fetch_fp_rankings_by_position_raw(season: int, api_key: str) -> dict:
     from . import fantasypros_client
 
+    return fantasypros_client.fetch_all_ros_rankings(api_key, season)
+
+
+def get_fp_rankings_by_position(season: int) -> dict:
+    """Live FantasyPros ROS rankings for all 6 positions, raw player dicts
+    keyed by FantasyPros' own position code (QB/RB/WR/TE/K/DST). The
+    actual fetch is cached an hour (a real hit against a paid API, and
+    rest-of-season consensus rankings don't meaningfully move minute to
+    minute) - but ONLY a successful fetch (an exception raised inside a
+    st.cache_data-decorated call is never cached, so it's retried fresh
+    on the very next page load, not just here). This wrapper is
+    deliberately uncached itself: catching the failure INSIDE the cached
+    function would cache the EMPTY result for the full hour too, turning
+    one transient FantasyPros hiccup into "blank for everyone" for an
+    hour (a real bug this fixes, not a hypothetical - see PROJECT_BRIEF).
+    Empty dict (not an error) when no FANTASYPROS_API_KEY is configured,
+    same "degrade, don't crash" pattern as Roster Strength."""
     api_key = config.fantasypros_api_key()
     if not api_key:
         return {}
     try:
-        return fantasypros_client.fetch_all_ros_rankings(api_key, season)
+        return _fetch_fp_rankings_by_position_raw(season, api_key)
     except Exception:  # noqa: BLE001 - a War Room tool degrading is never worth crashing the page
         return {}
 
 
 @st.cache_data(ttl=3600)
+def _fetch_fp_overall_rank_by_fp_id_raw(season: int, api_key: str) -> dict[int, int]:
+    from . import fantasypros_client
+
+    players = fantasypros_client.fetch_overall_ros_rankings(api_key, season)
+    return {p["player_id"]: p.get("rank_ecr") for p in players if p.get("player_id") is not None}
+
+
 def get_fp_overall_rank_by_fp_id(season: int) -> dict[int, int]:
     """FantasyPros' TRUE cross-position rest-of-season rank (position=
     "ALL"), keyed by FantasyPros' own player_id so it can be joined
@@ -58,28 +76,33 @@ def get_fp_overall_rank_by_fp_id(season: int) -> dict[int, int]:
     - that's just each position's rank restated (K1's rank_ecr is 1, not
     ~186) - see fantasypros_client.fetch_overall_ros_rankings()'s
     docstring for the live verification. Empty dict (not an error) when
-    no FANTASYPROS_API_KEY is configured."""
-    from . import fantasypros_client
-
+    no FANTASYPROS_API_KEY is configured. See get_fp_rankings_by_
+    position()'s docstring for why this wrapper is deliberately
+    uncached - only the successful raw fetch is."""
     api_key = config.fantasypros_api_key()
     if not api_key:
         return {}
     try:
-        players = fantasypros_client.fetch_overall_ros_rankings(api_key, season)
+        return _fetch_fp_overall_rank_by_fp_id_raw(season, api_key)
     except Exception:  # noqa: BLE001 - a War Room tool degrading is never worth crashing the page
         return {}
-    return {p["player_id"]: p.get("rank_ecr") for p in players if p.get("player_id") is not None}
 
 
 @st.cache_data(ttl=3600)
-def get_fp_espn_id_map() -> dict[int, int]:
+def _fetch_fp_espn_id_map_raw(api_key: str) -> dict[int, int]:
     from . import fantasypros_client
 
+    return fantasypros_client.fetch_player_espn_id_map(api_key)
+
+
+def get_fp_espn_id_map() -> dict[int, int]:
+    """See get_fp_rankings_by_position()'s docstring for why this wrapper
+    is deliberately uncached - only the successful raw fetch is."""
     api_key = config.fantasypros_api_key()
     if not api_key:
         return {}
     try:
-        return fantasypros_client.fetch_player_espn_id_map(api_key)
+        return _fetch_fp_espn_id_map_raw(api_key)
     except Exception:  # noqa: BLE001
         return {}
 
@@ -628,6 +651,14 @@ def get_my_waiver_suggestions(season: int, my_team_pk: int, top_n: int = 10) -> 
     bench = my_roster[my_roster["is_starter"] == 0].sort_values("value_score")
     bench_depth_by_position = bench.groupby("position").size().to_dict()
 
+    # "do not drop" players (see get_protected_player_ids) are excluded
+    # from the DROP CANDIDATE pool specifically - they still count as
+    # real bench depth for the reasoning text above (a protected player
+    # is a real roster fact either way), just never picked as the
+    # suggested drop themselves (user feedback 2026-09-14).
+    protected_ids = get_protected_player_ids(my_team_pk)
+    droppable_bench = bench[~bench["player_id"].isin(protected_ids)] if protected_ids else bench
+
     suggestions: list[dict] = []
     per_position_count: dict[str, int] = {}
     ranked = board[board["suggested_bid"].notna()].sort_values("suggested_bid", ascending=False)
@@ -636,11 +667,11 @@ def get_my_waiver_suggestions(season: int, my_team_pk: int, top_n: int = 10) -> 
         if per_position_count.get(position, 0) >= MAX_SUGGESTIONS_PER_POSITION:
             continue
 
-        same_position_bench = bench[bench["position"] == position]
+        same_position_bench = droppable_bench[droppable_bench["position"] == position]
         if not same_position_bench.empty:
             drop_candidate = same_position_bench.iloc[0]
-        elif not bench.empty:
-            drop_candidate = bench.iloc[0]
+        elif not droppable_bench.empty:
+            drop_candidate = droppable_bench.iloc[0]
         else:
             drop_candidate = None
 
@@ -687,6 +718,58 @@ def get_droppable_roster(season: int, team_pk: int) -> pd.DataFrame:
         return rosters
     mine = rosters[(rosters["team_pk"] == team_pk) & (rosters["is_starter"] == 0)]
     return mine.sort_values("value_score").reset_index(drop=True)
+
+
+def _espn_team_id_for_pk(team_pk: int) -> int | None:
+    row = dd.get_connection().execute("SELECT espn_team_id FROM teams WHERE id = ?", (team_pk,)).fetchone()
+    return row["espn_team_id"] if row else None
+
+
+def get_protected_player_ids(team_pk: int) -> set[int]:
+    """Player ids this team's manager has marked "do not drop" -
+    get_my_waiver_suggestions() never picks one of these as a suggested
+    drop (see that function). Keyed by the team's stable espn_team_id,
+    not team_pk - see protected_players.py's module docstring for why."""
+    from . import protected_players
+
+    espn_team_id = _espn_team_id_for_pk(team_pk)
+    if espn_team_id is None:
+        return set()
+    return protected_players.load_protected(espn_team_id)
+
+
+def save_protected_players(team_pk: int, player_ids: set[int]) -> dict:
+    """Saves this team's "do not drop" list: writes it locally (takes
+    effect immediately for the CURRENT app session/process) and, if
+    GITHUB_TOKEN is configured, also commits it to the repo - same
+    durability reasoning and pattern as save_rank_override() (see that
+    function and config.github_token()'s docstring): a standing "never
+    suggest dropping this guy" preference is exactly the kind of thing
+    that shouldn't silently vanish the next time Streamlit Cloud wipes
+    the app's disk. Returns {"success", "committed", "commit_message"}."""
+    from . import protected_players
+
+    espn_team_id = _espn_team_id_for_pk(team_pk)
+    if espn_team_id is None:
+        return {"success": False, "committed": False, "commit_message": f"Unknown team_pk {team_pk}"}
+
+    path = protected_players.save_protected(espn_team_id, player_ids)
+
+    token = config.github_token()
+    if not token:
+        return {
+            "success": True, "committed": False,
+            "commit_message": "GITHUB_TOKEN not configured - saved locally only; it won't survive a redeploy.",
+        }
+
+    from . import github_sync
+
+    repo_path = f"protected_players/{espn_team_id}.json"
+    result = github_sync.commit_file(
+        repo=config.github_repo(), token=token, path=repo_path, content_bytes=path.read_bytes(),
+        message=f"Update do-not-drop list for team {espn_team_id}",
+    )
+    return {"success": True, "committed": result["success"], "commit_message": result["message"]}
 
 
 # --- Real ESPN waiver-claim write --------------------------------------

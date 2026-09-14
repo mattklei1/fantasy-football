@@ -54,16 +54,21 @@ with tab_rankings:
     if rankings_df.empty:
         st.info("No rankings data available right now - check FANTASYPROS_API_KEY, or try again later.")
     else:
-        col1, col2 = st.columns([1, 2])
+        col1, col2, col3 = st.columns([1, 1, 2])
         with col1:
             positions = ["All"] + sorted(rankings_df["position"].dropna().unique().tolist())
             position_filter = st.selectbox("Position", positions, key="wr_rank_pos")
         with col2:
+            rostered_by_options = ["All"] + sorted(rankings_df["rostered_by"].dropna().unique().tolist())
+            rostered_by_filter = st.selectbox("Rostered by", rostered_by_options, key="wr_rank_rostered_by")
+        with col3:
             search = st.text_input("Search player", key="wr_rank_search")
 
         filtered = rankings_df
         if position_filter != "All":
             filtered = filtered[filtered["position"] == position_filter]
+        if rostered_by_filter != "All":
+            filtered = filtered[filtered["rostered_by"] == rostered_by_filter]
         if search:
             filtered = filtered[filtered["player_name"].str.contains(search, case=False, na=False)]
 
@@ -78,9 +83,13 @@ with tab_rankings:
             display[["Player", "Pos", "Team", "Overall Rank", "Pos Rank", "ROS Pts", "Rostered By"]],
             hide_index=True,
             use_container_width=True,
-            column_config={"ROS Pts": st.column_config.NumberColumn(format="%.1f")},
+            column_config={
+                "Overall Rank": st.column_config.NumberColumn(format="%d"),
+                "Pos Rank": st.column_config.NumberColumn(format="%d"),
+                "ROS Pts": st.column_config.NumberColumn(format="%.1f"),
+            },
         )
-        st.caption(f"{len(filtered)} of {len(rankings_df)} ranked players shown.")
+        st.caption(f"{len(filtered)} of {len(rankings_df)} ranked players shown. Click a column header to sort.")
 
 with tab_waiver:
     st.caption(
@@ -159,6 +168,36 @@ with tab_mine:
         my_team_pk = int(
             trade_rosters_for_teams.loc[trade_rosters_for_teams["team_name"] == my_team_name, "team_pk"].iloc[0]
         )
+
+        with st.expander("🔒 Protect players from drop suggestions"):
+            st.caption(
+                "Checked players are never picked as a suggested drop below (they still count as real "
+                "bench depth in the reasoning text - just never the drop itself). Standing per-team "
+                "preference, not a one-week thing."
+            )
+            droppable = wr.get_droppable_roster(season, my_team_pk)
+            if droppable.empty:
+                st.caption("No bench players to protect right now.")
+            else:
+                protected_ids_current = wr.get_protected_player_ids(my_team_pk)
+                selected_ids = set()
+                for _, row in droppable.iterrows():
+                    pid = int(row["player_id"])
+                    checked = st.checkbox(
+                        f"{row['player_name']} ({row['position']}) — {row['value_score']:.0f} val",
+                        value=pid in protected_ids_current,
+                        key=f"wr_protect_{my_team_name}_{pid}",
+                    )
+                    if checked:
+                        selected_ids.add(pid)
+                if st.button("Save protections", key="wr_protect_save"):
+                    save_result = wr.save_protected_players(my_team_pk, selected_ids)
+                    wr.get_my_waiver_suggestions.clear()
+                    if save_result["committed"]:
+                        st.success("Saved and committed to git - durable across redeploys.")
+                    else:
+                        st.warning(save_result["commit_message"])
+                    st.rerun()
 
         with st.spinner("Building suggestions..."):
             suggestions = wr.get_my_waiver_suggestions(season, my_team_pk, top_n=10)

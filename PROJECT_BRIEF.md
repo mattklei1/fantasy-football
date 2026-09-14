@@ -2665,6 +2665,52 @@ UI-rendering and live-data-function behavior, validated live via
 AppTest per this file's established testing convention for that kind
 of change).
 
+**Rankings Browser fixes + My Waiver Bids protections (2026-09-14):**
+
+- **"Overall rank" blank-for-everyone risk, fixed at the root**: the
+  three FantasyPros fetch functions feeding this (get_fp_rankings_by_
+  position/get_fp_overall_rank_by_fp_id/get_fp_espn_id_map) each caught
+  their own exception INSIDE the `st.cache_data`-decorated function and
+  returned `{}` on failure - which Streamlit then cached as a normal
+  successful result for the FULL ttl (was 3600s/1hr). One transient
+  FantasyPros hiccup would silently blank the column for everyone for
+  up to an hour, not just the one bad request. Restructured each into a
+  cached "_raw" fetch (raises on failure, so only a real success is ever
+  cached - an exception is never cached by st.cache_data, it just
+  propagates and retries fresh next call) plus a thin uncached wrapper
+  that catches and degrades. Confirmed locally the underlying data was
+  never actually broken (485 players, 78 legitimately unranked) - this
+  was a real caching-pitfall hardening either way, not necessarily what
+  the user saw live (could also have been the stale-deployment class of
+  issue seen earlier this session).
+- Also added: `Overall Rank`/`Pos Rank` columns now have explicit
+  `NumberColumn` formatting (previously only ROS Pts did) so they sort
+  numerically via column-header click (native `st.dataframe` behavior,
+  no extra sort-by control needed) instead of as strings. A new
+  "Rostered by" filter (All / Free Agent / each real team name) lets the
+  admin filter to their own roster or anyone else's - user asked for
+  both ("i want to sort on that and also be able to filter for people
+  on my team (or anyones team, for that matter)").
+- **"Do not drop" list for My Waiver Bids** (user: "give me a chance to
+  mark people as 'do not drop' so those suggestions stop"): new
+  `protected_players.py` module, same durable-storage shape as
+  rank_overrides.py (keyed by the team's stable `espn_team_id`, not the
+  DB's own autoincrement `team_pk` - safe across a from-scratch rebuild
+  in a different environment) - committed to git via the same
+  `github_sync.py`/`GITHUB_TOKEN` path already built for rank overrides
+  when configured, local-only fallback otherwise.
+  `get_my_waiver_suggestions()` now excludes protected players from the
+  DROP CANDIDATE pool specifically (they still count as real bench
+  depth in the reasoning text - just never picked as the drop itself).
+  New "🔒 Protect players from drop suggestions" expander in My Waiver
+  Bids lists the team's bench with a checkbox per player, pre-checked
+  from the saved list; saving busts `get_my_waiver_suggestions`' own
+  cache (`.clear()`) so the change is visible immediately, not after its
+  5-minute ttl. Verified live end-to-end: protecting a team's worst
+  bench player correctly moved the suggested drop to the next-worst one.
+
+258/258 tests passing (`test_protected_players.py` new).
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip
