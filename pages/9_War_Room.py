@@ -578,24 +578,38 @@ with tab_lineup:
             if changes:
                 st.markdown(f"#### Suggested changes (Week {result['week']})")
                 st.caption("Uncheck any you don't want to submit - only the checked ones go out below.")
+
+                # Each mutual swap (see build_ideal_lineup's swap_with_
+                # player_* - two changes pointing back at each other)
+                # renders as ONE checkbox covering both halves, not two
+                # separate-looking rows for what's really a single real
+                # move - showing them separately read as duplicates (user
+                # feedback 2026-09-14) and let you approve only half of a
+                # swap, which can't produce a valid ESPN lineup anyway.
+                changes_by_id = {c["player_id"]: c for c in changes}
+                rendered_ids: set = set()
                 approved_changes = []
                 for c in changes:
-                    swap_note = f" — swaps with **{c['swap_with_player_name']}**" if c.get("swap_with_player_name") else ""
-                    label = f"**{c['player_name']}** ({c['position']}): {c['from_slot']} → {c['to_slot']}{swap_note}"
-                    if st.checkbox(label, value=True, key=f"wr_lineup_change_{c['player_id']}"):
-                        approved_changes.append(c)
+                    if c["player_id"] in rendered_ids:
+                        continue
+                    partner = changes_by_id.get(c.get("swap_with_player_id"))
+                    is_mutual_pair = partner is not None and partner.get("swap_with_player_id") == c["player_id"]
 
-                approved_ids = {c["player_id"] for c in approved_changes}
-                unpaired = [
-                    c for c in approved_changes
-                    if c.get("swap_with_player_id") is not None and c["swap_with_player_id"] not in approved_ids
-                ]
-                if unpaired:
-                    st.warning(
-                        "These moves leave their swap partner un-submitted, which can produce an invalid "
-                        "ESPN lineup (two players in one slot, or an empty one): "
-                        + ", ".join(c["player_name"] for c in unpaired)
-                    )
+                    if is_mutual_pair:
+                        label = (
+                            f"**{c['player_name']}** ({c['position']}): {c['from_slot']} → {c['to_slot']}  "
+                            f"↔ **{partner['player_name']}** ({partner['position']}): "
+                            f"{partner['from_slot']} → {partner['to_slot']}"
+                        )
+                        key = f"wr_lineup_change_{min(c['player_id'], partner['player_id'])}_{max(c['player_id'], partner['player_id'])}"
+                        rendered_ids.update({c["player_id"], partner["player_id"]})
+                        if st.checkbox(label, value=True, key=key):
+                            approved_changes.extend([c, partner])
+                    else:
+                        label = f"**{c['player_name']}** ({c['position']}): {c['from_slot']} → {c['to_slot']}"
+                        rendered_ids.add(c["player_id"])
+                        if st.checkbox(label, value=True, key=f"wr_lineup_change_{c['player_id']}"):
+                            approved_changes.append(c)
 
                 if approved_changes:
                     real_submit = st.checkbox(

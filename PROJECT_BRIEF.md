@@ -2629,6 +2629,42 @@ naming the other half, with zero exceptions.
 
 253/253 tests passing.
 
+**Two more fixes, same session, immediately after (2026-09-14):**
+
+1. **"Suggested changes" was showing a mutual swap as two separate-
+   looking rows** - user feedback: "youre duplicating the suggested
+   changes". Both halves of a real swap (e.g. McConkey WR->flex /
+   Watson flex->WR) were each their own checkbox, reading as 4 changes
+   for what's really 2 real moves - and let you approve only one half,
+   which can't produce a valid ESPN lineup anyway (the "unpaired"
+   warning from the per-change-checkbox work above was working around
+   this instead of fixing it). Fixed by rendering each mutual pair (two
+   changes whose swap_with_player_id point back at each other) as ONE
+   checkbox covering both halves; a change with no reciprocal partner
+   still gets its own row. The now-unnecessary "unpaired" warning was
+   removed - a pair simply can't be half-approved anymore.
+2. **K/D-ST and any override-uncovered position had NO FantasyPros
+   rank at all, not even a fallback** - user feedback: "when i submit
+   an override, it sometimes wont have D/K/QB rankings. if thats the
+   case, keep the default fantasypros API rankings for those positions
+   as basis". QB already correctly fell back per-player (override
+   missing for one QB -> that QB's own plain FantasyPros rank, already
+   working). The real gap was K/D-ST: `_POSITIONAL_DETAIL_POSITIONS`
+   never included them (no start/sit decision to drive - usually 1
+   rostered K/D-ST, so no real "who should start" question) so they
+   always showed a blank rank regardless of override status. Added K/
+   DST to the fetch and fixed `_rank_used_for()`'s fallback branch
+   (previously only reachable by qb_pool players) to cover EVERYONE
+   outside skill_pool - QB, K, D/ST, and anything else - falling back to
+   their own-position FantasyPros rank whenever no override covers
+   them. Verified live: Broncos D/ST and the kicker now show real
+   positional ranks (7 and 14) instead of blank.
+
+253/253 tests passing (no new tests added for this pair - both are
+UI-rendering and live-data-function behavior, validated live via
+AppTest per this file's established testing convention for that kind
+of change).
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip

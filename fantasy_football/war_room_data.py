@@ -896,7 +896,14 @@ def get_weekly_flex_rankings(season: int, week: int) -> dict[int, int]:
 # same rank as get_weekly_flex_rankings()'s cross-position OVERALL number
 # above, and the grade isn't present at all on that position=ALL call
 # (confirmed live 2026-09-14) - so this is its own position-scoped fetch.
-_POSITIONAL_DETAIL_POSITIONS = ("QB", "RB", "WR", "TE")
+# Includes K/DST too (unlike the optimizer's own qb_pool/skill_pool,
+# which never make a start/sit call for them - usually only 1 rostered
+# K/D-ST, no real decision to make) purely so the Lineup Optimizer table
+# always has a real FantasyPros basis to show/fall back to for them, per
+# user feedback 2026-09-14 ("when I submit an override, it sometimes
+# won't have D/K/QB rankings - keep the default FantasyPros rankings for
+# those positions as basis").
+_POSITIONAL_DETAIL_POSITIONS = ("QB", "RB", "WR", "TE", "K", "DST")
 
 
 @st.cache_data(ttl=1800)
@@ -904,10 +911,10 @@ def get_weekly_positional_detail(season: int, week: int) -> dict[int, dict]:
     """{espn_player_id: {"rank": int, "grade": str|None}} - FantasyPros'
     OWN-POSITION weekly rank (QB6, RB14, ... - never a cross-position
     number, see get_weekly_flex_rankings() for that) plus start_sit_grade,
-    across QB/RB/WR/TE (see _POSITIONAL_DETAIL_POSITIONS note above). One
-    call per position - a single position's request failing just skips
-    that position rather than blanking the whole dict. Empty dict with no
-    FANTASYPROS_API_KEY configured."""
+    across QB/RB/WR/TE/K/DST (see _POSITIONAL_DETAIL_POSITIONS note
+    above). One call per position - a single position's request failing
+    just skips that position rather than blanking the whole dict. Empty
+    dict with no FANTASYPROS_API_KEY configured."""
     api_key = config.fantasypros_api_key()
     if not api_key:
         return {}
@@ -1172,12 +1179,19 @@ def build_ideal_lineup(season: int, team_pk: int) -> dict:
         return overall_ranks.get(bp.playerId) if bp.playerId in skill_pool_ids else None
 
     def _rank_used_for(bp) -> int | None:
+        # Override always wins when present for this player. Otherwise:
+        # skill_pool players fall back to their cross-position overall
+        # rank (what actually drives their solve decision); everyone
+        # else - QB, and K/D-ST (which have no solve decision to drive at
+        # all, but still deserve a real basis to SHOW - user feedback
+        # 2026-09-14) - falls back to their own-position rank, since
+        # there's no overall-rank concept for them anyway.
         override_rank = _override_rank_for(bp.name, overrides)
         if override_rank is not None:
             return override_rank
-        if bp.playerId in qb_pool_ids:
-            return _fp_positional_rank_for(bp)
-        return _fp_overall_rank_for(bp)
+        if bp.playerId in skill_pool_ids:
+            return _fp_overall_rank_for(bp)
+        return _fp_positional_rank_for(bp)
 
     proposed_slot_by_id: dict[int, str] = {}
 
