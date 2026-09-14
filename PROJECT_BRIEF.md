@@ -1924,6 +1924,74 @@ No code change needed in `slate_report.py`/`scripts/post_slate_update.py`
 - this was purely a workflow-schedule edit. Validated the YAML parses
 correctly after the edit (`yaml.safe_load`) before committing.
 
+**ESPN's real waiver-claim WRITE payload - VERIFIED against the real
+league, 2026-09-14 (same session).** User explicitly asked for a live,
+supervised test ("player and amount don't matter, I'll change it right
+after") after the earlier "My Waiver Bids" research left the write side
+unbuilt for lack of a confirmed payload. Found real prior art first
+(`jwulff/fantasy-sports` PR #92, a dedicated research spike into this
+exact write surface) - notably, that research deliberately did NOT test
+add/drop/waiver against its real production league either, recommending
+a throwaway test league instead; the user's explicit go-ahead here is
+what made a real-league test acceptable this time, not a discovery that
+it's actually safe in general. Confirmed endpoint from that research:
+`POST https://lm-api-writes.fantasy.espn.com/apis/v3/games/ffl/seasons/
+{season}/segments/0/leagues/{league_id}/transactions/`, auth via the
+same `espn_s2`/`SWID` cookies already used for reads.
+
+**Real payload shape, confirmed by two live attempts against this
+league** (script: a one-off, NOT part of the committed codebase yet -
+see `/tmp/.../scratchpad/try_waiver_claim.py` if that session's
+scratchpad still exists, otherwise reconstruct from this note):
+```json
+{
+  "isLeagueManager": false,
+  "teamId": <int>,
+  "type": "WAIVER",
+  "memberId": "<SWID, with braces>",
+  "bidAmount": <int>,
+  "scoringPeriodId": <int, current week>,
+  "executionType": "EXECUTE",
+  "items": [
+    {"playerId": <add_id>, "type": "ADD", "fromLineupSlotId": -1, "toLineupSlotId": 20, "toTeamId": <teamId>},
+    {"playerId": <drop_id>, "type": "DROP", "fromLineupSlotId": 20, "toLineupSlotId": -1, "fromTeamId": <teamId>}
+  ]
+}
+```
+First attempt (missing `toTeamId`/`fromTeamId` on the ADD/DROP items)
+came back as a clean, structured `409` - `"Required field toTeamId
+missing from ADD TransactionItem"` (`type: "TRAN_ITEM_TO_TEAM_ID_MISSING"`)
+- genuinely useful confirmation that a malformed payload fails safely
+and informatively rather than doing something silently wrong, exactly
+the risk profile this was gated on. Adding `toTeamId`/`fromTeamId`
+(mirroring the READ-side `TransactionItem` shape's own `type`+`playerId`
+fields, plus the team-direction fields the error demanded) got a real
+`200` with a real transaction id, `status: "PENDING"`. **Test claim
+placed for real** on the user's own team (Roses to Flowers/Matthew
+Klei): ADD Ben Sauls (K, playerId 4566158, cheapest real board value),
+DROP Kaelon Black (RB, playerId 4696044, lowest-value bench player) at
+$1. Confirmed independently via the READ side too
+(`league.transactions(scoring_period=..., types={'WAIVER'})` shows it,
+status PENDING) - not just trusting the write response. **User said
+they'd change the specifics themselves before it processes** - this is
+a live, pending, real claim on the real league as of this writing, not
+a hypothetical.
+
+**Not yet done: wiring this into `war_room_data.py`/the War Room UI as
+the actual "My Waiver Bids" auto-submit feature.** This session only
+proved the payload works via a one-off script - turning it into the
+real feature still needs: the dry-run-default + separate enable-flag
+double gate described in the earlier "My Waiver Bids" entry, wiring
+`toLineupSlotId: 20` (confirmed to mean bench, at least for this
+league's slot numbering) and `-1` (free-agent pool) as named constants
+rather than magic numbers, error handling for the real rejection
+vocabulary (this session only saw one rejection type -
+`TRAN_ITEM_TO_TEAM_ID_MISSING` - budget/roster-limit/already-claimed
+rejections are still unconfirmed shapes), and a UI review step showing
+the exact payload before submission per the informed-consent standard
+already set for this feature. Next session picking this up should
+build that properly rather than reusing the scratch script as-is.
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip
