@@ -135,6 +135,31 @@ def groupme_personal_bot_id() -> str | None:
     return bot_id or None
 
 
+def github_token() -> str | None:
+    """A GitHub Personal Access Token with `repo` write access - used ONLY
+    by the Lineup Optimizer's "upload weekly rankings PDF" feature
+    (war_room_data.save_rank_override()) to commit the parsed override
+    directly to this repo's default branch, so it durably survives a
+    Streamlit Cloud disk wipe AND is visible to the Wednesday/Sunday
+    GitHub Actions GroupMe scripts - a completely separate environment
+    from the deployed app that can only ever see what's actually in the
+    repo. This is the ONE secret in this project that flows the opposite
+    direction from every other one here (used FROM the deployed app TO
+    push to GitHub, not the reverse) - must be set as a Streamlit Cloud
+    secret (see README), a GitHub Actions secret of this name does
+    nothing since Actions runs never call this function. Optional: with
+    it unset, an uploaded override still applies locally for the current
+    app session, it just won't persist past a redeploy or reach the
+    scheduled scripts (see save_rank_override()'s docstring)."""
+    token = os.getenv("GITHUB_TOKEN", "").strip()
+    return token or None
+
+
+def github_repo() -> str:
+    """owner/repo this app commits rank overrides to - see github_token()."""
+    return os.getenv("GITHUB_REPO", "").strip() or "mattklei1/fantasy-football"
+
+
 def gemini_model() -> str:
     """Configurable rather than hardcoded - Gemini model names change
     fast (verified 'gemini-2.5-flash' is real and current as of

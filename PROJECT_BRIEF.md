@@ -2485,6 +2485,78 @@ support (same trick already used for the "Christian²" team name).
   new `**bold**` markup instead of asserting no markdown leaks in - that
   was last week's intentional design, now superseded).
 
+**Lineup Optimizer: weekly rank override (PDF upload) + full lineup
+detail table (2026-09-14):** two related requests handled together -
+"give me an option to upload a PDF of weekly rankings that would
+supersede FantasyPros' weekly ranks, used across all my leagues that
+week" and "show me FantasyPros consensus rank, ESPN projected score,
+override rank, opponent, strength of opponent, injury designation."
+
+- **PDF override, new modules**: `rank_override_pdf.py` (generic best-
+  effort text parser - the user confirmed the PDF source varies week to
+  week, so this is a permissive regex over "leading rank number + Title-
+  Case name" lines with trailing team/position-code trimming, NOT tuned
+  to one vendor's layout - paired with a mandatory review/edit
+  `st.data_editor` step in the UI before anything is applied), backed by
+  `pdfplumber` for the actual byte extraction (kept separate from the
+  parsing regex so that part is unit-testable without real PDF
+  fixtures). `rank_overrides.py` stores the reviewed result at
+  `rank_overrides/{season}_wk{week}.json`, keyed by (season, week) only
+  - deliberately NOT by league, and matched by normalized player NAME
+  (player_matching.normalize_name) at lookup time rather than a
+  pre-resolved ESPN id, which is what makes one upload apply "across all
+  my leagues" the way the user asked, once multi-league support exists.
+- **Persistence, the real architectural question**: asked the user
+  directly rather than guessing - Streamlit Cloud's disk isn't durable
+  and GitHub Actions (the Wednesday/Sunday scripts) is a completely
+  separate environment with zero access to the deployed app's storage,
+  so an override needs to reach BOTH. User chose committing to git
+  (`rank_overrides/` is real tracked content, unlike gitignored `data/`)
+  over app-local-only. New `github_sync.py` wraps GitHub's Contents API
+  (create/update/delete one file) - `war_room_data.save_rank_override()`/
+  `clear_rank_override()` write locally first (immediate effect for the
+  CURRENT session) and commit second when `GITHUB_TOKEN` is configured
+  (degrades to "saved locally only" with a clear message, never crashes,
+  when it isn't). **This is the one secret in the project that flows the
+  opposite direction from every other one** - used FROM the deployed app
+  TO push to GitHub - so it's a Streamlit Cloud secret, not a GitHub
+  Actions secret (see `config.github_token()`'s docstring and
+  `.env.example`). Not yet actually configured/tested against the real
+  repo with a real token (the sandbox's own network proxy blocks
+  arbitrary GitHub API writes, confirmed while validating - local-save
+  fallback path was exercised live instead and works correctly).
+- **Full lineup detail table**: `build_ideal_lineup()` now also returns
+  `lineup_detail` (every rostered player, not just proposed changes) -
+  fp_rank, override_rank, rank_used (whichever actually drove the
+  optimizer), ESPN's own live `projected_points`/`pro_opponent`/
+  `injuryStatus` (no extra API needed, already on the BoxPlayer object),
+  and a new `get_weekly_matchup_grades()` surfacing FantasyPros'
+  start_sit_grade (A+..F) as the closest available "strength of
+  opponent" signal - confirmed live that FantasyPros' `position=ALL`
+  weekly call (used for the cross-position skill rank) does NOT carry
+  this grade, only their position-scoped calls do, so grades need their
+  own per-position fetch, separate from the ranks. Rendered in a new
+  "Full lineup detail" `st.dataframe` under the Lineup Optimizer tab.
+- **Real bug found and fixed along the way**: `qb_pool` was being built
+  from `QB_ELIGIBLE_SLOT_NAMES = {"QB", "OP"}` eligibility, on the
+  assumption this league's OP slot is QB-only (standard superflex).
+  Confirmed live it is NOT - every RB/WR/TE here is ALSO OP-eligible (a
+  true any-position flex), so EVERY skill player was being wrongly
+  absorbed into qb_pool (which only carries a QB rank, so they scored
+  0 there) while `skill_pool` ended up completely empty - meaning the
+  Lineup Optimizer had never actually proposed a single RB/WR/TE/FLEX
+  change since this feature shipped; the "your lineup already matches
+  consensus" messages the Wednesday/Sunday scripts sent were a false
+  negative, not a real "no changes needed" result. Fixed by classifying
+  qb_pool on literal `"QB" in eligibleSlots` (unique to real
+  quarterbacks) instead of the shared OP tag - the documented "top-2-
+  QBs-fill-QB+OP" simplification itself is unchanged, only the player
+  classification feeding it. Verified live: the fix immediately surfaced
+  3 real suggested changes for Week 1 that the buggy version had been
+  silently missing.
+- 250/250 tests passing (`test_rank_override_pdf.py`,
+  `test_rank_overrides.py`, `test_github_sync.py` new).
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip

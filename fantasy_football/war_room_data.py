@@ -99,6 +99,17 @@ def get_position_slot_counts(season: int) -> dict:
 
 
 @st.cache_data(ttl=300)
+def get_current_week(season: int) -> int:
+    """The live current NFL week per ESPN - used to key the Lineup
+    Optimizer's rank-override upload independently of whatever historical
+    week the sidebar's own week picker happens to be set to (lineup
+    decisions are always about the CURRENT week, never a past one)."""
+    from .espn_client import ESPNClient
+
+    return ESPNClient().get_league(season).current_week
+
+
+@st.cache_data(ttl=300)
 def get_my_team_pk(season: int) -> int | None:
     """Resolves 'my team' (the logged-in admin's own ESPN team) by
     matching this deployment's configured SWID against the live
@@ -894,6 +905,118 @@ def get_weekly_qb_rankings(season: int, week: int) -> dict[int, int]:
     }
 
 
+# Positions FantasyPros publishes a "start_sit_grade" (A+..F) for on their
+# POSITION-SCOPED weekly consensus-rankings endpoint - their own composite
+# read on matchup quality (opponent strength + everything else feeding
+# their weekly call), used as the Lineup Optimizer table's closest
+# available "strength of opponent" signal (their API has no separate bare
+# numeric defense-vs-position rank). NOT present on the position=ALL call
+# get_weekly_flex_rankings() uses for the cross-position RANK (confirmed
+# live 2026-09-14: position=ALL players have no start_sit_grade field at
+# all) - so grades need their own position-scoped fetch, separate from
+# the ranks.
+_GRADE_POSITIONS = ("QB", "RB", "WR", "TE")
+
+
+@st.cache_data(ttl=1800)
+def get_weekly_matchup_grades(season: int, week: int) -> dict[int, str]:
+    """{espn_player_id: FantasyPros start_sit_grade} across QB/RB/WR/TE -
+    the Lineup Optimizer table's "matchup" column. One position-scoped
+    weekly call per position (see _GRADE_POSITIONS note above) - empty
+    dict on no API key; a single position's request failing just skips
+    that position rather than blanking the whole dict."""
+    api_key = config.fantasypros_api_key()
+    if not api_key:
+        return {}
+    from . import fantasypros_client
+
+    espn_id_map = get_fp_espn_id_map()
+    grades: dict[int, str] = {}
+    for position in _GRADE_POSITIONS:
+        try:
+            players = fantasypros_client.fetch_weekly_rankings(api_key, position, season, week)
+        except Exception:  # noqa: BLE001 - one position failing shouldn't blank the rest
+            continue
+        for p in players:
+            espn_id = espn_id_map.get(p.get("player_id"))
+            grade = p.get("start_sit_grade")
+            if espn_id is not None and grade:
+                grades[espn_id] = grade
+    return grades
+
+
+def get_rank_overrides(season: int, week: int) -> dict[str, int] | None:
+    """{normalized_player_name: rank} from an admin-uploaded weekly PDF
+    (see rank_override_pdf.py/rank_overrides.py), or None if nothing has
+    been uploaded for this week. Not cached (a cheap local file read, and
+    callers need to see a just-saved override immediately, not after a
+    cache TTL)."""
+    from . import rank_overrides
+
+    return rank_overrides.load_override(season, week)
+
+
+def get_active_rank_override_meta(season: int, week: int) -> dict | None:
+    """Raw stored override payload (source_filename/uploaded_at/ranks) for
+    the "current override" status the UI shows - None if none active."""
+    from . import rank_overrides
+
+    return rank_overrides.load_override_meta(season, week)
+
+
+def save_rank_override(season: int, week: int, ranks: list[dict], source_filename: str | None) -> dict:
+    """Saves an admin-reviewed weekly rank override: writes it locally
+    (takes effect immediately for the CURRENT app session/process) and,
+    if GITHUB_TOKEN is configured, also commits it to the repo so it (a)
+    survives a Streamlit Cloud disk wipe and (b) is visible to the
+    Wednesday/Sunday GitHub Actions scripts - a separate environment that
+    only ever sees what's actually committed (see config.github_token()'s
+    docstring). Returns {"local_path", "committed", "commit_message"} -
+    "committed" is False (not an error) when no token is configured, with
+    commit_message explaining that the override is session-local only."""
+    from . import rank_overrides
+
+    path = rank_overrides.save_override(season, week, ranks, source_filename)
+
+    token = config.github_token()
+    if not token:
+        return {
+            "local_path": str(path), "committed": False,
+            "commit_message": "GITHUB_TOKEN not configured - override applied locally only; it won't "
+            "survive a redeploy or reach the scheduled GroupMe scripts.",
+        }
+
+    from . import github_sync
+
+    repo_path = f"rank_overrides/{season}_wk{week}.json"
+    result = github_sync.commit_file(
+        repo=config.github_repo(), token=token, path=repo_path, content_bytes=path.read_bytes(),
+        message=f"Add Week {week} rank override ({source_filename or 'manual'})",
+    )
+    return {"local_path": str(path), "committed": result["success"], "commit_message": result["message"]}
+
+
+def clear_rank_override(season: int, week: int) -> dict:
+    """Removes the Week `week` override locally and, if GITHUB_TOKEN is
+    configured, also commits the deletion so the scheduled scripts and a
+    future redeploy stop seeing it too."""
+    from . import rank_overrides
+
+    rank_overrides.clear_override(season, week)
+
+    token = config.github_token()
+    if not token:
+        return {"committed": False, "commit_message": "GITHUB_TOKEN not configured - cleared locally only."}
+
+    from . import github_sync
+
+    repo_path = f"rank_overrides/{season}_wk{week}.json"
+    result = github_sync.delete_file(
+        repo=config.github_repo(), token=token, path=repo_path, message=f"Remove Week {week} rank override"
+    )
+    return {"committed": result["success"], "commit_message": result["message"]}
+
+
 QB_ELIGIBLE_SLOT_NAMES = {"QB", "OP"}
 SKILL_SLOT_COUNT_KEYS = ("RB", "WR", "TE", "RB/WR/TE")
 #: Rank-to-value conversion shared by both the QB and skill-pool solves -
@@ -908,6 +1031,16 @@ def _value_from_rank(rank: int | None) -> float:
     return max(0.0, _RANK_VALUE_CEILING - rank) if rank is not None else 0.0
 
 
+def _override_rank_for(player_name: str, overrides: dict[str, int] | None) -> int | None:
+    if not overrides:
+        return None
+    return overrides.get(player_matching.normalize_name(player_name))
+
+
+def _empty_lineup_result(week: int | None) -> dict:
+    return {"changes": [], "zero_projected_starters": [], "lineup_detail": [], "week": week}
+
+
 def build_ideal_lineup(season: int, team_pk: int) -> dict:
     """Computes this team's ideal starting lineup for the CURRENT live
     week from FantasyPros' weekly consensus rankings (see module note
@@ -916,24 +1049,39 @@ def build_ideal_lineup(season: int, team_pk: int) -> dict:
     starter gets, based on real kickoff time (earlier games -> base
     slots, later games -> flex - see that module's docstring for why).
 
+    An admin-uploaded weekly rank override (rank_overrides.py, applied
+    via get_rank_overrides()) supersedes FantasyPros' rank for any player
+    it covers, matched by normalized name - see rank_overrides.py's
+    module docstring for why name matching (not a pre-resolved ESPN id)
+    is what makes the same uploaded PDF apply across every league's own
+    roster. A player with no override falls back to the plain FantasyPros
+    weekly rank, exactly as before.
+
     A bye-week player (no real game this week) is never placed in a
     starting slot, regardless of rank - they simply can't play.
 
     Returns {"changes": [{"player_id", "player_name", "position",
     "from_slot", "to_slot"}], "zero_projected_starters": [{"player_id",
-    "player_name", "projected"}], "week": int}. "changes" only lists
-    players whose CURRENT real ESPN slot differs from the proposed one -
-    an empty list means the current lineup is already optimal.
-    zero_projected_starters is computed against the CURRENT real lineup
-    (not the proposed one) - a real, live fact independent of whether
-    the user acts on the lineup suggestion at all."""
+    "player_name", "projected"}], "lineup_detail": [{"player_id",
+    "player_name", "position", "current_slot", "proposed_slot", "fp_rank",
+    "override_rank", "rank_used", "espn_projected", "opponent",
+    "matchup_grade", "injury_status", "on_bye"}], "week": int}.
+    "changes" only lists players whose CURRENT real ESPN slot differs
+    from the proposed one - an empty list means the current lineup is
+    already optimal. zero_projected_starters is computed against the
+    CURRENT real lineup (not the proposed one) - a real, live fact
+    independent of whether the user acts on the lineup suggestion at all.
+    lineup_detail covers EVERY rostered player (starters, bench, IR) -
+    the full "what drove this" breakdown the War Room table shows,
+    including players the optimizer never considers (K/D-ST, which have
+    no cross-position weekly solve here - see module note above)."""
     from .espn_client import ESPNClient
     from .metrics.lineup_order import TimedPlayer, order_flex_pool_by_kickoff
 
     conn = dd.get_connection()
     espn_team_id_row = conn.execute("SELECT espn_team_id FROM teams WHERE id = ?", (team_pk,)).fetchone()
     if not espn_team_id_row:
-        return {"changes": [], "zero_projected_starters": [], "week": None}
+        return _empty_lineup_result(None)
     espn_team_id = espn_team_id_row["espn_team_id"]
 
     league = ESPNClient().get_league(season)
@@ -946,7 +1094,7 @@ def build_ideal_lineup(season: int, team_pk: int) -> dict:
         elif bs.away_team and bs.away_team.team_id == espn_team_id:
             lineup = bs.away_lineup
     if lineup is None:
-        return {"changes": [], "zero_projected_starters": [], "week": week}
+        return _empty_lineup_result(week)
 
     zero_projected_starters = [
         {"player_id": bp.playerId, "player_name": bp.name, "projected": bp.projected_points}
@@ -958,6 +1106,8 @@ def build_ideal_lineup(season: int, team_pk: int) -> dict:
 
     flex_ranks = get_weekly_flex_rankings(season, week)
     qb_ranks = get_weekly_qb_rankings(season, week)
+    matchup_grades = get_weekly_matchup_grades(season, week)
+    overrides = get_rank_overrides(season, week)
     slot_counts = get_position_slot_counts(season)
 
     playable = [
@@ -968,8 +1118,33 @@ def build_ideal_lineup(season: int, team_pk: int) -> dict:
     name_by_id = {bp.playerId: bp.name for bp in lineup}
     position_by_id = {bp.playerId: bp.position for bp in lineup}
 
-    qb_pool = [bp for bp in playable if QB_ELIGIBLE_SLOT_NAMES & set(bp.eligibleSlots)]
-    skill_pool = [bp for bp in playable if bp not in qb_pool and set(SKILL_SLOT_COUNT_KEYS) & set(bp.eligibleSlots)]
+    # Classify by "QB" eligibility specifically, NOT QB_ELIGIBLE_SLOT_NAMES
+    # (QB+OP) - confirmed live 2026-09-14 that this league's real OP slot
+    # is a true any-position flex (every RB/WR/TE here is ALSO OP-eligible,
+    # not just QBs, so this isn't actually a superflex league), so
+    # OP-eligibility alone can't distinguish a QB from a skill player. Real
+    # quarterbacks are the only players with "QB" itself in eligibleSlots -
+    # using that (not the shared OP tag) is what keeps every skill player
+    # correctly routed into skill_pool instead of being silently absorbed
+    # into qb_pool (where they'd have no QB rank and never be considered
+    # for RB/WR/TE/FLEX at all - a real bug this fixes, not a redesign of
+    # the documented "top-2-QBs-fill-QB+OP" simplification below, which
+    # is unaffected).
+    qb_pool = [bp for bp in playable if "QB" in bp.eligibleSlots]
+    skill_pool = [bp for bp in playable if "QB" not in bp.eligibleSlots and set(SKILL_SLOT_COUNT_KEYS) & set(bp.eligibleSlots)]
+    qb_pool_ids = {bp.playerId for bp in qb_pool}
+    skill_pool_ids = {bp.playerId for bp in skill_pool}
+
+    def _fp_rank_for(bp) -> int | None:
+        if bp.playerId in qb_pool_ids:
+            return qb_ranks.get(bp.playerId)
+        if bp.playerId in skill_pool_ids:
+            return flex_ranks.get(bp.playerId)
+        return None
+
+    def _rank_used_for(bp) -> int | None:
+        override_rank = _override_rank_for(bp.name, overrides)
+        return override_rank if override_rank is not None else _fp_rank_for(bp)
 
     proposed_slot_by_id: dict[int, str] = {}
 
@@ -977,7 +1152,7 @@ def build_ideal_lineup(season: int, team_pk: int) -> dict:
     if qb_pool and qb_slot_counts:
         qb_roster_players = [
             RosterPlayer(
-                player_id=bp.playerId, points=_value_from_rank(qb_ranks.get(bp.playerId)),
+                player_id=bp.playerId, points=_value_from_rank(_rank_used_for(bp)),
                 eligible_slots=frozenset(bp.eligibleSlots),
             )
             for bp in qb_pool
@@ -990,7 +1165,7 @@ def build_ideal_lineup(season: int, team_pk: int) -> dict:
     if skill_pool and skill_slot_counts:
         skill_roster_players = [
             RosterPlayer(
-                player_id=bp.playerId, points=_value_from_rank(flex_ranks.get(bp.playerId)),
+                player_id=bp.playerId, points=_value_from_rank(_rank_used_for(bp)),
                 eligible_slots=frozenset(bp.eligibleSlots),
             )
             for bp in skill_pool
@@ -1015,7 +1190,32 @@ def build_ideal_lineup(season: int, team_pk: int) -> dict:
                 }
             )
 
-    return {"changes": changes, "zero_projected_starters": zero_projected_starters, "week": week}
+    lineup_detail = []
+    for bp in lineup:
+        fp_rank = _fp_rank_for(bp)
+        override_rank = _override_rank_for(bp.name, overrides)
+        injury_status = getattr(bp, "injuryStatus", None)
+        if not isinstance(injury_status, str):
+            injury_status = None  # D/ST has no real injury status (espn_api returns [] there)
+        lineup_detail.append(
+            {
+                "player_id": bp.playerId,
+                "player_name": bp.name,
+                "position": bp.position,
+                "current_slot": bp.slot_position,
+                "proposed_slot": proposed_slot_by_id.get(bp.playerId),
+                "fp_rank": fp_rank,
+                "override_rank": override_rank,
+                "rank_used": override_rank if override_rank is not None else fp_rank,
+                "espn_projected": bp.projected_points,
+                "opponent": getattr(bp, "pro_opponent", None),
+                "matchup_grade": matchup_grades.get(bp.playerId),
+                "injury_status": injury_status,
+                "on_bye": bool(getattr(bp, "on_bye_week", False)),
+            }
+        )
+
+    return {"changes": changes, "zero_projected_starters": zero_projected_starters, "lineup_detail": lineup_detail, "week": week}
 
 
 def slot_name_to_id(slot_name: str) -> int:

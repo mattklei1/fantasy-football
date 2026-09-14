@@ -478,6 +478,79 @@ with tab_lineup:
         "flagging any non-optimal starts and anyone in your lineup projected for exactly 0 "
         "points. Nothing here changes your real ESPN lineup unless you explicitly submit below."
     )
+
+    lineup_week = wr.get_current_week(season)
+
+    with st.expander(f"📄 Upload weekly rank override (Week {lineup_week})"):
+        st.caption(
+            "Upload a PDF of your own weekly rankings (any source - Yahoo, an analyst's cheat "
+            "sheet, whatever). Parsed ranks supersede FantasyPros' weekly consensus for any "
+            f"player they cover, for Week {lineup_week} across every league (matched by player "
+            "name, not tied to a specific roster). PDF layouts vary a lot, so this is a "
+            "best-effort parse - always review the table below and fix/delete rows before saving."
+        )
+
+        active_override = wr.get_active_rank_override_meta(season, lineup_week)
+        if active_override:
+            uploaded_at = (active_override.get("uploaded_at") or "")[:16].replace("T", " ")
+            st.success(
+                f"Active override: {len(active_override.get('ranks', []))} players, from "
+                f"\"{active_override.get('source_filename') or 'manual'}\", uploaded {uploaded_at} UTC."
+            )
+            if st.button("Clear this week's override", key="wr_override_clear"):
+                clear_result = wr.clear_rank_override(season, lineup_week)
+                if not clear_result["committed"]:
+                    st.warning(clear_result["commit_message"])
+                st.session_state.pop("wr_lineup_result", None)
+                st.rerun()
+
+        uploaded_pdf = st.file_uploader("Weekly rankings PDF", type=["pdf"], key="wr_override_upload")
+        if uploaded_pdf is not None:
+            if st.session_state.get("wr_override_parsed_filename") != uploaded_pdf.name:
+                from fantasy_football.rank_override_pdf import parse_pdf_rankings
+
+                try:
+                    parsed_rows = parse_pdf_rankings(uploaded_pdf.read())
+                    parse_error = None
+                except Exception as exc:  # noqa: BLE001 - surface the real error, don't crash the page
+                    parsed_rows = []
+                    parse_error = f"{type(exc).__name__}: {exc}"
+                st.session_state["wr_override_parsed_filename"] = uploaded_pdf.name
+                st.session_state["wr_override_parse_error"] = parse_error
+                st.session_state["wr_override_rows"] = pd.DataFrame(
+                    [{"rank": r.rank, "player_name": r.player_name} for r in parsed_rows]
+                )
+
+            if st.session_state.get("wr_override_parse_error"):
+                st.error(f"Couldn't read this PDF: {st.session_state['wr_override_parse_error']}")
+
+            rows_df = st.session_state.get("wr_override_rows")
+            if rows_df is not None and not rows_df.empty:
+                st.caption(f"Parsed {len(rows_df)} rows - review/edit before saving (add or delete rows as needed).")
+                edited_rows = st.data_editor(
+                    rows_df,
+                    num_rows="dynamic",
+                    key="wr_override_editor",
+                    column_config={
+                        "rank": st.column_config.NumberColumn("Rank", min_value=1, step=1),
+                        "player_name": st.column_config.TextColumn("Player name"),
+                    },
+                    hide_index=True,
+                )
+                if st.button("Save & apply this override", key="wr_override_save"):
+                    clean_rows = edited_rows.dropna(subset=["rank", "player_name"]).to_dict("records")
+                    save_result = wr.save_rank_override(season, lineup_week, clean_rows, uploaded_pdf.name)
+                    if save_result["committed"]:
+                        st.success(f"Saved {len(clean_rows)} ranks and committed to git - live everywhere.")
+                    else:
+                        st.warning(f"Saved {len(clean_rows)} ranks locally only. {save_result['commit_message']}")
+                    for key in ("wr_override_parsed_filename", "wr_override_parse_error", "wr_override_rows"):
+                        st.session_state.pop(key, None)
+                    st.session_state.pop("wr_lineup_result", None)  # force a recompute with the new override
+                    st.rerun()
+            elif rows_df is not None and not st.session_state.get("wr_override_parse_error"):
+                st.warning("Couldn't parse any rank lines out of this PDF - try a different file.")
+
     lineup_team_pk = wr.get_my_team_pk(season)
     if lineup_team_pk is None:
         st.info("Couldn't resolve your team automatically - check your ESPN credentials.")
@@ -529,6 +602,33 @@ with tab_lineup:
                         st.error(lineup_result["message"])
             elif not zero_proj:
                 st.success("Your current lineup already matches the weekly consensus - no changes suggested.")
+
+            detail = result.get("lineup_detail") or []
+            if detail:
+                st.markdown("#### Full lineup detail")
+                st.caption(
+                    "Rank used = override rank when one applies, otherwise FantasyPros' weekly rank "
+                    "(the same number driving the suggestions above). Matchup = FantasyPros' own "
+                    "start/sit grade (A+..F) for that player's matchup this week - the closest signal "
+                    "they publish to a bare opponent-strength number."
+                )
+                detail_df = pd.DataFrame(detail).rename(
+                    columns={
+                        "player_name": "Player", "position": "Pos", "current_slot": "Current slot",
+                        "proposed_slot": "Proposed slot", "fp_rank": "FantasyPros rank",
+                        "override_rank": "Override rank", "rank_used": "Rank used",
+                        "espn_projected": "ESPN proj", "opponent": "Opp",
+                        "matchup_grade": "Matchup", "injury_status": "Injury",
+                    }
+                )
+                display_cols = [
+                    "Player", "Pos", "Current slot", "Proposed slot", "FantasyPros rank",
+                    "Override rank", "Rank used", "ESPN proj", "Opp", "Matchup", "Injury",
+                ]
+                st.dataframe(
+                    detail_df[display_cols].sort_values("Rank used", na_position="last"),
+                    use_container_width=True, hide_index=True,
+                )
 
         with st.expander("Methodology"):
             st.markdown(
