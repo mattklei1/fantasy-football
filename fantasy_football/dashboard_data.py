@@ -13,6 +13,7 @@ import pandas as pd
 import streamlit as st
 
 from . import db
+from .metrics.cutline_sim import TeamScoreModel, percentile_range, simulate_cutline_probabilities
 from .metrics.win_probability import TeamProjection, expected_score, win_probability
 
 
@@ -459,6 +460,31 @@ def live_win_probability(
         stdev=stdevs.get(away_team_pk) or LIVE_PROB_FALLBACK_STDEV,
     )
     return win_probability(home_proj, away_proj)
+
+
+def live_cutline_analysis(season: int, projected_by_team: dict[int, float]) -> dict[int, dict]:
+    """For every team in projected_by_team (this week's CURRENT live
+    projected total), models that team's final score as Normal(current
+    projected, that team's own season scoring stdev) - same model/
+    fallback as live_win_probability, so the two features stay
+    consistent. Returns {team_pk: {"p_making_it", "p10", "p90"}}:
+    p_making_it is the Monte Carlo probability of finishing in the
+    league's top half this week (earning the median bonus win - see
+    metrics.cutline_sim for why this needs simulation, not a closed
+    form); p10/p90 are that same team's own 10th/90th percentile final
+    score (closed-form, since a team's own percentile doesn't depend on
+    anyone else)."""
+    stdevs = team_stdev_map(season)
+    teams = [
+        TeamScoreModel(team_pk=pk, mean=proj, stdev=stdevs.get(pk) or LIVE_PROB_FALLBACK_STDEV)
+        for pk, proj in projected_by_team.items()
+    ]
+    p_making_it = simulate_cutline_probabilities(teams)
+    result = {}
+    for t in teams:
+        p10, p90 = percentile_range(t)
+        result[t.team_pk] = {"p_making_it": p_making_it[t.team_pk], "p10": p10, "p90": p90}
+    return result
 
 
 def clear_all_caches() -> None:

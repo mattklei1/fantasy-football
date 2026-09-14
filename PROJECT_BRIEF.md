@@ -2070,6 +2070,107 @@ board, correctly re-sorts under the position filter; a 6-player
 droppable-bench board for the default-selected team) with zero
 exceptions. 193/193 tests passing.
 
+**Live production error report (2026-09-14) - diagnosed, NOT a code bug:**
+User reported an `AttributeError` on the deployed Streamlit Cloud site,
+in both War Room tabs (Trade Calculator, My Waiver Bids), pointing at
+`war_room_data.get_trade_rosters()`'s `{dd._manager_name_sql()}` f-string.
+Verified `origin/main` HEAD matches local exactly and `_manager_name_sql()`
+has existed in `dashboard_data.py` since commit `142532a` (well before
+the error was reported) - the code on `main` is correct. Root cause:
+the deployed app process was running stale code (hadn't restarted to
+pick up `main` since that fix landed) - consistent with this app's own
+documented filesystem/redeploy unreliability on Streamlit Community
+Cloud. Fix is user-side: reboot the app via "Manage app" -> Reboot app
+in Streamlit Cloud, not a code change.
+
+**Daily Roster Strength refresh (2026-09-14):** `schedule_guard.
+should_refresh_weekly()` (Tuesday-6pm-Pacific boundary) replaced with
+`should_refresh_daily()` (6am Pacific boundary) after re-verifying
+FantasyPros' Accuracy FAQ shows their Tuesday 5pm ET deadline is only an
+accuracy-GRADING snapshot, not a data-refresh boundary - their served
+ROS consensus updates continuously all week, so there was never a real
+weekly boundary to wait for. Since GitHub Actions can't reach the live
+deployed site's local DB (see the filesystem-persistence note above -
+only the app's own running process can touch its own disk),
+"refresh daily" had to be wired as an in-app auto-check instead of an
+external cron: `ingest.refresh_roster_strength_if_due(conn, league,
+season, log)` is a new standalone function (extracted out of
+`ingest_season`'s existing weekly-gated block, same should_refresh_daily
+gate) that does ONLY the FantasyPros/ESPN-rank pull - deliberately NOT
+the full week-by-week ESPN backfill `refresh_all()` does, since that's
+too slow to run on every page load. `ui_common.ensure_roster_strength_fresh()`
+calls it from `render_sidebar()` (so every page load), gated by the same
+daily check before even fetching a `League` object - a no-op after the
+first page load each day. `ensure_data_bootstrapped()` (empty-DB full
+rebuild) and the manual "Refresh ESPN Data" button are unchanged.
+
+**Matchups page redesign (2026-09-14):**
+- Median Cutline widget rebuilt per explicit feedback ("show everyone,
+  not just 3 - color code safeness - give me probability of making it
+  and a 10th/90th percentile range"). New pure module
+  `metrics/cutline_sim.py`: `TeamScoreModel(team_pk, mean, stdev)`,
+  `percentile_range()` (closed-form 10th/90th percentile of a team's own
+  Normal(mean, stdev) - doesn't depend on other teams), and
+  `simulate_cutline_probabilities()` (Monte Carlo, 10,000 trials,
+  independent draws per team - "finish in the top half this week" is a
+  cross-team RELATIVE-RANK question, not closed-form, same reasoning as
+  why `playoff_sim.py` uses Monte Carlo instead of a formula).
+  `dashboard_data.live_cutline_analysis()` wraps it with this app's real
+  live projections + `team_stdev_map()` (same stdev/fallback as
+  `live_win_probability`, so the two features agree). The page now
+  renders ALL teams as one compact `st.dataframe` (Rank/Team/Manager/
+  Projected/vs Cutline/Make Cutline %/10th %ile/90th %ile), row-tinted
+  green/amber/red by `ui_common.tone_for_probability()` via a pandas
+  Styler (`table.style.apply(...)`, same pattern `Home.py` already uses
+  for its trend-arrow column) - one table stays far more compact than 12
+  stacked cards would, while still showing everyone.
+- Per-matchup cards redesigned for less vertical height and clearer
+  color signal, per explicit feedback ("shorter, bold the manager name
+  with team name as subtext, projected more prominent to the right of
+  actual, green/red/amber color coding"). New `ui_common` helpers:
+  `team_header_html()` (one compact 2-line HTML block: bold manager
+  name, small muted team name + record/power-rank/PPG context
+  underneath - replaces 3 separate st.markdown/st.caption widgets with
+  1), `score_row_html()` (actual on the left, projected larger/bolder
+  and tone-colored on the right in one HTML block - replaces
+  `st.metric`), `tone_for_probability()` (win prob -> "win"/"warn"/
+  "loss", >=65%/<=35%/between). `STATUS_COLORS` gained a `"warn"` amber
+  tone. Consolidating each side from ~5 separate Streamlit widgets (name
+  + 2 captions + st.metric + badge + progress bar) down to 2 HTML blocks
+  is what actually shortens the card - Streamlit's per-widget padding
+  was the real height cost, not the content. Dropped as part of this
+  simplification: the separate FAVORED/UNDERDOG (Power-Rank-based)
+  badge row and the "vs wk start" projection-delta text (and the now-
+  unused `get_projection_snapshots()` call feeding it) - both judged
+  redundant with the new color-coded live win-probability signal;
+  `get_projection_snapshots()` itself is untouched in `dashboard_data.py`
+  in case another page wants it later.
+- Validated via AppTest against real live 2026 week-1 data: 12-row
+  cutline table renders with correct monotonic probabilities (a team
+  with the largest projected lead showed ~95% make-cutline vs. the
+  lowest at ~3%) and symmetric 10th/90th ranges, zero exceptions; per-
+  matchup cards render real names/scores/tones with no exceptions.
+  201/201 tests passing (7 new in `test_cutline_sim.py`).
+
+**Waiver-bid valuation - confirmed already rank-based, not points-based
+(2026-09-14):** User asked to verify suggested waiver bids use
+FantasyPros ROS RANKINGS, not raw ROS points, since points aren't
+comparable across positions. Checked: `metrics/waiver_value.
+suggested_bid()` (used by both `war_room_data.get_waiver_board()` and
+`waiver_report.py`'s public GroupMe report) is built entirely from
+`rank_to_score(pos_rank)` - it never reads `ros_points`/`r2p_pts`
+anywhere. `war_room_data._free_agent_value_equivalent_column()` (the
+signal `get_my_waiver_suggestions()`'s reasoning and
+`get_free_agent_value_ceiling()` use) is the same - also rank_to_score-
+based. `ros_points` exists in the waiver board dataframe ONLY as a
+display column for the War Room "All available players (by projected
+points)" board - an intentionally separate browsing lens for the user,
+never fed into any suggestion/ranking/bid decision. No code change was
+needed; this is a standing constraint to keep honoring when the
+Tuesday-5pm waiver-recommendations script (still pending, see below) is
+built - reuse `suggested_bid()`/rank-based valuation there too, not
+`ros_points`.
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip

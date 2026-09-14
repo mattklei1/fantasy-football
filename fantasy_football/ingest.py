@@ -21,7 +21,7 @@ from espn_api.football.team import Team as ESPNTeam
 
 from . import config, db
 from .espn_client import ESPNClient
-from .schedule_guard import should_refresh_weekly
+from .schedule_guard import should_refresh_daily
 
 BENCH_SLOTS = {"BE", "IR"}
 
@@ -549,30 +549,41 @@ def ingest_season(conn, client: ESPNClient, season: int, log=print) -> None:
         except Exception as exc:  # noqa: BLE001
             log(f"[warn] season {season} recent_activity: {exc}")
 
-        # Roster Strength's inputs (this block) are deliberately weekly-
-        # gated, NOT refreshed on every call like everything else above -
-        # see schedule_guard.should_refresh_weekly()'s docstring for why
-        # (keeps Roster Strength frozen for the week instead of drifting
-        # every time someone clicks "Refresh ESPN Data").
-        last_rs_refresh = db.get_roster_strength_last_refreshed(conn, season)
-        if should_refresh_weekly(last_rs_refresh):
-            try:
-                ingest_player_rankings(conn, league, season, last_week, log=log)
-            except Exception as exc:  # noqa: BLE001
-                log(f"[warn] season {season} player rankings: {exc}")
-
-            fp_api_key = config.fantasypros_api_key()
-            if fp_api_key:
-                try:
-                    ingest_fantasypros_rankings(conn, season, last_week, fp_api_key, log=log)
-                except Exception as exc:  # noqa: BLE001
-                    log(f"[warn] season {season} fantasypros rankings: {exc}")
-
-            db.record_roster_strength_refresh(conn, season)
-        else:
-            log(f"[skip] season {season} Roster Strength inputs: already refreshed this week")
+        refresh_roster_strength_if_due(conn, league, season, log=log)
 
     conn.commit()
+
+
+def refresh_roster_strength_if_due(conn, league, season: int, log=print) -> bool:
+    """Refreshes ONLY the FantasyPros/ESPN positional-rank inputs behind
+    Roster Strength, gated by schedule_guard.should_refresh_daily so it
+    actually does the FantasyPros/ESPN calls at most once a day no matter
+    how often it's called. Deliberately separate from the rest of
+    ingest_season's week-by-week ESPN backfill (which is comparatively
+    slow) so this can also be called directly from a page load - see
+    ui_common.ensure_roster_strength_fresh(). Returns True if it actually
+    refreshed."""
+    last_rs_refresh = db.get_roster_strength_last_refreshed(conn, season)
+    if not should_refresh_daily(last_rs_refresh):
+        log(f"[skip] season {season} Roster Strength inputs: already refreshed today")
+        return False
+
+    last_week = league.current_week
+    try:
+        ingest_player_rankings(conn, league, season, last_week, log=log)
+    except Exception as exc:  # noqa: BLE001
+        log(f"[warn] season {season} player rankings: {exc}")
+
+    fp_api_key = config.fantasypros_api_key()
+    if fp_api_key:
+        try:
+            ingest_fantasypros_rankings(conn, season, last_week, fp_api_key, log=log)
+        except Exception as exc:  # noqa: BLE001
+            log(f"[warn] season {season} fantasypros rankings: {exc}")
+
+    db.record_roster_strength_refresh(conn, season)
+    conn.commit()
+    return True
 
 
 def refresh_all(

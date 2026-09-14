@@ -9,6 +9,7 @@ win-probability field at all - confirmed against the installed espn_api
 source), centered on that live projected total once one exists."""
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 
 from fantasy_football import dashboard_data as dd
@@ -126,12 +127,10 @@ is_final_week = latest_metrics_week is not None and week <= latest_metrics_week
 is_future_week = week > current_week
 
 live_by_team: dict[int, dict] = {}
-snapshots: dict[int, float] = {}
 live_error = False
 if not is_final_week and not is_future_week:
     try:
         live_df = dd.get_live_box_scores(season, week)
-        snapshots = dd.get_projection_snapshots(season, week)
         for _, r in live_df.iterrows():
             live_by_team[r["home_team_pk"]] = {
                 "score": r["home_score"], "projected": r["home_projected"], "opp": r["away_team_pk"],
@@ -150,132 +149,149 @@ for _, m in matchups.iterrows():
 if meta.get("median_scoring") and not is_final_week and not is_future_week and not live_error and live_by_team:
     # Median (top-half) bonus cutline: rank every team by CURRENT
     # projected score (not raw score-so-far, same reasoning as the rest
-    # of this page) - with an even team count the median sits between
-    # ranks 6 and 7, so #6 is the last team currently getting the median
-    # win and #7/#8 are the closest teams currently missing it.
+    # of this page). Shows all teams (not just the 3 nearest the cutline)
+    # as one compact table, row-tinted by how safe/unsafe each team's
+    # spot is - a single st.dataframe keeps this to about the same
+    # footprint as 12 stacked cards would NOT be, while still surfacing
+    # everyone at a glance.
     ranked = sorted(
         ((pk, team_name_by_pk.get(pk, "?"), manager_name_for(pk), v["projected"]) for pk, v in live_by_team.items()),
         key=lambda t: t[3], reverse=True,
     )
-    if len(ranked) >= 8:
-        sixth, seventh, eighth = ranked[5], ranked[6], ranked[7]
+    if len(ranked) >= 2:
+        n_teams = len(ranked)
+        cutoff_idx = n_teams // 2
+        cutline_score = ranked[cutoff_idx - 1][3]
+
+        projected_by_team = {pk: proj for pk, _, _, proj in ranked}
+        analysis = dd.live_cutline_analysis(season, projected_by_team)
+
+        cutline_df = pd.DataFrame(
+            [
+                {
+                    "Rank": rank,
+                    "Team": team_name,
+                    "Manager": mgr,
+                    "Projected": proj,
+                    "vs Cutline": proj - cutline_score,
+                    "Make Cutline %": (analysis.get(pk, {}).get("p_making_it") or 0) * 100,
+                    "10th %ile": analysis.get(pk, {}).get("p10"),
+                    "90th %ile": analysis.get(pk, {}).get("p90"),
+                }
+                for rank, (pk, team_name, mgr, proj) in enumerate(ranked, start=1)
+            ]
+        )
+
+        # Translucent row tint (not a solid fill) so text stays readable
+        # in both light and dark theme - green/safe, amber/toss-up,
+        # red/at-risk, matching the same tone language as the score rows
+        # below.
+        TINT = {"win": "rgba(46,125,50,0.15)", "warn": "rgba(184,134,11,0.15)", "loss": "rgba(183,28,28,0.15)"}
+
+        def _row_tint(row):
+            tone = ui.tone_for_probability(row["Make Cutline %"] / 100)
+            return [f"background-color: {TINT.get(tone, 'transparent')};"] * len(row)
+
+        styled = cutline_df.style.apply(_row_tint, axis=1)
+
         with st.container(border=True):
-            st.markdown("#### Median Cutline (projected)")
-            cut_cols = st.columns(3)
-            with cut_cols[0]:
-                st.markdown(ui.status_bubble_html("#6 - MAKING IT", "win"), unsafe_allow_html=True)
-                st.markdown(f"**{sixth[1]}**")
-                st.caption(f"{sixth[2]} · {sixth[3]:.1f} proj")
-            with cut_cols[1]:
-                st.markdown(ui.status_bubble_html("#7 - MISSING IT", "loss"), unsafe_allow_html=True)
-                st.markdown(f"**{seventh[1]}**")
-                st.caption(f"{seventh[2]} · {seventh[3]:.1f} proj ({sixth[3]-seventh[3]:.1f} back)")
-            with cut_cols[2]:
-                st.markdown(ui.status_bubble_html("#8 - MISSING IT", "loss"), unsafe_allow_html=True)
-                st.markdown(f"**{eighth[1]}**")
-                st.caption(f"{eighth[2]} · {eighth[3]:.1f} proj ({sixth[3]-eighth[3]:.1f} back)")
+            st.markdown("#### Median Cutline (top half earns the bonus win)")
+            st.dataframe(
+                styled,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Projected": st.column_config.NumberColumn(format="%.1f"),
+                    "vs Cutline": st.column_config.NumberColumn(
+                        format="%+.1f", help="Gap to the last team currently making the cutline."
+                    ),
+                    "Make Cutline %": st.column_config.ProgressColumn(
+                        format="%.0f%%", min_value=0, max_value=100,
+                        help="Monte Carlo probability of finishing in the top half this week, from "
+                        "modeling each team's final score as a bell curve centered on its live "
+                        "projection, using that team's own real scoring volatility this season.",
+                    ),
+                    "10th %ile": st.column_config.NumberColumn(
+                        format="%.1f", help="Bad-week floor - about a 10% chance of finishing below this."
+                    ),
+                    "90th %ile": st.column_config.NumberColumn(
+                        format="%.1f", help="Good-week ceiling - about a 10% chance of finishing above this."
+                    ),
+                },
+            )
             st.caption(
-                "Based on current PROJECTED totals, not scores-so-far - this will keep moving "
-                "as games finish."
+                "Based on current PROJECTED totals, not scores-so-far - this will keep moving as "
+                "games finish."
             )
 
 for _, m in matchups.iterrows():
     with st.container(border=True):
         col_home, col_vs, col_away = st.columns([5, 1, 5])
         home_pk, away_pk = m["home_team_pk"], m["away_team_pk"]
+        # .strip() matters: a trailing space before a closing ** breaks
+        # CommonMark bold parsing (some ESPN team names have one)
+        home_name, away_name = m["home_team_name"].strip(), m["away_team_name"].strip()
 
-        with col_home:
-            # .strip() matters: a trailing space before the closing ** breaks
-            # CommonMark bold parsing (some ESPN team names have one)
-            st.markdown(f"**{m['home_team_name'].strip()}**")
-            st.caption(manager_name_for(home_pk))
-            st.caption(team_context_line(home_pk))
-        with col_away:
-            st.markdown(f"**{m['away_team_name'].strip()}**")
-            st.caption(manager_name_for(away_pk))
-            st.caption(team_context_line(away_pk))
         with col_vs:
-            st.markdown("<div style='text-align:center'>VS</div>", unsafe_allow_html=True)
+            st.markdown(
+                "<div style='text-align:center; padding-top:14px; color:var(--text-muted);'>VS</div>",
+                unsafe_allow_html=True,
+            )
+
+        # Header (bold manager name, team name + record/rank as small
+        # subtext) is the same in every branch below - built once per
+        # side to keep the per-branch logic focused on the score itself.
+        def _render_header(col, team_pk: int, team_name: str) -> None:
+            col.markdown(
+                ui.team_header_html(manager_name_for(team_pk), f"{team_name} · {team_context_line(team_pk)}"),
+                unsafe_allow_html=True,
+            )
+
+        _render_header(col_home, home_pk, home_name)
+        _render_header(col_away, away_pk, away_name)
 
         if is_final_week:
             home_score, away_score = m["home_score"], m["away_score"]
-            col_home.metric("Final", f"{home_score:.1f}")
-            col_away.metric("Final", f"{away_score:.1f}")
-            if home_score is not None and away_score is not None and home_score != away_score:
-                winner_col, loser_col = (col_home, col_away) if home_score > away_score else (col_away, col_home)
-                winner_col.markdown(ui.status_bubble_html("WON", "win"), unsafe_allow_html=True)
-                loser_col.markdown(ui.status_bubble_html("LOST", "loss"), unsafe_allow_html=True)
+            home_tone = "win" if home_score > away_score else ("loss" if home_score < away_score else "neutral")
+            away_tone = "loss" if home_tone == "win" else ("win" if home_tone == "loss" else "neutral")
+            col_home.markdown(ui.score_row_html(f"{home_score:.1f}", None, home_tone), unsafe_allow_html=True)
+            col_away.markdown(ui.score_row_html(f"{away_score:.1f}", None, away_tone), unsafe_allow_html=True)
+            if home_tone != "neutral":
+                col_home.markdown(ui.status_bubble_html("WON" if home_tone == "win" else "LOST", home_tone), unsafe_allow_html=True)
+                col_away.markdown(ui.status_bubble_html("WON" if away_tone == "win" else "LOST", away_tone), unsafe_allow_html=True)
         elif is_future_week:
-            col_home.metric("Score", "0.0")
-            col_away.metric("Score", "0.0")
+            col_home.markdown(ui.score_row_html("0.0", None, "neutral"), unsafe_allow_html=True)
+            col_away.markdown(ui.score_row_html("0.0", None, "neutral"), unsafe_allow_html=True)
             st.caption("This week hasn't started yet.")
         elif live_error or home_pk not in live_by_team:
             st.caption("Live data not available right now - try refreshing in a moment.")
         else:
             home_live, away_live = live_by_team[home_pk], live_by_team[away_pk]
             home_proj, away_proj = home_live["projected"], away_live["projected"]
-            # Week 1 has no real "start of week" snapshot to compare against -
-            # any snapshot on record for week 1 was captured mid-week (this
-            # feature didn't exist before week 1 started), so showing a delta
-            # against it would be misleading. Only show "vs wk start" for
-            # week 2+, where the snapshot is genuinely from before kickoff.
-            if week == 1:
-                home_snap = away_snap = None
-            else:
-                home_snap, away_snap = snapshots.get(home_pk), snapshots.get(away_pk)
-
-            col_home.metric(
-                "Score", f"{home_live['score']:.1f}",
-                delta=f"proj {home_proj:.1f}" + (f" ({home_proj - home_snap:+.1f} vs wk start)" if home_snap is not None else ""),
-                delta_color="off",
-            )
-            col_away.metric(
-                "Score", f"{away_live['score']:.1f}",
-                delta=f"proj {away_proj:.1f}" + (f" ({away_proj - away_snap:+.1f} vs wk start)" if away_snap is not None else ""),
-                delta_color="off",
-            )
-
-            # FAVORED/UNDERDOG is Power Rank based (this season's overall
-            # team strength through the latest completed week) - NOT the
-            # live projected total above, which is a different, live-only
-            # "who's ahead in THIS matchup right now" signal (that's what
-            # the win probability bar below reflects). The two can
-            # legitimately disagree - a strong team can still be behind
-            # in projection for one week.
-            home_power = context_by_team.get(home_pk, {}).get("power_score")
-            away_power = context_by_team.get(away_pk, {}).get("power_score")
-            if home_power is not None and away_power is not None and home_power != away_power:
-                if home_power > away_power:
-                    col_home.markdown(ui.status_bubble_html("FAVORED", "win"), unsafe_allow_html=True)
-                    col_away.markdown(ui.status_bubble_html("UNDERDOG", "loss"), unsafe_allow_html=True)
-                else:
-                    col_away.markdown(ui.status_bubble_html("FAVORED", "win"), unsafe_allow_html=True)
-                    col_home.markdown(ui.status_bubble_html("UNDERDOG", "loss"), unsafe_allow_html=True)
-
             prob = dd.live_win_probability(season, home_pk, away_pk, home_proj, away_proj)
-            col_home.progress(prob, text=f"{prob*100:.0f}% win prob.")
-            col_away.progress(1 - prob, text=f"{(1-prob)*100:.0f}% win prob.")
+            home_tone, away_tone = ui.tone_for_probability(prob), ui.tone_for_probability(1 - prob)
 
-        render_last_meetings(
-            home_pk, away_pk, m["home_team_name"].strip(), m["away_team_name"].strip()
-        )
+            col_home.markdown(
+                ui.score_row_html(f"{home_live['score']:.1f}", f"{home_proj:.1f}", home_tone), unsafe_allow_html=True
+            )
+            col_away.markdown(
+                ui.score_row_html(f"{away_live['score']:.1f}", f"{away_proj:.1f}", away_tone), unsafe_allow_html=True
+            )
+            st.caption(
+                f"Win prob: {home_name} {prob*100:.0f}% · {away_name} {(1-prob)*100:.0f}% "
+                "(from current projected totals, updates live)"
+            )
+
+        render_last_meetings(home_pk, away_pk, home_name, away_name)
 
 if is_future_week:
     st.caption("Future week - no live data available yet (ESPN doesn't publish box scores this far ahead).")
 elif not is_final_week:
-    vs_wk_start_sentence = (
-        " \"vs wk start\" compares that to the first projection this app ever saw for the week."
-        if week != 1
-        else ""
-    )
     st.caption(
-        "Score/projection update live from ESPN (refreshes about once a minute). \"proj\" is each "
-        "team's CURRENT projected total - points scored so far plus the rest of the lineup's "
-        "projections - not just the raw score, so a big early lead from one team's players simply "
-        "having played first doesn't look like a bigger edge than it is."
-        f"{vs_wk_start_sentence} FAVORED/UNDERDOG is based "
-        "on Power Rank (this season's overall team strength) - win probability % is a separate, "
-        "live signal based on this week's projected totals and scoring variance (ESPN publishes "
-        "no win probability of its own) - the two can disagree, e.g. a strong team can still be "
-        "projected behind for one week."
+        "Score/projection update live from ESPN (refreshes about once a minute). The right-hand "
+        "number is each team's CURRENT projected total - points scored so far plus the rest of the "
+        "lineup's projections - not just the raw score, so a big early lead from one team's players "
+        "simply having played first doesn't look like a bigger edge than it is. Green/amber/red "
+        "color the projection by that team's live win probability (ESPN publishes no win "
+        "probability of its own)."
     )

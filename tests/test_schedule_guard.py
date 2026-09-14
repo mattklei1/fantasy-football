@@ -3,7 +3,7 @@ import datetime
 from zoneinfo import ZoneInfo
 
 from fantasy_football import schedule_guard
-from fantasy_football.schedule_guard import PACIFIC, is_target_time_now, should_refresh_weekly
+from fantasy_football.schedule_guard import PACIFIC, is_target_time_now, should_refresh_daily
 
 
 def _freeze_now(monkeypatch, dt: datetime.datetime):
@@ -12,7 +12,7 @@ def _freeze_now(monkeypatch, dt: datetime.datetime):
         def now(cls, tz=None):
             return dt.astimezone(tz) if tz else dt
 
-    # should_refresh_weekly also uses datetime.timedelta/datetime.timezone
+    # should_refresh_daily also uses datetime.timedelta/datetime.timezone
     # from this same module-level `datetime` reference, so the frozen
     # stand-in must expose those too, not just `.datetime`.
     monkeypatch.setattr(
@@ -48,29 +48,38 @@ def test_dst_transition_still_resolves_correct_pacific_time(monkeypatch):
     assert is_target_time_now(13, 30, tolerance_minutes=12) is True
 
 
-def test_should_refresh_weekly_never_refreshed():
-    assert should_refresh_weekly(None) is True
+def test_should_refresh_daily_never_refreshed():
+    assert should_refresh_daily(None) is True
 
 
-def test_should_refresh_weekly_false_right_after_this_weeks_boundary(monkeypatch):
-    # Tuesday 2026-09-15, 7pm Pacific - just past this week's 6pm Tuesday
-    # boundary. A refresh recorded 30 min ago (6:30pm) is still fresh.
-    _freeze_now(monkeypatch, datetime.datetime(2026, 9, 15, 19, 0, tzinfo=PACIFIC))
-    last_refreshed = datetime.datetime(2026, 9, 15, 18, 30, tzinfo=PACIFIC).astimezone(datetime.timezone.utc).isoformat()
-    assert should_refresh_weekly(last_refreshed) is False
+def test_should_refresh_daily_false_right_after_todays_boundary(monkeypatch):
+    # 7am Pacific - just past today's 6am boundary. A refresh recorded
+    # 30 min ago (6:30am) is still fresh.
+    _freeze_now(monkeypatch, datetime.datetime(2026, 9, 15, 7, 0, tzinfo=PACIFIC))
+    last_refreshed = datetime.datetime(2026, 9, 15, 6, 30, tzinfo=PACIFIC).astimezone(datetime.timezone.utc).isoformat()
+    assert should_refresh_daily(last_refreshed) is False
 
 
-def test_should_refresh_weekly_true_once_next_boundary_passes(monkeypatch):
+def test_should_refresh_daily_true_once_next_boundary_passes(monkeypatch):
     # Same last-refresh timestamp as above, but now it's the FOLLOWING
-    # Tuesday evening - a new weekly boundary has passed since then.
-    _freeze_now(monkeypatch, datetime.datetime(2026, 9, 22, 19, 0, tzinfo=PACIFIC))
-    last_refreshed = datetime.datetime(2026, 9, 15, 18, 30, tzinfo=PACIFIC).astimezone(datetime.timezone.utc).isoformat()
-    assert should_refresh_weekly(last_refreshed) is True
+    # morning - a new daily boundary has passed since then.
+    _freeze_now(monkeypatch, datetime.datetime(2026, 9, 16, 7, 0, tzinfo=PACIFIC))
+    last_refreshed = datetime.datetime(2026, 9, 15, 6, 30, tzinfo=PACIFIC).astimezone(datetime.timezone.utc).isoformat()
+    assert should_refresh_daily(last_refreshed) is True
 
 
-def test_should_refresh_weekly_false_midweek_after_tuesday_refresh(monkeypatch):
-    # Friday of the same week as a Tuesday evening refresh - no new
-    # boundary has passed yet, should stay frozen until next Tuesday.
-    _freeze_now(monkeypatch, datetime.datetime(2026, 9, 18, 12, 0, tzinfo=PACIFIC))
-    last_refreshed = datetime.datetime(2026, 9, 15, 18, 30, tzinfo=PACIFIC).astimezone(datetime.timezone.utc).isoformat()
-    assert should_refresh_weekly(last_refreshed) is False
+def test_should_refresh_daily_false_later_same_day_after_morning_refresh(monkeypatch):
+    # 9pm the same day as a 6:30am refresh - no new boundary has passed
+    # yet, should stay frozen until tomorrow's 6am.
+    _freeze_now(monkeypatch, datetime.datetime(2026, 9, 15, 21, 0, tzinfo=PACIFIC))
+    last_refreshed = datetime.datetime(2026, 9, 15, 6, 30, tzinfo=PACIFIC).astimezone(datetime.timezone.utc).isoformat()
+    assert should_refresh_daily(last_refreshed) is False
+
+
+def test_should_refresh_daily_true_early_morning_before_yesterdays_refresh_boundary(monkeypatch):
+    # 3am Pacific - before TODAY's 6am boundary, so "today's boundary" is
+    # actually yesterday 6am. A refresh from yesterday at 5am (before
+    # yesterday's own boundary) is stale relative to it.
+    _freeze_now(monkeypatch, datetime.datetime(2026, 9, 16, 3, 0, tzinfo=PACIFIC))
+    last_refreshed = datetime.datetime(2026, 9, 15, 5, 0, tzinfo=PACIFIC).astimezone(datetime.timezone.utc).isoformat()
+    assert should_refresh_daily(last_refreshed) is True

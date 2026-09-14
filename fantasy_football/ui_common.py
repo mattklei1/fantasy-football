@@ -143,15 +143,65 @@ def fraud_badge_html(fraud_index: float | None) -> str:
 
 #: Eye-friendly (not pure-saturated) green/red for the Matchups page's
 #: win/loss "bubbles" - same muted palette as BADGE_COLORS above, not a
-#: separate design language.
-STATUS_COLORS = {"win": "#2e7d32", "loss": "#b71c1c", "neutral": "#6b7280"}
+#: separate design language. "warn" (amber, same tone as the
+#: SLIGHTLY SUSPICIOUS badge) is the "up in the air" middle ground - a
+#: toss-up win probability or a cutline-borderline team, neither clearly
+#: good nor bad.
+STATUS_COLORS = {"win": "#2e7d32", "loss": "#b71c1c", "neutral": "#6b7280", "warn": "#b8860b"}
 
 
 def status_bubble_html(label: str, tone: str) -> str:
     """A small colored pill for game status (leading/trailing, favored/
-    underdog, won/lost) - tone is one of "win"/"loss"/"neutral"."""
+    underdog, won/lost) - tone is one of "win"/"loss"/"neutral"/"warn"."""
     color = STATUS_COLORS.get(tone, STATUS_COLORS["neutral"])
     return f'<span class="ff-badge" style="background:{color}">{label}</span>'
+
+
+def tone_for_probability(prob: float, warn_band: float = 0.15) -> str:
+    """Maps a 0-1 probability (win prob, cutline prob, etc) to a
+    "win"/"warn"/"loss" tone - comfortably above 50% is good, comfortably
+    below is bad, within warn_band of 50/50 either way is a genuine
+    toss-up ("up in the air")."""
+    if prob >= 0.5 + warn_band:
+        return "win"
+    if prob <= 0.5 - warn_band:
+        return "loss"
+    return "warn"
+
+
+def team_header_html(name: str, subtext: str) -> str:
+    """Compact 2-line team identity block for the Matchups page - `name`
+    bold/primary, `subtext` small and muted underneath. Deliberately a
+    single small HTML block (not 2 separate st.markdown/st.caption
+    calls) to keep each matchup card's vertical footprint tight."""
+    return (
+        '<div style="line-height:1.3;">'
+        f'<div style="font-weight:700; font-size:1.05rem;">{name}</div>'
+        f'<div style="font-size:0.78rem; color:var(--text-muted);">{subtext}</div>'
+        '</div>'
+    )
+
+
+def score_row_html(actual: str, projected: str | None, tone: str) -> str:
+    """Compact actual/projected score line - actual on the left (plain),
+    projected larger/bolder and pushed to the right in a tone color
+    (win=green/warn=amber/loss=red/neutral=gray) so the live trend reads
+    at a glance without a separate FAVORED/UNDERDOG badge. `actual` and
+    `projected` are already-formatted strings (caller decides "0.0" vs
+    "-" for not-yet-started/unavailable weeks); projected=None omits the
+    right-hand side entirely (final week, no projection to show)."""
+    color = STATUS_COLORS.get(tone, STATUS_COLORS["neutral"])
+    proj_html = (
+        f'<span style="font-size:1.15rem; font-weight:700; color:{color};">{projected}</span>'
+        if projected is not None else ""
+    )
+    return (
+        '<div style="display:flex; align-items:baseline; justify-content:space-between; '
+        'margin-top:4px;">'
+        f'<span style="font-size:1.35rem; font-weight:600;">{actual}</span>'
+        f'{proj_html}'
+        '</div>'
+    )
 
 
 def trend_arrow(change) -> str:
@@ -295,6 +345,37 @@ def ensure_data_bootstrapped() -> None:
         dd.clear_all_caches()
 
 
+def ensure_roster_strength_fresh() -> None:
+    """Companion to ensure_data_bootstrapped(): keeps Roster Strength's
+    FantasyPros/ESPN rank inputs current on the LIVE deployed site
+    without a manual "Refresh ESPN Data" click. GitHub Actions can't
+    reach this site's local DB directly (see ensure_data_bootstrapped's
+    docstring on filesystem persistence), so a daily refresh has to be
+    triggered from inside the app itself - here, on page load. The
+    should_refresh_daily gate (see schedule_guard) makes this a cheap
+    no-op after the first page load each day; only a genuinely due
+    refresh pays the cost of an ESPN + FantasyPros call."""
+    conn = dd.get_connection()
+    seasons = dd.get_available_seasons()
+    if not seasons:
+        return
+    season = seasons[0]
+    last_rs_refresh = db.get_roster_strength_last_refreshed(conn, season)
+    from .schedule_guard import should_refresh_daily
+
+    if not should_refresh_daily(last_rs_refresh):
+        return
+
+    from .espn_client import ESPNClient
+    from .ingest import refresh_roster_strength_if_due
+
+    with st.spinner("Refreshing today's Roster Strength rankings..."):
+        client = ESPNClient()
+        league = client.get_league(season)
+        refresh_roster_strength_if_due(conn, league, season, log=lambda *a: None)
+        dd.clear_all_caches()
+
+
 def render_sidebar(support_all_time: bool = False) -> tuple[int | str, int | None]:
     """Returns (selected_season, selected_week). `selected_season` is
     normally a real season int; pass support_all_time=True (History,
@@ -306,6 +387,7 @@ def render_sidebar(support_all_time: bool = False) -> tuple[int | str, int | Non
     require_password()
     require_login()
     ensure_data_bootstrapped()
+    ensure_roster_strength_fresh()
 
     st.sidebar.title("🏈 Fantasy Dashboard")
 
