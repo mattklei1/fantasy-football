@@ -9,7 +9,6 @@ win-probability field at all - confirmed against the installed espn_api
 source), centered on that live projected total once one exists."""
 from __future__ import annotations
 
-import pandas as pd
 import streamlit as st
 
 from fantasy_football import dashboard_data as dd
@@ -149,11 +148,13 @@ for _, m in matchups.iterrows():
 if meta.get("median_scoring") and not is_final_week and not is_future_week and not live_error and live_by_team:
     # Median (top-half) bonus cutline: rank every team by CURRENT
     # projected score (not raw score-so-far, same reasoning as the rest
-    # of this page). Shows all teams (not just the 3 nearest the cutline)
-    # as one compact table, row-tinted by how safe/unsafe each team's
-    # spot is - a single st.dataframe keeps this to about the same
-    # footprint as 12 stacked cards would NOT be, while still surfacing
-    # everyone at a glance.
+    # of this page). Shows ALL teams (not just the 3 nearest the
+    # cutline) as one plain HTML table (not st.dataframe - that widget
+    # scrolls past a fixed height instead of growing to fit every row,
+    # and its canvas-rendered grid can't have a column responsively
+    # hidden), row-tinted by how safe/unsafe each team's spot is, and
+    # drops the Manager subtext on a narrow (phone) screen to save
+    # width - see ui.cutline_table_html.
     ranked = sorted(
         ((pk, team_name_by_pk.get(pk, "?"), manager_name_for(pk), v["projected"]) for pk, v in live_by_team.items()),
         key=lambda t: t[3], reverse=True,
@@ -166,62 +167,29 @@ if meta.get("median_scoring") and not is_final_week and not is_future_week and n
         projected_by_team = {pk: proj for pk, _, _, proj in ranked}
         analysis = dd.live_cutline_analysis(season, projected_by_team)
 
-        cutline_df = pd.DataFrame(
-            [
-                {
-                    "Rank": rank,
-                    "Team": team_name,
-                    "Manager": mgr,
-                    "Projected": proj,
-                    "vs Cutline": proj - cutline_score,
-                    "Make Cutline %": (analysis.get(pk, {}).get("p_making_it") or 0) * 100,
-                    "10th %ile": analysis.get(pk, {}).get("p10"),
-                    "90th %ile": analysis.get(pk, {}).get("p90"),
-                }
-                for rank, (pk, team_name, mgr, proj) in enumerate(ranked, start=1)
-            ]
-        )
-
-        # Translucent row tint (not a solid fill) so text stays readable
-        # in both light and dark theme - green/safe, amber/toss-up,
-        # red/at-risk, matching the same tone language as the score rows
-        # below.
-        TINT = {"win": "rgba(46,125,50,0.15)", "warn": "rgba(184,134,11,0.15)", "loss": "rgba(183,28,28,0.15)"}
-
-        def _row_tint(row):
-            tone = ui.tone_for_probability(row["Make Cutline %"] / 100)
-            return [f"background-color: {TINT.get(tone, 'transparent')};"] * len(row)
-
-        styled = cutline_df.style.apply(_row_tint, axis=1)
+        cutline_rows = [
+            {
+                "rank": rank,
+                "team": team_name,
+                "manager": mgr,
+                "projected": proj,
+                "vs_cutline": proj - cutline_score,
+                "make_pct": (analysis.get(pk, {}).get("p_making_it") or 0) * 100,
+                "p10": analysis.get(pk, {}).get("p10") or 0.0,
+                "p90": analysis.get(pk, {}).get("p90") or 0.0,
+                "tone": ui.tone_for_probability(analysis.get(pk, {}).get("p_making_it") or 0),
+            }
+            for rank, (pk, team_name, mgr, proj) in enumerate(ranked, start=1)
+        ]
 
         with st.container(border=True):
             st.markdown("#### Median Cutline (top half earns the bonus win)")
-            st.dataframe(
-                styled,
-                hide_index=True,
-                use_container_width=True,
-                column_config={
-                    "Projected": st.column_config.NumberColumn(format="%.1f"),
-                    "vs Cutline": st.column_config.NumberColumn(
-                        format="%+.1f", help="Gap to the last team currently making the cutline."
-                    ),
-                    "Make Cutline %": st.column_config.ProgressColumn(
-                        format="%.0f%%", min_value=0, max_value=100,
-                        help="Monte Carlo probability of finishing in the top half this week, from "
-                        "modeling each team's final score as a bell curve centered on its live "
-                        "projection, using that team's own real scoring volatility this season.",
-                    ),
-                    "10th %ile": st.column_config.NumberColumn(
-                        format="%.1f", help="Bad-week floor - about a 10% chance of finishing below this."
-                    ),
-                    "90th %ile": st.column_config.NumberColumn(
-                        format="%.1f", help="Good-week ceiling - about a 10% chance of finishing above this."
-                    ),
-                },
-            )
+            st.markdown(ui.cutline_table_html(cutline_rows), unsafe_allow_html=True)
             st.caption(
                 "Based on current PROJECTED totals, not scores-so-far - this will keep moving as "
-                "games finish."
+                "games finish. Make % and the 10th-90th range come from modeling each team's final "
+                "score as a bell curve centered on its live projection, using that team's own real "
+                "scoring volatility this season."
             )
 
 for _, m in matchups.iterrows():

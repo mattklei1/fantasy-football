@@ -204,6 +204,58 @@ def score_row_html(actual: str, projected: str | None, tone: str) -> str:
     )
 
 
+#: Translucent row tint (not a solid fill, so text stays readable in
+#: both light and dark theme) for the Median Cutline table - green/safe,
+#: amber/toss-up, red/at-risk, same tone language as the score rows.
+CUTLINE_TINT = {"win": "rgba(46,125,50,0.15)", "warn": "rgba(184,134,11,0.15)", "loss": "rgba(183,28,28,0.15)"}
+
+
+def cutline_table_html(rows: list[dict]) -> str:
+    """Full HTML table for the Matchups page's Median Cutline widget -
+    deliberately NOT st.dataframe: that widget virtualizes/scrolls past a
+    fixed height instead of growing to fit every row (all teams need to
+    be visible with no scrolling), and its grid renders via canvas so
+    individual columns can't be responsively hidden with plain CSS. Each
+    row dict needs: rank, team, manager, projected, vs_cutline, make_pct
+    (0-100), p10, p90, tone ("win"/"warn"/"loss"). The manager subtext
+    line is dropped entirely below 480px width via a media query, to
+    keep the Team column narrow enough on a phone."""
+    body_rows = []
+    for r in rows:
+        bg = CUTLINE_TINT.get(r["tone"], "transparent")
+        body_rows.append(
+            f'<tr style="background:{bg};">'
+            f'<td style="padding:6px 8px; text-align:center;">{r["rank"]}</td>'
+            '<td style="padding:6px 8px;">'
+            f'<div style="font-weight:600;">{r["team"]}</div>'
+            f'<div class="cutline-manager" style="font-size:0.72rem; color:var(--text-muted);">{r["manager"]}</div>'
+            '</td>'
+            f'<td style="padding:6px 8px; text-align:right;">{r["projected"]:.1f}</td>'
+            f'<td style="padding:6px 8px; text-align:right;">{r["vs_cutline"]:+.1f}</td>'
+            f'<td style="padding:6px 8px; text-align:right;">{r["make_pct"]:.0f}%</td>'
+            f'<td style="padding:6px 8px; text-align:right;">{r["p10"]:.0f}–{r["p90"]:.0f}</td>'
+            '</tr>'
+        )
+    header = (
+        '<tr style="border-bottom:2px solid var(--card-border);">'
+        '<th style="padding:6px 8px; text-align:center;">#</th>'
+        '<th style="padding:6px 8px; text-align:left;">Team</th>'
+        '<th style="padding:6px 8px; text-align:right;">Proj</th>'
+        '<th style="padding:6px 8px; text-align:right;">vs Cut</th>'
+        '<th style="padding:6px 8px; text-align:right;">Make %</th>'
+        '<th style="padding:6px 8px; text-align:right;">10th–90th</th>'
+        '</tr>'
+    )
+    return (
+        '<style>@media (max-width: 480px) { .cutline-manager { display: none; } }</style>'
+        '<div style="overflow-x:auto;">'
+        '<table style="width:100%; border-collapse:collapse; font-size:0.85rem;">'
+        f'<thead>{header}</thead><tbody>{"".join(body_rows)}</tbody>'
+        '</table>'
+        '</div>'
+    )
+
+
 def score_detail_html(win_prob_pct: str, range_text: str, tone: str) -> str:
     """Small line under score_row_html's projected number - win
     probability (tone-colored, matching the projected number above it)
