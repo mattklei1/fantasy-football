@@ -38,8 +38,8 @@ if not config.fantasypros_api_key():
         "will be empty. Trade Calculator still works off ESPN's own positional rank alone."
     )
 
-tab_rankings, tab_waiver, tab_mine, tab_trade, tab_lineup = st.tabs(
-    ["Rankings Browser", "Waiver Board", "My Waiver Bids", "Trade Calculator", "Lineup Optimizer"]
+tab_lineup, tab_rankings, tab_waiver, tab_mine, tab_trade = st.tabs(
+    ["Lineup Optimizer", "Rankings Browser", "Waiver Board", "My Waiver Bids", "Trade Calculator"]
 )
 
 with tab_rankings:
@@ -484,7 +484,13 @@ with tab_lineup:
     else:
         if st.button("Check my lineup", key="wr_lineup_check"):
             with st.spinner("Pulling weekly rankings and your current lineup..."):
-                st.session_state["wr_lineup_result"] = wr.build_ideal_lineup(season, lineup_team_pk)
+                try:
+                    st.session_state["wr_lineup_result"] = wr.build_ideal_lineup(season, lineup_team_pk)
+                except Exception as exc:  # noqa: BLE001 - surface real diagnostic info instead of
+                    # Streamlit's own generic "AttributeError, redacted" screen, which gives no way
+                    # to tell what actually broke without SSH access to the deployed app's logs.
+                    st.session_state["wr_lineup_result"] = None
+                    st.error(f"Couldn't compute your lineup: {type(exc).__name__}: {exc}")
 
         result = st.session_state.get("wr_lineup_result")
         if result is not None:

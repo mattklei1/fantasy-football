@@ -951,14 +951,19 @@ def build_ideal_lineup(season: int, team_pk: int) -> dict:
     zero_projected_starters = [
         {"player_id": bp.playerId, "player_name": bp.name, "projected": bp.projected_points}
         for bp in lineup
-        if bp.slot_position not in ("BE", "IR") and (bp.projected_points or 0) == 0 and not bp.on_bye_week
+        if bp.slot_position not in ("BE", "IR")
+        and (bp.projected_points or 0) == 0
+        and not getattr(bp, "on_bye_week", False)
     ]
 
     flex_ranks = get_weekly_flex_rankings(season, week)
     qb_ranks = get_weekly_qb_rankings(season, week)
     slot_counts = get_position_slot_counts(season)
 
-    playable = [bp for bp in lineup if not bp.on_bye_week and getattr(bp, "game_date", None) is not None]
+    playable = [
+        bp for bp in lineup
+        if not getattr(bp, "on_bye_week", False) and getattr(bp, "game_date", None) is not None
+    ]
     current_slot_by_id = {bp.playerId: bp.slot_position for bp in lineup}
     name_by_id = {bp.playerId: bp.name for bp in lineup}
     position_by_id = {bp.playerId: bp.position for bp in lineup}
