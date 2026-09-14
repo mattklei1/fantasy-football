@@ -577,29 +577,49 @@ with tab_lineup:
 
             if changes:
                 st.markdown(f"#### Suggested changes (Week {result['week']})")
+                st.caption("Uncheck any you don't want to submit - only the checked ones go out below.")
+                approved_changes = []
                 for c in changes:
-                    st.markdown(f"- **{c['player_name']}** ({c['position']}): {c['from_slot']} → {c['to_slot']}")
+                    swap_note = f" — swaps with **{c['swap_with_player_name']}**" if c.get("swap_with_player_name") else ""
+                    label = f"**{c['player_name']}** ({c['position']}): {c['from_slot']} → {c['to_slot']}{swap_note}"
+                    if st.checkbox(label, value=True, key=f"wr_lineup_change_{c['player_id']}"):
+                        approved_changes.append(c)
 
-                real_submit = st.checkbox(
-                    "⚠️ Actually submit this lineup change to ESPN (real transaction)",
-                    value=False, key="wr_lineup_real_submit",
-                    help="Unchecked = dry run only (shows exactly what would be sent, sends nothing). "
-                    "Resets to unchecked every page load.",
-                )
-                submit_label = "Submit lineup change to ESPN" if real_submit else "Preview lineup change (dry run)"
-                if st.button(submit_label, key="wr_lineup_submit"):
-                    moves = [
-                        (c["player_id"], wr.slot_name_to_id(c["from_slot"]), wr.slot_name_to_id(c["to_slot"]))
-                        for c in changes
-                    ]
-                    lineup_result = wr.submit_lineup_changes(season, lineup_team_pk, moves, dry_run=not real_submit)
-                    if lineup_result["dry_run"]:
-                        st.info("Dry run - exact payload that would be sent:")
-                        st.json(lineup_result["payload"])
-                    elif lineup_result["success"]:
-                        st.success(lineup_result["message"])
-                    else:
-                        st.error(lineup_result["message"])
+                approved_ids = {c["player_id"] for c in approved_changes}
+                unpaired = [
+                    c for c in approved_changes
+                    if c.get("swap_with_player_id") is not None and c["swap_with_player_id"] not in approved_ids
+                ]
+                if unpaired:
+                    st.warning(
+                        "These moves leave their swap partner un-submitted, which can produce an invalid "
+                        "ESPN lineup (two players in one slot, or an empty one): "
+                        + ", ".join(c["player_name"] for c in unpaired)
+                    )
+
+                if approved_changes:
+                    real_submit = st.checkbox(
+                        "⚠️ Actually submit this lineup change to ESPN (real transaction)",
+                        value=False, key="wr_lineup_real_submit",
+                        help="Unchecked = dry run only (shows exactly what would be sent, sends nothing). "
+                        "Resets to unchecked every page load.",
+                    )
+                    submit_label = "Submit lineup change to ESPN" if real_submit else "Preview lineup change (dry run)"
+                    if st.button(submit_label, key="wr_lineup_submit"):
+                        moves = [
+                            (c["player_id"], wr.slot_name_to_id(c["from_slot"]), wr.slot_name_to_id(c["to_slot"]))
+                            for c in approved_changes
+                        ]
+                        lineup_result = wr.submit_lineup_changes(season, lineup_team_pk, moves, dry_run=not real_submit)
+                        if lineup_result["dry_run"]:
+                            st.info("Dry run - exact payload that would be sent:")
+                            st.json(lineup_result["payload"])
+                        elif lineup_result["success"]:
+                            st.success(lineup_result["message"])
+                        else:
+                            st.error(lineup_result["message"])
+                else:
+                    st.info("No changes selected to submit.")
             elif not zero_proj:
                 st.success("Your current lineup already matches the weekly consensus - no changes suggested.")
 
@@ -607,23 +627,26 @@ with tab_lineup:
             if detail:
                 st.markdown("#### Full lineup detail")
                 st.caption(
-                    "Rank used = override rank when one applies, otherwise FantasyPros' weekly rank "
-                    "(the same number driving the suggestions above). Matchup = FantasyPros' own "
+                    "Positional rank = FantasyPros' rank within that player's own position (QB6, RB14, "
+                    "...). Overall rank = their cross-position rank among ALL skill players (RB/WR/TE "
+                    "only - FantasyPros has no such number for QB). Rank used = whichever of override/ "
+                    "positional/overall actually drove the suggestions above. Matchup = FantasyPros' own "
                     "start/sit grade (A+..F) for that player's matchup this week - the closest signal "
                     "they publish to a bare opponent-strength number."
                 )
                 detail_df = pd.DataFrame(detail).rename(
                     columns={
                         "player_name": "Player", "position": "Pos", "current_slot": "Current slot",
-                        "proposed_slot": "Proposed slot", "fp_rank": "FantasyPros rank",
+                        "proposed_slot": "Proposed slot", "fp_positional_rank": "Positional rank",
+                        "fp_overall_rank": "Overall rank",
                         "override_rank": "Override rank", "rank_used": "Rank used",
                         "espn_projected": "ESPN proj", "opponent": "Opp",
                         "matchup_grade": "Matchup", "injury_status": "Injury",
                     }
                 )
                 display_cols = [
-                    "Player", "Pos", "Current slot", "Proposed slot", "FantasyPros rank",
-                    "Override rank", "Rank used", "ESPN proj", "Opp", "Matchup", "Injury",
+                    "Player", "Pos", "Current slot", "Proposed slot", "Positional rank",
+                    "Overall rank", "Override rank", "Rank used", "ESPN proj", "Opp", "Matchup", "Injury",
                 ]
                 st.dataframe(
                     detail_df[display_cols].sort_values("Rank used", na_position="last"),

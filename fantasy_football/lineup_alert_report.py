@@ -9,7 +9,11 @@ from __future__ import annotations
 
 
 def _format_changes(changes: list[dict]) -> list[str]:
-    return [f"- {c['player_name']} ({c['position']}): {c['from_slot']} -> {c['to_slot']}" for c in changes]
+    lines = []
+    for c in changes:
+        swap_note = f" (swaps with {c['swap_with_player_name']})" if c.get("swap_with_player_name") else ""
+        lines.append(f"- {c['player_name']} ({c['position']}): {c['from_slot']} -> {c['to_slot']}{swap_note}")
+    return lines
 
 
 def _league_prefix(league_name: str | None) -> str:

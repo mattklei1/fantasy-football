@@ -7,8 +7,11 @@ def _result(changes=None, zero_proj=None, week=2):
     return {"changes": changes or [], "zero_projected_starters": zero_proj or [], "week": week}
 
 
-def _change(name="Bench Guy", position="RB", from_slot="BE", to_slot="RB/WR/TE"):
-    return {"player_id": 1, "player_name": name, "position": position, "from_slot": from_slot, "to_slot": to_slot}
+def _change(name="Bench Guy", position="RB", from_slot="BE", to_slot="RB/WR/TE", swap_with=None):
+    return {
+        "player_id": 1, "player_name": name, "position": position, "from_slot": from_slot, "to_slot": to_slot,
+        "swap_with_player_name": swap_with,
+    }
 
 
 def _zero(name="Hurt Guy", projected=0.0):
@@ -29,6 +32,16 @@ def test_wednesday_lists_changes_and_points_to_war_room():
     assert "Suggested changes" in msg
     assert "Bench Guy (RB): BE -> RB/WR/TE" in msg
     assert "War Room -> Lineup Optimizer" in msg
+
+
+def test_wednesday_change_shows_swap_partner_when_present():
+    msg = build_wednesday_message(_result(changes=[_change(swap_with="Displaced Guy")]), "Team")
+    assert "(swaps with Displaced Guy)" in msg
+
+
+def test_wednesday_change_omits_swap_note_when_none():
+    msg = build_wednesday_message(_result(changes=[_change(swap_with=None)]), "Team")
+    assert "swaps with" not in msg
 
 
 def test_wednesday_no_urgency_language():

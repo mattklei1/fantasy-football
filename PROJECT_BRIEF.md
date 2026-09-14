@@ -2557,6 +2557,78 @@ override rank, opponent, strength of opponent, injury designation."
 - 250/250 tests passing (`test_rank_override_pdf.py`,
   `test_rank_overrides.py`, `test_github_sync.py` new).
 
+**Lineup Optimizer: 3 real bugs fixed live in production the same day
+(2026-09-14), from real user reports against the deployed app:**
+
+1. **`slot_name_to_id()` KeyError on every real flex-slot submission** -
+   reported live: "Preview lineup change" crashed with `KeyError:
+   'RB/WR/TE'` the instant the qb_pool/skill_pool fix above started
+   correctly proposing real flex changes (previously dead code, since
+   skill_pool was always empty). Root cause: `espn_api.football.
+   constant.POSITION_MAP` merges BOTH directions (int->name and
+   name->int) into one dict, but its name-keyed side is incomplete and
+   inconsistent with the int-keyed side for exactly the slots this
+   needs - no "BE"/"IR"/"OP" entries at all, and slot 23 is keyed
+   "FLEX" there instead of "RB/WR/TE" (this project's own naming,
+   matching `league.settings.position_slot_counts`). Fixed by inverting
+   the (complete, consistently-named) int-keyed side instead of
+   trusting the name-keyed side directly. Locked in with
+   `test_slot_name_to_id_matches_live_verified_espn_values()` against
+   the real numeric ids confirmed live earlier this session.
+2. **"FantasyPros rank" was silently two different kinds of rank
+   glued into one column** - user feedback: "fantasypros rank - 1
+   should be positional rank, 1 should be overall rank". QB's rank came
+   from a position-scoped call (a true positional rank, QB6/QB20/...)
+   while RB/WR/TE's came from the position=ALL call (a true
+   cross-position overall rank) - same column, two incompatible scales.
+   Split into `fp_positional_rank` and `fp_overall_rank` (overall is
+   `None` for QB - FantasyPros has no cross-position list that includes
+   QB at all), both shown as separate columns; `rank_used` still tracks
+   whichever one actually drove the optimizer's decision. Consolidated
+   the underlying fetches into `get_weekly_positional_detail()` (one
+   position-scoped call per QB/RB/WR/TE, rank + grade together) instead
+   of overlapping separate calls for QB rank and matchup grade.
+3. **"Suggested changes" never said who you're benching to make room,
+   and never listed a player who loses their spot with no replacement
+   slot of their own** - user feedback: "I want to see who you suggest
+   we swap out from that spot". `changes` previously only iterated
+   `proposed_slot_by_id` (who's proposed to start somewhere), so a
+   player who's simply dropped from the lineup (no compensating slot)
+   never appeared as a change at all, even though a real demotion
+   happened - fixed by also diffing `current_starter_ids -
+   proposed_starter_ids` into explicit "-> BE" moves. Every change now
+   carries `swap_with_player_id`/`swap_with_player_name` - whoever's
+   moving the other way through the SAME slot label, paired via a
+   per-slot zip (not two independent lookups) so a mutual swap's two
+   lines point at each other consistently rather than at some other
+   third player who happened to touch the same slot label. Scoped to
+   `qb_pool_ids | skill_pool_ids` only - a K/D-ST player was almost
+   wrongly flagged as "needs benching" too during this fix (they're
+   never in either pool, so they're always "missing" from the
+   proposal) - caught live before shipping via a fresh AppTest run,
+   not left in.
+
+All three verified against real live Week 1 data end-to-end (AppTest:
+"Check my lineup" -> real McConkey/Watson/Mason/Pierce swap correctly
+surfaces with partners shown -> "Preview lineup change (dry run)" ->
+real 4-item ROSTER payload renders with zero exceptions, matching the
+numeric slot ids confirmed live earlier this session).
+
+**Per-change approve/reject checkboxes (same session, immediately
+after):** user feedback - "I want to say yes or no to each suggested
+change, not just all of them or nothing". Each line in "Suggested
+changes" is now its own `st.checkbox` (default checked), and only the
+checked subset gets built into the submit payload. Since a swap's two
+halves are a real pair (see swap_with_player_* above), approving only
+one side can leave ESPN with two players in one slot or an empty one -
+rather than block that (the admin may have a reason, e.g. handling the
+other half a different way), a warning names any approved change whose
+swap partner wasn't also approved. Verified live via AppTest: unchecking
+one half of the McConkey/Watson swap correctly triggers the warning
+naming the other half, with zero exceptions.
+
+253/253 tests passing.
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip

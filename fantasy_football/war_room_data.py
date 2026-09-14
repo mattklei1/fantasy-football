@@ -860,11 +860,17 @@ def submit_waiver_claim(
 
 @st.cache_data(ttl=1800)
 def get_weekly_flex_rankings(season: int, week: int) -> dict[int, int]:
-    """{espn_player_id: cross-position weekly rank} for RB/WR/TE, from
-    FantasyPros' position=ALL weekly consensus - see module note above
-    for why this (not a single named analyst) is what's used. Empty
-    dict on any failure (no API key, request error) - callers should
-    treat missing ranks as "no signal", never crash the page over it."""
+    """{espn_player_id: cross-position OVERALL weekly rank} for RB/WR/TE,
+    from FantasyPros' position=ALL weekly consensus - see module note
+    above for why this (not a single named analyst) is what's used. This
+    is a rank among ALL skill players league-wide (e.g. the #1 RB might
+    be overall rank 3, behind 2 WRs) - NOT the same number as get_weekly_
+    positional_ranks()' own-position rank (RB1, RB2, ...) below; both are
+    surfaced separately in the Lineup Optimizer table since they answer
+    different questions and shouldn't be shown as one ambiguous "rank"
+    column (user feedback 2026-09-14). Empty dict on any failure (no API
+    key, request error) - callers should treat missing ranks as "no
+    signal", never crash the page over it."""
     api_key = config.fantasypros_api_key()
     if not api_key:
         return {}
@@ -882,67 +888,62 @@ def get_weekly_flex_rankings(season: int, week: int) -> dict[int, int]:
     }
 
 
-@st.cache_data(ttl=1800)
-def get_weekly_qb_rankings(season: int, week: int) -> dict[int, int]:
-    """{espn_player_id: QB positional weekly rank}. QB has no cross-
-    position weekly list (see module note above), so this uses QB's own
-    position-scoped rank directly - fine since QB/OP decisions are made
-    among this team's QBs only (see build_ideal_lineup)."""
-    api_key = config.fantasypros_api_key()
-    if not api_key:
-        return {}
-    from . import fantasypros_client
-
-    try:
-        players = fantasypros_client.fetch_weekly_rankings(api_key, "QB", season, week)
-    except Exception:  # noqa: BLE001
-        return {}
-    espn_id_map = get_fp_espn_id_map()
-    return {
-        espn_id_map[p["player_id"]]: p["rank_ecr"]
-        for p in players
-        if p.get("player_id") in espn_id_map and p.get("rank_ecr") is not None
-    }
-
-
-# Positions FantasyPros publishes a "start_sit_grade" (A+..F) for on their
-# POSITION-SCOPED weekly consensus-rankings endpoint - their own composite
-# read on matchup quality (opponent strength + everything else feeding
-# their weekly call), used as the Lineup Optimizer table's closest
-# available "strength of opponent" signal (their API has no separate bare
-# numeric defense-vs-position rank). NOT present on the position=ALL call
-# get_weekly_flex_rankings() uses for the cross-position RANK (confirmed
-# live 2026-09-14: position=ALL players have no start_sit_grade field at
-# all) - so grades need their own position-scoped fetch, separate from
-# the ranks.
-_GRADE_POSITIONS = ("QB", "RB", "WR", "TE")
+# Positions FantasyPros publishes both an own-position weekly rank (e.g.
+# "QB6") AND a start_sit_grade (A+..F - their composite matchup-quality
+# read, opponent strength + everything else feeding their weekly call,
+# the closest signal they publish to a bare opponent-strength number) for
+# on their POSITION-SCOPED weekly consensus-rankings endpoint. NOT the
+# same rank as get_weekly_flex_rankings()'s cross-position OVERALL number
+# above, and the grade isn't present at all on that position=ALL call
+# (confirmed live 2026-09-14) - so this is its own position-scoped fetch.
+_POSITIONAL_DETAIL_POSITIONS = ("QB", "RB", "WR", "TE")
 
 
 @st.cache_data(ttl=1800)
-def get_weekly_matchup_grades(season: int, week: int) -> dict[int, str]:
-    """{espn_player_id: FantasyPros start_sit_grade} across QB/RB/WR/TE -
-    the Lineup Optimizer table's "matchup" column. One position-scoped
-    weekly call per position (see _GRADE_POSITIONS note above) - empty
-    dict on no API key; a single position's request failing just skips
-    that position rather than blanking the whole dict."""
+def get_weekly_positional_detail(season: int, week: int) -> dict[int, dict]:
+    """{espn_player_id: {"rank": int, "grade": str|None}} - FantasyPros'
+    OWN-POSITION weekly rank (QB6, RB14, ... - never a cross-position
+    number, see get_weekly_flex_rankings() for that) plus start_sit_grade,
+    across QB/RB/WR/TE (see _POSITIONAL_DETAIL_POSITIONS note above). One
+    call per position - a single position's request failing just skips
+    that position rather than blanking the whole dict. Empty dict with no
+    FANTASYPROS_API_KEY configured."""
     api_key = config.fantasypros_api_key()
     if not api_key:
         return {}
     from . import fantasypros_client
 
     espn_id_map = get_fp_espn_id_map()
-    grades: dict[int, str] = {}
-    for position in _GRADE_POSITIONS:
+    detail: dict[int, dict] = {}
+    for position in _POSITIONAL_DETAIL_POSITIONS:
         try:
             players = fantasypros_client.fetch_weekly_rankings(api_key, position, season, week)
         except Exception:  # noqa: BLE001 - one position failing shouldn't blank the rest
             continue
         for p in players:
             espn_id = espn_id_map.get(p.get("player_id"))
-            grade = p.get("start_sit_grade")
-            if espn_id is not None and grade:
-                grades[espn_id] = grade
-    return grades
+            if espn_id is None or p.get("rank_ecr") is None:
+                continue
+            detail[espn_id] = {"rank": p["rank_ecr"], "grade": p.get("start_sit_grade")}
+    return detail
+
+
+def get_weekly_positional_ranks(season: int, week: int) -> dict[int, int]:
+    """{espn_player_id: FantasyPros' own-position weekly rank} (QB6,
+    RB14, ...) across QB/RB/WR/TE - drives the QB+OP solve directly (see
+    build_ideal_lineup; QB has no cross-position list to use instead) and
+    is the Lineup Optimizer table's "Positional rank" column for every
+    position. Thin wrapper over get_weekly_positional_detail()."""
+    return {espn_id: d["rank"] for espn_id, d in get_weekly_positional_detail(season, week).items()}
+
+
+def get_weekly_matchup_grades(season: int, week: int) -> dict[int, str]:
+    """{espn_player_id: FantasyPros start_sit_grade} - the Lineup
+    Optimizer table's "Matchup" column. Thin wrapper over
+    get_weekly_positional_detail()."""
+    return {
+        espn_id: d["grade"] for espn_id, d in get_weekly_positional_detail(season, week).items() if d.get("grade")
+    }
 
 
 def get_rank_overrides(season: int, week: int) -> dict[str, int] | None:
@@ -1061,20 +1062,37 @@ def build_ideal_lineup(season: int, team_pk: int) -> dict:
     starting slot, regardless of rank - they simply can't play.
 
     Returns {"changes": [{"player_id", "player_name", "position",
-    "from_slot", "to_slot"}], "zero_projected_starters": [{"player_id",
+    "from_slot", "to_slot", "swap_with_player_id",
+    "swap_with_player_name"}], "zero_projected_starters": [{"player_id",
     "player_name", "projected"}], "lineup_detail": [{"player_id",
-    "player_name", "position", "current_slot", "proposed_slot", "fp_rank",
-    "override_rank", "rank_used", "espn_projected", "opponent",
-    "matchup_grade", "injury_status", "on_bye"}], "week": int}.
-    "changes" only lists players whose CURRENT real ESPN slot differs
-    from the proposed one - an empty list means the current lineup is
-    already optimal. zero_projected_starters is computed against the
-    CURRENT real lineup (not the proposed one) - a real, live fact
-    independent of whether the user acts on the lineup suggestion at all.
+    "player_name", "position", "current_slot", "proposed_slot",
+    "fp_positional_rank", "fp_overall_rank", "override_rank",
+    "rank_used", "espn_projected", "opponent", "matchup_grade",
+    "injury_status", "on_bye"}], "week": int}.
+
+    "changes" covers every real slot-level move, INCLUDING a player who
+    loses their starting spot with no replacement slot of their own (a
+    "-> BE" entry that's just as real a change as anyone gaining a slot,
+    previously missing entirely). Each entry's swap_with_player_* names
+    whoever's moving the other way through the same slot label - who you
+    bench to make room, or who's replacing you - so "changes" reads as
+    real swaps, not disconnected one-line facts (user feedback
+    2026-09-14). An empty list means the current lineup is already
+    optimal. zero_projected_starters is computed against the CURRENT
+    real lineup (not the proposed one) - a real, live fact independent of
+    whether the user acts on the lineup suggestion at all.
+
     lineup_detail covers EVERY rostered player (starters, bench, IR) -
     the full "what drove this" breakdown the War Room table shows,
     including players the optimizer never considers (K/D-ST, which have
-    no cross-position weekly solve here - see module note above)."""
+    no cross-position weekly solve here - see module note above).
+    fp_positional_rank is FantasyPros' own-position rank (QB6, RB14, ...)
+    - fp_overall_rank is their cross-position rank among ALL skill
+    players (RB/WR/TE only - no such number exists for QB) - these are
+    deliberately two separate fields, not one ambiguous "rank" (user
+    feedback 2026-09-14: "1 should be positional rank, 1 should be
+    overall rank"). rank_used is whichever of override/positional/
+    overall actually drove the optimizer's decision for that player."""
     from .espn_client import ESPNClient
     from .metrics.lineup_order import TimedPlayer, order_flex_pool_by_kickoff
 
@@ -1104,8 +1122,18 @@ def build_ideal_lineup(season: int, team_pk: int) -> dict:
         and not getattr(bp, "on_bye_week", False)
     ]
 
-    flex_ranks = get_weekly_flex_rankings(season, week)
-    qb_ranks = get_weekly_qb_rankings(season, week)
+    # overall_ranks: cross-position rank among ALL skill players (RB/WR/TE
+    # only - FantasyPros has no cross-position list that includes QB, see
+    # module note above) - what actually drives the skill-pool solve.
+    # positional_ranks: each player's OWN-position rank (QB6, RB14, ...)
+    # across QB/RB/WR/TE - drives the QB+OP solve directly (QB has no
+    # overall number to use instead) and is shown as its own column
+    # alongside overall_ranks for skill positions, since the two answer
+    # different questions and were previously conflated into one
+    # ambiguous "fp_rank" (user feedback 2026-09-14: "FantasyPros rank -
+    # 1 should be positional rank, 1 should be overall rank").
+    overall_ranks = get_weekly_flex_rankings(season, week)
+    positional_ranks = get_weekly_positional_ranks(season, week)
     matchup_grades = get_weekly_matchup_grades(season, week)
     overrides = get_rank_overrides(season, week)
     slot_counts = get_position_slot_counts(season)
@@ -1135,16 +1163,21 @@ def build_ideal_lineup(season: int, team_pk: int) -> dict:
     qb_pool_ids = {bp.playerId for bp in qb_pool}
     skill_pool_ids = {bp.playerId for bp in skill_pool}
 
-    def _fp_rank_for(bp) -> int | None:
-        if bp.playerId in qb_pool_ids:
-            return qb_ranks.get(bp.playerId)
-        if bp.playerId in skill_pool_ids:
-            return flex_ranks.get(bp.playerId)
-        return None
+    def _fp_positional_rank_for(bp) -> int | None:
+        return positional_ranks.get(bp.playerId)
+
+    def _fp_overall_rank_for(bp) -> int | None:
+        # Only meaningful for skill positions - FantasyPros has no true
+        # cross-position rank that includes QB (see module note above).
+        return overall_ranks.get(bp.playerId) if bp.playerId in skill_pool_ids else None
 
     def _rank_used_for(bp) -> int | None:
         override_rank = _override_rank_for(bp.name, overrides)
-        return override_rank if override_rank is not None else _fp_rank_for(bp)
+        if override_rank is not None:
+            return override_rank
+        if bp.playerId in qb_pool_ids:
+            return _fp_positional_rank_for(bp)
+        return _fp_overall_rank_for(bp)
 
     proposed_slot_by_id: dict[int, str] = {}
 
@@ -1179,20 +1212,65 @@ def build_ideal_lineup(season: int, team_pk: int) -> dict:
         ]
         proposed_slot_by_id.update(order_flex_pool_by_kickoff(chosen_players, skill_slot_counts))
 
-    changes = []
-    for player_id, to_slot in proposed_slot_by_id.items():
-        from_slot = current_slot_by_id.get(player_id)
-        if from_slot is not None and from_slot != to_slot:
-            changes.append(
-                {
-                    "player_id": player_id, "player_name": name_by_id.get(player_id),
-                    "position": position_by_id.get(player_id), "from_slot": from_slot, "to_slot": to_slot,
-                }
-            )
+    # Every real slot-level move: current -> proposed for anyone proposed
+    # to start somewhere different, PLUS an explicit "-> BE" move for
+    # anyone CURRENTLY starting who isn't proposed to start ANYWHERE
+    # (previously invisible - proposed_slot_by_id only ever contains
+    # players the solver chose to start, so a player who loses their
+    # spot without a replacement slot of their own never showed up as a
+    # change at all, even though a real demotion happened). Scoped to
+    # qb_pool_ids | skill_pool_ids ONLY - a currently-starting K/D-ST (or
+    # anyone else outside both pools) was never evaluated by the solver
+    # at all, so their absence from proposed_slot_by_id isn't a real
+    # demotion, just "not this feature's scope" (see module note above).
+    current_starter_ids = {
+        bp.playerId for bp in lineup
+        if bp.slot_position not in ("BE", "IR") and bp.playerId in (qb_pool_ids | skill_pool_ids)
+    }
+    proposed_starter_ids = set(proposed_slot_by_id.keys())
+    moves: list[tuple[int, str, str]] = [
+        (player_id, current_slot_by_id[player_id], to_slot)
+        for player_id, to_slot in proposed_slot_by_id.items()
+        if current_slot_by_id.get(player_id) not in (None, to_slot)
+    ]
+    moves += [
+        (player_id, current_slot_by_id[player_id], "BE")
+        for player_id in current_starter_ids - proposed_starter_ids
+    ]
+
+    # Pair each move with whoever's swapping the other way through the
+    # SAME slot label, so "changes" reads as real swaps ("who do we bench
+    # to make room") instead of disconnected one-line facts (user
+    # feedback 2026-09-14). A slot's total seat count never changes, so
+    # the players leaving a label and the players entering it always
+    # match up 1:1 - pairing both queues per label (rather than two
+    # independent lookups) keeps a mutual swap's two lines pointing at
+    # each other consistently.
+    leaving_by_slot: dict[str, list[int]] = {}
+    entering_by_slot: dict[str, list[int]] = {}
+    for player_id, from_slot, to_slot in moves:
+        leaving_by_slot.setdefault(from_slot, []).append(player_id)
+        entering_by_slot.setdefault(to_slot, []).append(player_id)
+    swap_partner_by_id: dict[int, int] = {}
+    for slot_label in set(leaving_by_slot) | set(entering_by_slot):
+        for leaver, enterer in zip(leaving_by_slot.get(slot_label, []), entering_by_slot.get(slot_label, [])):
+            swap_partner_by_id[leaver] = enterer
+            swap_partner_by_id[enterer] = leaver
+
+    changes = [
+        {
+            "player_id": player_id, "player_name": name_by_id.get(player_id),
+            "position": position_by_id.get(player_id), "from_slot": from_slot, "to_slot": to_slot,
+            "swap_with_player_id": swap_partner_by_id.get(player_id),
+            "swap_with_player_name": name_by_id.get(swap_partner_by_id.get(player_id)),
+        }
+        for player_id, from_slot, to_slot in moves
+    ]
 
     lineup_detail = []
     for bp in lineup:
-        fp_rank = _fp_rank_for(bp)
+        fp_positional_rank = _fp_positional_rank_for(bp)
+        fp_overall_rank = _fp_overall_rank_for(bp)
         override_rank = _override_rank_for(bp.name, overrides)
         injury_status = getattr(bp, "injuryStatus", None)
         if not isinstance(injury_status, str):
@@ -1204,9 +1282,10 @@ def build_ideal_lineup(season: int, team_pk: int) -> dict:
                 "position": bp.position,
                 "current_slot": bp.slot_position,
                 "proposed_slot": proposed_slot_by_id.get(bp.playerId),
-                "fp_rank": fp_rank,
+                "fp_positional_rank": fp_positional_rank,
+                "fp_overall_rank": fp_overall_rank,
                 "override_rank": override_rank,
-                "rank_used": override_rank if override_rank is not None else fp_rank,
+                "rank_used": _rank_used_for(bp),
                 "espn_projected": bp.projected_points,
                 "opponent": getattr(bp, "pro_opponent", None),
                 "matchup_grade": matchup_grades.get(bp.playerId),
@@ -1224,10 +1303,23 @@ def slot_name_to_id(slot_name: str) -> int:
     slot name strings throughout (matching league.settings.
     position_slot_counts' own key naming and espn_api's Player.
     eligibleSlots), so this is the one place that needs the numeric ids
-    the real write endpoint requires."""
+    the real write endpoint requires.
+
+    espn_api's own POSITION_MAP is a single dict merging BOTH directions
+    (int id -> name AND name -> int id), but its name-keyed side is
+    incomplete and inconsistent with the numeric side for exactly the
+    slots this feature actually needs: it has no entry at all for "BE"/
+    "IR"/"OP" (only their reverse int->name entries exist), and slot 23
+    is keyed "FLEX" there instead of "RB/WR/TE" (confirmed live
+    2026-09-14 - a real bug this surfaced: `POSITION_MAP["RB/WR/TE"]`
+    KeyErrors, breaking every real flex-slot lineup submission). The
+    int-keyed side of the SAME dict is complete and DOES use "RB/WR/TE"
+    consistently with this project's own naming - so this inverts that
+    side rather than trusting the name-keyed side directly."""
     from espn_api.football.constant import POSITION_MAP
 
-    return POSITION_MAP[slot_name]
+    name_to_id = {name: slot_id for slot_id, name in POSITION_MAP.items() if isinstance(slot_id, int)}
+    return name_to_id[slot_name]
 
 
 LINEUP_WRITE_URL = WAIVER_WRITE_URL  # same transactions endpoint, different "type"/item shape

@@ -18,6 +18,7 @@ from fantasy_football.war_room_data import (
     evaluate_trade,
     find_win_win_trades,
     optimal_roster_value,
+    slot_name_to_id,
 )
 
 
@@ -336,6 +337,33 @@ def test_find_win_win_trades_my_team_not_in_rosters_returns_empty():
         [_roster_row("Team B", 1, "QB B", "QB", 50.0, ["QB", "BE"])]
     )
     assert find_win_win_trades(rosters, "Nobody Here", SLOT_COUNTS) == []
+
+
+# --- slot_name_to_id --------------------------------------------------
+# Regression coverage for a real bug found live 2026-09-14: espn_api's own
+# POSITION_MAP merges both directions (int->name AND name->int) into one
+# dict, but its name-keyed side is incomplete/inconsistent for exactly
+# the slots this feature needs - no "BE"/"IR"/"OP" entries at all, and
+# slot 23 is keyed "FLEX" there instead of "RB/WR/TE" (this project's own
+# naming, matching league.settings.position_slot_counts). Trusting that
+# side directly KeyErrors on any real flex-slot lineup submission -
+# slot_name_to_id() must invert the (complete, consistently-named)
+# int-keyed side instead.
+
+def test_slot_name_to_id_matches_live_verified_espn_values():
+    # Locked in against the real numeric ids confirmed live against this
+    # league's own ESPN account (see PROJECT_BRIEF) - a regression here
+    # would silently target the wrong slot on a real lineup submission.
+    assert slot_name_to_id("QB") == 0
+    assert slot_name_to_id("RB") == 2
+    assert slot_name_to_id("WR") == 4
+    assert slot_name_to_id("TE") == 6
+    assert slot_name_to_id("OP") == 7
+    assert slot_name_to_id("D/ST") == 16
+    assert slot_name_to_id("K") == 17
+    assert slot_name_to_id("BE") == 20
+    assert slot_name_to_id("IR") == 21
+    assert slot_name_to_id("RB/WR/TE") == 23
 
 
 def test_find_win_win_trades_2for1_throw_in_surfaces_a_real_mutual_upgrade():
