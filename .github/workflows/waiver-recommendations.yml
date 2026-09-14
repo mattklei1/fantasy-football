@@ -1,0 +1,30 @@
+name: GroupMe Waiver Recommendations
+
+# Fires across a DST-safety window targeting 5pm ET (= 2pm Pacific,
+# fixed year-round since ET and PT both observe DST on the same days -
+# see post_waiver_recommendations.py), restricted to Tuesday. 2pm PDT =
+# 21:00 UTC, 2pm PST = 22:00 UTC, so this window covers both.
+on:
+  schedule:
+    - cron: "7,22,37,52 21,22 * * 2"
+  workflow_dispatch: {}
+
+jobs:
+  post-recommendations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Post waiver recommendations
+        env:
+          LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          SWID: ${{ secrets.SWID }}
+          CURRENT_SEASON: ${{ secrets.CURRENT_SEASON }}
+          GROUPME_PERSONAL_BOT_ID: ${{ secrets.GROUPME_PERSONAL_BOT_ID }}
+          FANTASYPROS_API_KEY: ${{ secrets.FANTASYPROS_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python scripts/post_waiver_recommendations.py

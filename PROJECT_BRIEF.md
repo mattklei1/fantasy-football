@@ -2178,6 +2178,74 @@ Tuesday-5pm waiver-recommendations script (still pending, see below) is
 built - reuse `suggested_bid()`/rank-based valuation there too, not
 `ros_points`.
 
+**Tuesday 5pm ET waiver recommendations (2026-09-14):** completes the
+backlog item from the "refresh daily, don't run waiver recommendations
+until 5pm ET Tuesday, notify me once ready, cross-validate against
+ESPN/Yahoo" request. A new private GroupMe bot was created (bound to a
+group containing only the commissioner - a shared-bot post would leak
+strategy to the whole league) and confirmed working via a live test
+send; its bot_id is stored locally as `GROUPME_PERSONAL_BOT_ID` (new
+`config.groupme_personal_bot_id()` accessor) - NOT yet added as a
+GitHub Actions secret, that's a manual step the user still needs to do
+before this workflow will actually fire.
+
+- `scripts/post_waiver_recommendations.py` / `.github/workflows/
+  waiver-recommendations.yml`: fires across a DST-safety window
+  targeting 5pm ET Tuesday. ET-to-Pacific is a FIXED 3-hour offset
+  year-round (both observe DST on the same days), so the target is
+  simply 2pm Pacific - no separate DST handling needed for that half;
+  the workflow's cron window (21:00-22:00 UTC, day-of-week 2) covers
+  both PDT/PST UTC times, same convention as the other three scheduled
+  workflows. The script ALSO independently checks
+  `datetime.now(PACIFIC).weekday() == 1` (Tuesday) as defense in depth
+  against a manual `workflow_dispatch` firing on the wrong day, since
+  `schedule_guard.is_target_time_now()` only checks hour/minute, not
+  weekday.
+- Reuses `war_room_data.get_my_waiver_suggestions()` COMPLETELY
+  UNCHANGED (same rank-based suggestion logic - see the "confirmed
+  already rank-based" note above, still holds) rather than
+  reimplementing it, by building a throwaway temp-directory SQLite DB
+  (same `tempfile.TemporaryDirectory()` pattern as
+  `post_weekly_recap.py`) and monkeypatching `db.DB_PATH` to point at
+  it for the process's lifetime - `db.get_connection()` reads that
+  module-level name at CALL time, so every `war_room_data`/
+  `dashboard_data` call transparently redirects to the throwaway DB
+  with zero changes to either module. Verified end-to-end against real
+  live data in this sandbox (real 10-pick message, real bids/drops,
+  1157 chars - correctly needs `send_long_message`, not `send_message`).
+- "My team" is resolved by matching the live league's `team.owners[].id`
+  against this account's own SWID (`client.credentials.swid`) - no new
+  config value needed, and robust to a team being renamed (confirmed
+  live: this exact matching approach is what surfaced the "McConkey
+  Kong" rename correctly in testing above), unlike matching on team
+  name or hardcoding a DB row id (which a fresh throwaway DB isn't
+  guaranteed to reproduce).
+- New `waiver_targets_crossref.py`: `fetch_espn_yahoo_targets()` is a
+  Claude call with the `web_search_20250305` tool (same pattern as
+  `commentary.generate_claude_commentary()`'s BAD BEAT section) asking
+  ONLY for real player names ESPN's/Yahoo's own published weekly
+  waiver-target articles named - never asked to judge availability or
+  value, since Claude has no visibility into this league's real roster
+  state. `find_overlooked_targets()` is pure, deterministic Python (unit
+  tested, 5 tests) that matches those names against our OWN real live
+  free-agent board (case/punctuation-insensitive) and keeps a name only
+  if it's a genuine match there AND not already one of our own top-10 -
+  this is what actually decides "is this player really available and
+  really missing from our list," never Claude's say-so. Untestable
+  locally in this sandbox (no `ANTHROPIC_API_KEY` configured here,
+  same situation as the weekly recap's BAD BEAT section) - will run for
+  real once deployed with the real GitHub Actions secret. Degrades
+  gracefully (skips the cross-check, keeps the core recommendations)
+  on any failure - a network hiccup or a missing key should never block
+  the real, already-computed suggestions from going out.
+- New `waiver_recommendations_report.py`: pure message builder (6
+  tests) - "TOP PICKS" (numbered, with reasoning + suggested drop) then
+  an optional "ALSO WORTH A LOOK" section for overlooked ESPN/Yahoo
+  targets, then a closing pointer to War Room to actually submit.
+- Still needs from the user: add `GROUPME_PERSONAL_BOT_ID` (and
+  `ANTHROPIC_API_KEY` if not already present) as GitHub Actions repo
+  secrets before this workflow can fire for real.
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip
