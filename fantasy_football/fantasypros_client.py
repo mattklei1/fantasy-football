@@ -42,6 +42,30 @@ def fetch_all_ros_rankings(api_key: str, season: int) -> dict[str, list[dict]]:
     return {position: fetch_ros_rankings(api_key, position, season) for position in POSITIONS}
 
 
+def fetch_overall_ros_rankings(api_key: str, season: int) -> list[dict]:
+    """The TRUE cross-position rest-of-season ranking (position="ALL"),
+    NOT the same as calling fetch_ros_rankings() once per position and
+    concatenating - confirmed live (2026-09-14) that each POSITION-
+    scoped call's own `rank_ecr` is identical to that player's `pos_rank`
+    number (e.g. the K1 kicker's rank_ecr is 1, not his real ~186th
+    overall standing) - it's just that position's rank restated, not a
+    real cross-position number. This "ALL" call is what actually answers
+    "how good is this player relative to the ENTIRE player pool" - e.g.
+    the #1 kicker (K1) came back rank_ecr=186 here, correctly behind
+    ~185 skill-position players, not tied with the #1 QB/RB. `player_id`
+    is confirmed consistent with the per-position calls (same FantasyPros
+    player database), so this can be joined against fetch_ros_rankings()
+    results by player_id."""
+    resp = requests.get(
+        f"{BASE_URL}/{season}/consensus-rankings",
+        params={"type": "ROS", "position": "ALL"},
+        headers={"x-api-key": api_key},
+        timeout=TIMEOUT_SECONDS,
+    )
+    resp.raise_for_status()
+    return resp.json().get("players", [])
+
+
 def fetch_player_espn_id_map(api_key: str) -> dict[int, int]:
     """FantasyPros' OWN FantasyPros-player-id -> ESPN-player-id cross-
     reference (they support importing/syncing ESPN leagues directly, so

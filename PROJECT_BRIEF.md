@@ -2246,6 +2246,68 @@ before this workflow will actually fire.
   `ANTHROPIC_API_KEY` if not already present) as GitHub Actions repo
   secrets before this workflow can fire for real.
 
+**War Room fixes and additions (2026-09-14):**
+
+- **True overall rank, not positional rank restated.** User flagged that
+  FantasyPros' own per-position `rank_ecr` field (already used as
+  "Overall Rank" in Rankings Browser) is actually IDENTICAL to that
+  player's positional rank number when fetched via a position-scoped
+  call - confirmed live: calling `consensus-rankings?position=K`
+  returns the #1 kicker with `rank_ecr=1`, not his real ~186th-overall
+  standing. Found FantasyPros supports `position=ALL` (undocumented in
+  their error message's own valid-format list, but works - confirmed
+  live, 320 players, real cross-position order: RB1 Jahmyr Gibbs at
+  rank_ecr=1, the #1 kicker at rank_ecr=186, the #1 DST at rank_ecr=147).
+  `player_id` confirmed consistent between the position-scoped and ALL
+  calls, so they join directly. New `fantasypros_client.
+  fetch_overall_ros_rankings()` + `war_room_data.
+  get_fp_overall_rank_by_fp_id()` (cached). Wired into Rankings Browser
+  (fixed the mislabeled column), Waiver Board (added alongside FP Pos
+  Rank), and My Waiver Bids' "All available players" board (now sorted
+  by true overall rank instead of raw ROS points - the user's original
+  ask, since raw points also aren't comparable across positions).
+- **Trade Calculator now defaults Team A to the user's own team.**
+  `war_room_data.get_my_team_pk()` resolves "my team" by matching the
+  configured SWID against the live league's real team owners - same
+  robust-to-rename approach `scripts/post_waiver_recommendations.py`
+  already uses, reused here instead of a second implementation.
+- **"Find trades that work for both sides" button.** New
+  `war_room_data.find_win_win_trades()`: searches every other team for
+  1-for-1 and 2-for-1 (each side's own 2 lowest-value players as a
+  standard throw-in pair) trades where BOTH sides' optimal starting
+  lineup value actually improves via the existing marginal-value
+  `evaluate_trade()` - not just a trade the user's team wins. Sorted by
+  min(my_gain, their_gain) descending so genuinely mutual wins surface
+  first. Bounded search space (not full roster subsets) keeps this fast
+  - confirmed live against the real league: 0 results at the default
+  5.0-point threshold, 5 real small win-win trades at a 1.0 threshold
+  (e.g. Alec Pierce for Bucky Irving vs Doody Guac Boys), all sensible.
+  11 new unit tests (hand-verified toy-league trade economics, plus the
+  2-for-1 throw-in path).
+- **Live win probability / percentile range were using the wrong
+  variance once a lineup partially finishes - real bug, not just a
+  display issue.** User flagged (with real numbers: 117.8 scored,
+  QB+TE left, projected 146.66) that a 10% chance of finishing at ~121
+  (barely any QB+TE production) seemed impossible. Root cause: `live_
+  win_probability`/`live_cutline_analysis`/`live_score_percentile_
+  range` were all modeling each team's live final score as Normal
+  (projected, FULL-GAME season stdev) regardless of how much of the
+  lineup had already played - the season stdev represents variance
+  across an ENTIRE undecided lineup, so applying it unshrunk once most
+  of a team's score is already locked in badly overstates remaining
+  uncertainty (this also quietly affected the already-shipped live win
+  probability/FAVORED-UNDERDOG feature, not just the new percentile
+  range - fixed consistently, not just patched for percentiles). Fix:
+  new `dashboard_data._live_remaining_stdev(full_stdev, projected,
+  score_so_far)` scales stdev by `sqrt((projected - score_so_far) /
+  projected)` - the fraction of the team's own projected total not yet
+  realized - floored at 15% of the full stdev so it never fully
+  collapses. All three live_* functions now take real score-so-far
+  arguments and use this scaled stdev. Verified against the exact real
+  case that prompted this: p10 moved from 121.0 to 135.3 and p90 from
+  172.3 to 158.0 - a QB+TE combining for a genuinely bad ~18-point game
+  at the 10th percentile instead of an implausible ~3-point bust.
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip

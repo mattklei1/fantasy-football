@@ -70,7 +70,7 @@ with tab_rankings:
         display = filtered.rename(
             columns={
                 "player_name": "Player", "position": "Pos", "pro_team": "Team",
-                "rank_ecr": "Overall Rank", "pos_rank": "Pos Rank", "ros_points": "ROS Pts",
+                "overall_rank": "Overall Rank", "pos_rank": "Pos Rank", "ros_points": "ROS Pts",
                 "rostered_by": "Rostered By",
             }
         )
@@ -102,16 +102,17 @@ with tab_waiver:
             columns={
                 "player_name": "Player", "position": "Pos", "pro_team": "Team",
                 "injury_status": "Status", "percent_owned": "Owned %", "percent_started": "Started %",
-                "fp_pos_rank": "FP Pos Rank", "suggested_bid": "Suggested Bid",
+                "overall_rank": "Overall Rank", "fp_pos_rank": "FP Pos Rank", "suggested_bid": "Suggested Bid",
             }
         )
         st.dataframe(
-            display[["Player", "Pos", "Team", "Status", "Owned %", "Started %", "FP Pos Rank", "Suggested Bid"]],
+            display[["Player", "Pos", "Team", "Status", "Owned %", "Started %", "Overall Rank", "FP Pos Rank", "Suggested Bid"]],
             hide_index=True,
             use_container_width=True,
             column_config={
                 "Owned %": st.column_config.NumberColumn(format="%.1f%%"),
                 "Started %": st.column_config.NumberColumn(format="%.1f%%"),
+                "Overall Rank": st.column_config.NumberColumn(format="%d"),
                 "Suggested Bid": st.column_config.NumberColumn(format="$%.0f"),
             },
         )
@@ -218,10 +219,12 @@ with tab_mine:
                         st.error(f"{label}: {result['message']}")
 
     st.divider()
-    st.markdown("#### All available players (by projected points)")
+    st.markdown("#### All available players (by overall rest-of-season rank)")
     st.caption(
-        "Every free agent on the board, ranked by FantasyPros' rest-of-season projected points (not "
-        "suggested bid) - browse the full pool yourself and tell me if you want a claim outside the "
+        "Every free agent on the board, ranked by FantasyPros' TRUE cross-position rest-of-season "
+        "rank (not positional rank, and not suggested bid) - so a top kicker or defense doesn't "
+        "appear to rank ahead of a real skill-position player just for being #1 at a shallow "
+        "position. Browse the full pool yourself and tell me if you want a claim outside the "
         "suggestions above."
     )
     board_for_browsing = wr.get_waiver_board(season)
@@ -234,18 +237,18 @@ with tab_mine:
             board_for_browsing if position_filter == "All"
             else board_for_browsing[board_for_browsing["position"] == position_filter]
         )
-        by_points = filtered_board[filtered_board["ros_points"].notna()].sort_values("ros_points", ascending=False)
-        display_board = by_points.rename(
+        by_rank = filtered_board[filtered_board["overall_rank"].notna()].sort_values("overall_rank")
+        display_board = by_rank.rename(
             columns={
                 "player_name": "Player", "position": "Pos", "pro_team": "Team",
-                "ros_points": "ROS Projected Pts", "suggested_bid": "Suggested Bid",
+                "overall_rank": "Overall Rank", "suggested_bid": "Suggested Bid",
             }
         )
         st.dataframe(
-            display_board[["Player", "Pos", "Team", "ROS Projected Pts", "Suggested Bid"]],
+            display_board[["Player", "Pos", "Team", "Overall Rank", "Suggested Bid"]],
             hide_index=True, use_container_width=True,
             column_config={
-                "ROS Projected Pts": st.column_config.NumberColumn(format="%.1f"),
+                "Overall Rank": st.column_config.NumberColumn(format="%d"),
                 "Suggested Bid": st.column_config.NumberColumn(format="$%.0f"),
             },
         )
@@ -290,12 +293,43 @@ with tab_trade:
         slot_counts = wr.get_position_slot_counts(season)
         fa_ceiling = wr.get_free_agent_value_ceiling(season)
         teams = sorted(rosters_df["team_name"].dropna().unique().tolist())
+
+        my_team_pk = wr.get_my_team_pk(season)
+        my_team_name = None
+        if my_team_pk is not None:
+            match = rosters_df.loc[rosters_df["team_pk"] == my_team_pk, "team_name"]
+            if not match.empty:
+                my_team_name = match.iloc[0]
+        default_a_index = teams.index(my_team_name) if my_team_name in teams else 0
+        default_b_index = next((i for i in range(len(teams)) if i != default_a_index), 0)
+
         col_a, col_b = st.columns(2)
         with col_a:
-            team_a = st.selectbox("Team A", teams, index=0, key="wr_trade_team_a")
+            team_a = st.selectbox("Team A", teams, index=default_a_index, key="wr_trade_team_a")
         with col_b:
-            default_b_index = 1 if len(teams) > 1 else 0
             team_b = st.selectbox("Team B", teams, index=default_b_index, key="wr_trade_team_b")
+
+        if my_team_name:
+            with st.expander(f"🔍 Find trades that work for both sides ({my_team_name})", expanded=False):
+                st.caption(
+                    "Searches every other team for realistic trades (1-for-1, and 2-for-1 using each "
+                    "side's 2 lowest-value players as the throw-in) where BOTH teams' optimal starting "
+                    "lineup value actually goes up - not just a trade you'd win. Same marginal-value "
+                    "model as the calculator below."
+                )
+                if st.button("Search for win-win trades", key="wr_find_trades"):
+                    with st.spinner("Evaluating trades against every other team..."):
+                        proposals = wr.find_win_win_trades(rosters_df, my_team_name, slot_counts)
+                    if not proposals:
+                        st.info("No realistic win-win trades found right now.")
+                    else:
+                        for p in proposals:
+                            with st.container(border=True):
+                                st.markdown(f"**vs {p['opponent']}**")
+                                cols = st.columns(3)
+                                cols[0].markdown(f"You send: {', '.join(p['players_out'])}")
+                                cols[1].markdown(f"You get: {', '.join(p['players_in'])}")
+                                cols[2].markdown(f"Your gain: **{p['my_gain']:+.0f}** · Their gain: **{p['their_gain']:+.0f}**")
 
         if team_a == team_b:
             st.warning("Pick two different teams.")

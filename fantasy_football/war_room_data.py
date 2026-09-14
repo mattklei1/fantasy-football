@@ -49,6 +49,29 @@ def get_fp_rankings_by_position(season: int) -> dict:
 
 
 @st.cache_data(ttl=3600)
+def get_fp_overall_rank_by_fp_id(season: int) -> dict[int, int]:
+    """FantasyPros' TRUE cross-position rest-of-season rank (position=
+    "ALL"), keyed by FantasyPros' own player_id so it can be joined
+    against get_fp_rankings_by_position()'s per-position player dicts
+    (confirmed live that player_id is consistent between the two calls).
+    NOT the same number as those per-position dicts' own `rank_ecr` field
+    - that's just each position's rank restated (K1's rank_ecr is 1, not
+    ~186) - see fantasypros_client.fetch_overall_ros_rankings()'s
+    docstring for the live verification. Empty dict (not an error) when
+    no FANTASYPROS_API_KEY is configured."""
+    from . import fantasypros_client
+
+    api_key = config.fantasypros_api_key()
+    if not api_key:
+        return {}
+    try:
+        players = fantasypros_client.fetch_overall_ros_rankings(api_key, season)
+    except Exception:  # noqa: BLE001 - a War Room tool degrading is never worth crashing the page
+        return {}
+    return {p["player_id"]: p.get("rank_ecr") for p in players if p.get("player_id") is not None}
+
+
+@st.cache_data(ttl=3600)
 def get_fp_espn_id_map() -> dict[int, int]:
     from . import fantasypros_client
 
@@ -76,6 +99,36 @@ def get_position_slot_counts(season: int) -> dict:
 
 
 @st.cache_data(ttl=300)
+def get_my_team_pk(season: int) -> int | None:
+    """Resolves 'my team' (the logged-in admin's own ESPN team) by
+    matching this deployment's configured SWID against the live
+    league's real team owners - robust to a team being renamed in ESPN
+    (unlike matching on team name, which would silently break the day
+    someone renames - confirmed this actually happened this season, see
+    PROJECT_BRIEF). Same approach scripts/post_waiver_recommendations.py
+    uses for the identical problem. Returns the DB team_pk that
+    get_trade_rosters()/get_waiver_board() key off of, or None if no
+    match (degrade gracefully rather than crash - callers should fall
+    back to a manual picker)."""
+    from .espn_client import ESPNClient
+
+    try:
+        client = ESPNClient()
+        league = client.get_league(season)
+        swid = client.credentials.swid
+        my_team = next((t for t in league.teams if any(o.get("id") == swid for o in t.owners)), None)
+        if my_team is None:
+            return None
+        conn = dd.get_connection()
+        row = conn.execute(
+            "SELECT id FROM teams WHERE season_id = ? AND espn_team_id = ?", (season, my_team.team_id)
+        ).fetchone()
+        return row[0] if row else None
+    except Exception:  # noqa: BLE001 - a nice-to-have default, never worth crashing the page
+        return None
+
+
+@st.cache_data(ttl=300)
 def get_rankings_browser(season: int) -> pd.DataFrame:
     """Every FantasyPros-ranked player at every position - not just this
     league's rostered ones (that's what makes this "full", unlike Roster
@@ -99,6 +152,7 @@ def get_rankings_browser(season: int) -> pd.DataFrame:
     ).fetchall()
     team_by_espn_id = {r["player_id"]: r["team_name"] for r in roster_rows}
     espn_id_map = get_fp_espn_id_map()
+    overall_rank_by_fp_id = get_fp_overall_rank_by_fp_id(season)
 
     rows = []
     for fp_position, players in fp_by_position.items():
@@ -110,7 +164,7 @@ def get_rankings_browser(season: int) -> pd.DataFrame:
                     "position": espn_position,
                     "player_name": p.get("player_name"),
                     "pro_team": p.get("player_team_id"),
-                    "rank_ecr": p.get("rank_ecr"),
+                    "overall_rank": overall_rank_by_fp_id.get(p.get("player_id")),
                     "pos_rank": player_matching.parse_pos_rank(p.get("pos_rank")),
                     "ros_points": p.get("r2p_pts"),
                     "rostered_by": team_by_espn_id.get(espn_id, "Free Agent"),
@@ -119,7 +173,7 @@ def get_rankings_browser(season: int) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
-    return df.sort_values("rank_ecr", na_position="last").reset_index(drop=True)
+    return df.sort_values("overall_rank", na_position="last").reset_index(drop=True)
 
 
 @st.cache_data(ttl=300)
@@ -135,6 +189,7 @@ def get_waiver_board(season: int, pool_size_per_position: int = 25) -> pd.DataFr
     league = ESPNClient().get_league(season)
     fp_by_position = get_fp_rankings_by_position(season)
     espn_id_map = get_fp_espn_id_map()
+    overall_rank_by_fp_id = get_fp_overall_rank_by_fp_id(season)
 
     rows = []
     for position in ESPN_POSITIONS:
@@ -152,11 +207,13 @@ def get_waiver_board(season: int, pool_size_per_position: int = 25) -> pd.DataFr
         )
         fp_pos_rank_by_espn_id = {}
         fp_ros_points_by_espn_id = {}
+        fp_overall_rank_by_espn_id = {}
         for fp in fp_players:
             espn_id = id_map.get(fp["player_id"])
             if espn_id is not None:
                 fp_pos_rank_by_espn_id[espn_id] = player_matching.parse_pos_rank(fp.get("pos_rank"))
                 fp_ros_points_by_espn_id[espn_id] = fp.get("r2p_pts")
+                fp_overall_rank_by_espn_id[espn_id] = overall_rank_by_fp_id.get(fp["player_id"])
 
         for p in free_agents:
             pos_rank = fp_pos_rank_by_espn_id.get(p.playerId)
@@ -181,6 +238,7 @@ def get_waiver_board(season: int, pool_size_per_position: int = 25) -> pd.DataFr
                     "percent_owned": percent_owned,
                     "percent_started": percent_started,
                     "fp_pos_rank": pos_rank,
+                    "overall_rank": fp_overall_rank_by_espn_id.get(p.playerId),
                     "ros_points": fp_ros_points_by_espn_id.get(p.playerId),
                     "suggested_bid": suggested_bid(pos_rank, percent_owned, position, scarcity),
                 }
@@ -386,6 +444,70 @@ def evaluate_trade(
             "newly_starting": starting_b, "newly_benched": benched_b,
         },
     }
+
+
+DEFAULT_WIN_WIN_GAIN_THRESHOLD = 5.0  # same "counts as a real gain, not a wash" bar pages/9_War_Room.py uses for its own verdict
+
+
+def find_win_win_trades(
+    rosters_df: pd.DataFrame, my_team: str, position_slot_counts: dict,
+    gain_threshold: float = DEFAULT_WIN_WIN_GAIN_THRESHOLD, max_results: int = 10,
+) -> list[dict]:
+    """Searches every other team for realistic trades with `my_team`
+    where BOTH sides' optimal starting lineup value goes up by more than
+    gain_threshold via evaluate_trade() - a genuine win-win, not just a
+    trade my_team wins. Deliberately bounded to realistic trade shapes
+    rather than every possible subset of both rosters (a ~17-player
+    roster's full subset space would combinatorially explode across 11
+    opponents): 1-for-1 (every one of my_team's players against every
+    one of the opponent's), plus 2-for-1 in each direction using each
+    side's own 2 LOWEST-value players as the throw-in pair - real
+    2-for-1 offers almost always pair a real piece with the weakest
+    bench depth, not a random 2, and evaluate_trade's marginal-value
+    model already prices a bench piece that won't crack the lineup at
+    ~0 cost regardless of exactly which one it is, so this doesn't miss
+    real candidates, just skips re-checking near-identical throw-ins.
+
+    Returns up to max_results dicts, sorted by min(my_gain, their_gain)
+    descending - the MOST mutually beneficial trades first, not just
+    the ones that most favor my_team: {opponent, players_out,
+    players_in, my_gain, their_gain}."""
+    my_roster = rosters_df[rosters_df["team_name"] == my_team]
+    if my_roster.empty:
+        return []
+
+    my_worst_two = my_roster.nsmallest(2, "value_score")["player_id"].tolist() if len(my_roster) >= 2 else []
+
+    candidates = []
+    other_teams = [t for t in rosters_df["team_name"].dropna().unique() if t != my_team]
+    for opp in other_teams:
+        opp_roster = rosters_df[rosters_df["team_name"] == opp]
+        if opp_roster.empty:
+            continue
+        opp_worst_two = opp_roster.nsmallest(2, "value_score")["player_id"].tolist() if len(opp_roster) >= 2 else []
+
+        trial_trades = [([mine], [theirs]) for mine in my_roster["player_id"] for theirs in opp_roster["player_id"]]
+        if my_worst_two:
+            trial_trades += [(my_worst_two, [theirs]) for theirs in opp_roster["player_id"]]
+        if opp_worst_two:
+            trial_trades += [([mine], opp_worst_two) for mine in my_roster["player_id"]]
+
+        for out_ids, in_ids in trial_trades:
+            result = evaluate_trade(rosters_df, my_team, opp, out_ids, in_ids, position_slot_counts)
+            my_gain, their_gain = result[my_team]["gain"], result[opp]["gain"]
+            if my_gain > gain_threshold and their_gain > gain_threshold:
+                candidates.append(
+                    {
+                        "opponent": opp,
+                        "players_out": my_roster[my_roster["player_id"].isin(out_ids)]["player_name"].tolist(),
+                        "players_in": opp_roster[opp_roster["player_id"].isin(in_ids)]["player_name"].tolist(),
+                        "my_gain": my_gain,
+                        "their_gain": their_gain,
+                    }
+                )
+
+    candidates.sort(key=lambda c: min(c["my_gain"], c["their_gain"]), reverse=True)
+    return candidates[:max_results]
 
 
 @st.cache_data(ttl=300)

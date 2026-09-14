@@ -165,7 +165,8 @@ if meta.get("median_scoring") and not is_final_week and not is_future_week and n
         cutline_score = ranked[cutoff_idx - 1][3]
 
         projected_by_team = {pk: proj for pk, _, _, proj in ranked}
-        analysis = dd.live_cutline_analysis(season, projected_by_team)
+        score_by_team = {pk: v["score"] for pk, v in live_by_team.items()}
+        analysis = dd.live_cutline_analysis(season, projected_by_team, score_by_team)
 
         cutline_rows = [
             {
@@ -236,10 +237,12 @@ for _, m in matchups.iterrows():
         else:
             home_live, away_live = live_by_team[home_pk], live_by_team[away_pk]
             home_proj, away_proj = home_live["projected"], away_live["projected"]
-            prob = dd.live_win_probability(season, home_pk, away_pk, home_proj, away_proj)
+            prob = dd.live_win_probability(
+                season, home_pk, away_pk, home_proj, away_proj, home_live["score"], away_live["score"]
+            )
             home_tone, away_tone = ui.tone_for_probability(prob), ui.tone_for_probability(1 - prob)
-            home_p10, home_p90 = dd.live_score_percentile_range(season, home_pk, home_proj)
-            away_p10, away_p90 = dd.live_score_percentile_range(season, away_pk, away_proj)
+            home_p10, home_p90 = dd.live_score_percentile_range(season, home_pk, home_proj, home_live["score"])
+            away_p10, away_p90 = dd.live_score_percentile_range(season, away_pk, away_proj, away_live["score"])
 
             col_home.markdown(
                 ui.score_row_html(f"{home_live['score']:.1f}", f"{home_proj:.1f}", home_tone), unsafe_allow_html=True

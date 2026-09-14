@@ -438,9 +438,41 @@ def get_projection_snapshots(season: int, week: int) -> dict[int, float]:
 #: constant so it can't accidentally affect Playoff Odds' calibration.
 LIVE_PROB_FALLBACK_STDEV = 20.0
 
+#: Never let a live in-progress stdev collapse all the way to 0, even for
+#: a team whose entire lineup has finished - real weeks still see stat
+#: corrections/unexpected late adjustments, and a zero-width distribution
+#: would make win probability snap to a hard 0%/100% and the percentile
+#: range collapse to a single point, both overconfident.
+MIN_REMAINING_STDEV_FRACTION = 0.15
+
+
+def _live_remaining_stdev(full_stdev: float, projected: float, score_so_far: float) -> float:
+    """Scales a team's FULL-GAME season stdev down to the uncertainty
+    actually still remaining once part of the lineup has already played.
+    Using the season's full-game stdev for a team's ENTIRE live
+    distribution regardless of how much of the week is already decided
+    badly overstates remaining variance once most of a lineup has
+    finished - e.g. a team sitting on 117 real points with just a K left
+    to play does NOT have a real 10% chance of finishing 25+ points
+    below its projection, the way the unscaled full-game stdev would
+    imply (confirmed against a real live case, 2026-09-14: 117.8 scored,
+    146.66 projected with a QB+TE left, fallback stdev 20 implied p10 of
+    ~121 - barely 3 points of QB+TE combined production at the 10th
+    percentile, an unrealistically harsh bust). Variance scales
+    (approximately, assuming independent per-player contributions) with
+    how much total point production is still undecided - approximated
+    here as (projected - score_so_far) / projected, the fraction of the
+    team's OWN projected total not yet realized; since stdev is
+    sqrt(variance), it scales by the square root of that fraction."""
+    if projected <= 0:
+        return full_stdev
+    fraction_remaining = max(0.0, (projected - score_so_far) / projected)
+    return full_stdev * max(MIN_REMAINING_STDEV_FRACTION, fraction_remaining ** 0.5)
+
 
 def live_win_probability(
-    season: int, home_team_pk: int, away_team_pk: int, home_projected: float, away_projected: float
+    season: int, home_team_pk: int, away_team_pk: int,
+    home_projected: float, away_projected: float, home_score: float, away_score: float,
 ) -> float:
     """Same closed-form model as project_matchup_win_probability, but
     centered on each team's CURRENT live-projected score instead of a
@@ -449,34 +481,46 @@ def live_win_probability(
     actually scored so far plus the rest of the lineup's projections, see
     get_live_box_scores). Still explicitly NOT ESPN's own number - ESPN's
     API exposes no win probability at all (confirmed against the
-    installed espn_api source)."""
+    installed espn_api source). home_score/away_score (points already
+    scored) narrow each team's stdev via _live_remaining_stdev as the
+    week progresses - see that function's docstring for why the raw
+    full-game stdev overstates remaining uncertainty once part of a
+    lineup has already played."""
     stdevs = team_stdev_map(season)
+    home_full_stdev = stdevs.get(home_team_pk) or LIVE_PROB_FALLBACK_STDEV
+    away_full_stdev = stdevs.get(away_team_pk) or LIVE_PROB_FALLBACK_STDEV
     home_proj = TeamProjection(
         team_pk=home_team_pk, expected_score=home_projected,
-        stdev=stdevs.get(home_team_pk) or LIVE_PROB_FALLBACK_STDEV,
+        stdev=_live_remaining_stdev(home_full_stdev, home_projected, home_score),
     )
     away_proj = TeamProjection(
         team_pk=away_team_pk, expected_score=away_projected,
-        stdev=stdevs.get(away_team_pk) or LIVE_PROB_FALLBACK_STDEV,
+        stdev=_live_remaining_stdev(away_full_stdev, away_projected, away_score),
     )
     return win_probability(home_proj, away_proj)
 
 
-def live_cutline_analysis(season: int, projected_by_team: dict[int, float]) -> dict[int, dict]:
+def live_cutline_analysis(
+    season: int, projected_by_team: dict[int, float], score_by_team: dict[int, float]
+) -> dict[int, dict]:
     """For every team in projected_by_team (this week's CURRENT live
     projected total), models that team's final score as Normal(current
-    projected, that team's own season scoring stdev) - same model/
-    fallback as live_win_probability, so the two features stay
-    consistent. Returns {team_pk: {"p_making_it", "p10", "p90"}}:
-    p_making_it is the Monte Carlo probability of finishing in the
-    league's top half this week (earning the median bonus win - see
-    metrics.cutline_sim for why this needs simulation, not a closed
-    form); p10/p90 are that same team's own 10th/90th percentile final
-    score (closed-form, since a team's own percentile doesn't depend on
-    anyone else)."""
+    projected, that team's own REMAINING-uncertainty stdev - see
+    _live_remaining_stdev) - same model/fallback as live_win_probability,
+    so the two features stay consistent. score_by_team (points already
+    scored) is what narrows that stdev as the week progresses. Returns
+    {team_pk: {"p_making_it", "p10", "p90"}}: p_making_it is the Monte
+    Carlo probability of finishing in the league's top half this week
+    (earning the median bonus win - see metrics.cutline_sim for why this
+    needs simulation, not a closed form); p10/p90 are that same team's
+    own 10th/90th percentile final score (closed-form, since a team's
+    own percentile doesn't depend on anyone else)."""
     stdevs = team_stdev_map(season)
     teams = [
-        TeamScoreModel(team_pk=pk, mean=proj, stdev=stdevs.get(pk) or LIVE_PROB_FALLBACK_STDEV)
+        TeamScoreModel(
+            team_pk=pk, mean=proj,
+            stdev=_live_remaining_stdev(stdevs.get(pk) or LIVE_PROB_FALLBACK_STDEV, proj, score_by_team.get(pk, 0.0)),
+        )
         for pk, proj in projected_by_team.items()
     ]
     p_making_it = simulate_cutline_probabilities(teams)
@@ -487,15 +531,19 @@ def live_cutline_analysis(season: int, projected_by_team: dict[int, float]) -> d
     return result
 
 
-def live_score_percentile_range(season: int, team_pk: int, projected: float) -> tuple[float, float]:
-    """10th/90th percentile of ONE team's live-projected final score - same
-    Normal(projected, own season stdev) model as live_win_probability/
-    live_cutline_analysis, but closed-form (metrics.cutline_sim.
-    percentile_range) rather than going through the Monte Carlo cutline
-    sim, since a single matchup card just needs this one team's own
-    range, not a cross-team rank probability."""
+def live_score_percentile_range(season: int, team_pk: int, projected: float, score_so_far: float) -> tuple[float, float]:
+    """10th/90th percentile of ONE team's live-projected final score -
+    same Normal(projected, remaining-uncertainty stdev) model as
+    live_win_probability/live_cutline_analysis (see _live_remaining_stdev
+    for why the raw full-game stdev isn't used directly), but closed-form
+    (metrics.cutline_sim.percentile_range) rather than going through the
+    Monte Carlo cutline sim, since a single matchup card just needs this
+    one team's own range, not a cross-team rank probability."""
     stdevs = team_stdev_map(season)
-    team = TeamScoreModel(team_pk=team_pk, mean=projected, stdev=stdevs.get(team_pk) or LIVE_PROB_FALLBACK_STDEV)
+    full_stdev = stdevs.get(team_pk) or LIVE_PROB_FALLBACK_STDEV
+    team = TeamScoreModel(
+        team_pk=team_pk, mean=projected, stdev=_live_remaining_stdev(full_stdev, projected, score_so_far)
+    )
     return percentile_range(team)
 
 

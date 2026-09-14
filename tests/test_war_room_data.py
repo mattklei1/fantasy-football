@@ -16,6 +16,7 @@ from fantasy_football.war_room_data import (
     blend_trade_value,
     build_waiver_suggestion_reasoning,
     evaluate_trade,
+    find_win_win_trades,
     optimal_roster_value,
 )
 
@@ -246,3 +247,121 @@ def test_waiver_claim_payload_rounds_bid_to_whole_dollar():
         bid_amount=25.805765853658542, scoring_period=1, member_id="{X}",
     )
     assert payload["bidAmount"] == 26
+
+
+# --- find_win_win_trades ----------------------------------------------
+# Same toy 1-QB/1-RB league as evaluate_trade's tests above.
+
+def test_find_win_win_trades_surfaces_a_real_1for1_mutual_upgrade():
+    """Mine is QB-weak/RB-fine; Team B is RB-weak/QB-fine (with a near-
+    equal QB backup so giving up their starter barely costs them) -
+    trading my RB starter for their QB starter upgrades BOTH sides'
+    optimal lineup value."""
+    rosters = pd.DataFrame(
+        [
+            _roster_row("Mine", 1, "QB Mine", "QB", 30.0, ["QB", "BE"]),
+            _roster_row("Mine", 2, "RB Mine 1", "RB", 80.0, ["RB", "BE"]),
+            _roster_row("Mine", 3, "RB Mine 2", "RB", 70.0, ["RB", "BE"]),
+            _roster_row("Team B", 4, "QB B1", "QB", 85.0, ["QB", "BE"]),
+            _roster_row("Team B", 5, "QB B2", "QB", 80.0, ["QB", "BE"]),
+            _roster_row("Team B", 6, "RB B", "RB", 20.0, ["RB", "BE"]),
+        ]
+    )
+    results = find_win_win_trades(rosters, "Mine", SLOT_COUNTS, gain_threshold=5.0)
+    matches = [
+        r for r in results
+        if r["opponent"] == "Team B" and r["players_out"] == ["RB Mine 1"] and r["players_in"] == ["QB B1"]
+    ]
+    assert len(matches) == 1
+    trade = matches[0]
+    assert trade["my_gain"] > 5.0
+    assert trade["their_gain"] > 5.0
+
+
+def test_find_win_win_trades_excludes_opponents_with_no_real_win_win():
+    """Team C is worse than Mine at everything with no redundant depth -
+    any trade that helps Mine hurts them, so nothing should surface."""
+    rosters = pd.DataFrame(
+        [
+            _roster_row("Mine", 1, "QB Mine", "QB", 50.0, ["QB", "BE"]),
+            _roster_row("Mine", 2, "RB Mine", "RB", 60.0, ["RB", "BE"]),
+            _roster_row("Team C", 3, "QB C", "QB", 10.0, ["QB", "BE"]),
+            _roster_row("Team C", 4, "RB C", "RB", 5.0, ["RB", "BE"]),
+        ]
+    )
+    results = find_win_win_trades(rosters, "Mine", SLOT_COUNTS, gain_threshold=5.0)
+    assert results == []
+
+
+def test_find_win_win_trades_sorts_by_min_gain_descending():
+    """Team B's trade is a bigger mutual win than Team D's smaller one -
+    Team B should be ranked first."""
+    rosters = pd.DataFrame(
+        [
+            _roster_row("Mine", 1, "QB Mine", "QB", 30.0, ["QB", "BE"]),
+            _roster_row("Mine", 2, "RB Mine 1", "RB", 80.0, ["RB", "BE"]),
+            _roster_row("Mine", 3, "RB Mine 2", "RB", 70.0, ["RB", "BE"]),
+            # Big mutual win (same fixture as the first test above)
+            _roster_row("Team B", 4, "QB B1", "QB", 85.0, ["QB", "BE"]),
+            _roster_row("Team B", 5, "QB B2", "QB", 80.0, ["QB", "BE"]),
+            _roster_row("Team B", 6, "RB B", "RB", 20.0, ["RB", "BE"]),
+            # Smaller mutual win - a modest QB upgrade for a modest RB upgrade
+            _roster_row("Team D", 7, "QB D1", "QB", 36.0, ["QB", "BE"]),
+            _roster_row("Team D", 8, "QB D2", "QB", 34.0, ["QB", "BE"]),
+            _roster_row("Team D", 9, "RB D", "RB", 66.0, ["RB", "BE"]),
+        ]
+    )
+    results = find_win_win_trades(rosters, "Mine", SLOT_COUNTS, gain_threshold=1.0)
+    opponents_in_order = [r["opponent"] for r in results]
+    assert opponents_in_order.index("Team B") < opponents_in_order.index("Team D")
+
+
+def test_find_win_win_trades_respects_max_results():
+    rosters = pd.DataFrame(
+        [
+            _roster_row("Mine", 1, "QB Mine", "QB", 30.0, ["QB", "BE"]),
+            _roster_row("Mine", 2, "RB Mine 1", "RB", 80.0, ["RB", "BE"]),
+            _roster_row("Mine", 3, "RB Mine 2", "RB", 70.0, ["RB", "BE"]),
+            _roster_row("Team B", 4, "QB B1", "QB", 85.0, ["QB", "BE"]),
+            _roster_row("Team B", 5, "QB B2", "QB", 80.0, ["QB", "BE"]),
+            _roster_row("Team B", 6, "RB B", "RB", 20.0, ["RB", "BE"]),
+        ]
+    )
+    results = find_win_win_trades(rosters, "Mine", SLOT_COUNTS, gain_threshold=5.0, max_results=1)
+    assert len(results) <= 1
+
+
+def test_find_win_win_trades_my_team_not_in_rosters_returns_empty():
+    rosters = pd.DataFrame(
+        [_roster_row("Team B", 1, "QB B", "QB", 50.0, ["QB", "BE"])]
+    )
+    assert find_win_win_trades(rosters, "Nobody Here", SLOT_COUNTS) == []
+
+
+def test_find_win_win_trades_2for1_throw_in_surfaces_a_real_mutual_upgrade():
+    """A 2-for-1 (my 2 weakest players, both irrelevant bench filler, for
+    their 1 real starter) can be a real win-win when the opponent has a
+    near-equal backup at the position they're giving up (so it barely
+    costs them) and my two throw-ins happen to fill two of their weak
+    spots better than what they currently start there."""
+    rosters = pd.DataFrame(
+        [
+            _roster_row("Mine", 1, "QB Mine", "QB", 30.0, ["QB", "BE"]),
+            _roster_row("Mine", 2, "RB Mine", "RB", 70.0, ["RB", "BE"]),
+            _roster_row("Mine", 3, "Bench QB", "QB", 8.0, ["QB", "BE"]),
+            _roster_row("Mine", 4, "Bench RB", "RB", 9.0, ["RB", "BE"]),
+            _roster_row("Team E", 5, "QB E1", "QB", 85.0, ["QB", "BE"]),
+            _roster_row("Team E", 6, "QB E2", "QB", 83.0, ["QB", "BE"]),
+            _roster_row("Team E", 7, "RB E", "RB", 5.0, ["RB", "BE"]),
+        ]
+    )
+    results = find_win_win_trades(rosters, "Mine", SLOT_COUNTS, gain_threshold=1.0)
+    two_for_one = [
+        r for r in results
+        if r["opponent"] == "Team E" and set(r["players_out"]) == {"Bench QB", "Bench RB"}
+        and r["players_in"] in (["QB E1"], ["QB E2"])
+    ]
+    assert len(two_for_one) >= 1
+    for trade in two_for_one:
+        assert trade["my_gain"] > 1.0
+        assert trade["their_gain"] > 1.0
