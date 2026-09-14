@@ -171,7 +171,7 @@ if meta.get("median_scoring") and not is_final_week and not is_future_week and n
             {
                 "rank": rank,
                 "team": team_name,
-                "manager": mgr,
+                "manager": mgr.split()[-1] if mgr else mgr,
                 "projected": proj,
                 "vs_cutline": proj - cutline_score,
                 "make_pct": (analysis.get(pk, {}).get("p_making_it") or 0) * 100,

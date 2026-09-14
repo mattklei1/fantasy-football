@@ -216,40 +216,44 @@ def cutline_table_html(rows: list[dict]) -> str:
     fixed height instead of growing to fit every row (all teams need to
     be visible with no scrolling), and its grid renders via canvas so
     individual columns can't be responsively hidden with plain CSS. Each
-    row dict needs: rank, team, manager, projected, vs_cutline, make_pct
-    (0-100), p10, p90, tone ("win"/"warn"/"loss"). The manager subtext
-    line is dropped entirely below 480px width via a media query, to
-    keep the Team column narrow enough on a phone."""
+    row dict needs: rank, team, manager (last name only - caller trims
+    it, this function just places it), projected, vs_cutline, make_pct
+    (0-100), p10, p90, tone ("win"/"warn"/"loss"). One line per team
+    (manager inline to the right of the team name, not stacked
+    underneath) keeps row height tight; the manager name is dropped
+    entirely below 480px width via a media query so the Team column
+    still fits on a phone."""
     body_rows = []
     for r in rows:
         bg = CUTLINE_TINT.get(r["tone"], "transparent")
         body_rows.append(
             f'<tr style="background:{bg};">'
-            f'<td style="padding:6px 8px; text-align:center;">{r["rank"]}</td>'
-            '<td style="padding:6px 8px;">'
-            f'<div style="font-weight:600;">{r["team"]}</div>'
-            f'<div class="cutline-manager" style="font-size:0.72rem; color:var(--text-muted);">{r["manager"]}</div>'
+            f'<td style="padding:2px 8px; text-align:center;">{r["rank"]}</td>'
+            '<td style="padding:2px 8px; white-space:nowrap;">'
+            f'<span style="font-weight:600;">{r["team"]}</span>'
+            f'<span class="cutline-manager" style="font-size:0.72rem; color:var(--text-muted); '
+            f'margin-left:6px;">{r["manager"]}</span>'
             '</td>'
-            f'<td style="padding:6px 8px; text-align:right;">{r["projected"]:.1f}</td>'
-            f'<td style="padding:6px 8px; text-align:right;">{r["vs_cutline"]:+.1f}</td>'
-            f'<td style="padding:6px 8px; text-align:right;">{r["make_pct"]:.0f}%</td>'
-            f'<td style="padding:6px 8px; text-align:right;">{r["p10"]:.0f}–{r["p90"]:.0f}</td>'
+            f'<td style="padding:2px 8px; text-align:right;">{r["projected"]:.1f}</td>'
+            f'<td style="padding:2px 8px; text-align:right;">{r["vs_cutline"]:+.1f}</td>'
+            f'<td style="padding:2px 8px; text-align:right;">{r["make_pct"]:.0f}%</td>'
+            f'<td style="padding:2px 8px; text-align:right;">{r["p10"]:.0f}–{r["p90"]:.0f}</td>'
             '</tr>'
         )
     header = (
         '<tr style="border-bottom:2px solid var(--card-border);">'
-        '<th style="padding:6px 8px; text-align:center;">#</th>'
-        '<th style="padding:6px 8px; text-align:left;">Team</th>'
-        '<th style="padding:6px 8px; text-align:right;">Proj</th>'
-        '<th style="padding:6px 8px; text-align:right;">vs Cut</th>'
-        '<th style="padding:6px 8px; text-align:right;">Make %</th>'
-        '<th style="padding:6px 8px; text-align:right;">10th–90th</th>'
+        '<th style="padding:2px 8px; text-align:center;">#</th>'
+        '<th style="padding:2px 8px; text-align:left;">Team</th>'
+        '<th style="padding:2px 8px; text-align:right;">Proj</th>'
+        '<th style="padding:2px 8px; text-align:right;">vs Cut</th>'
+        '<th style="padding:2px 8px; text-align:right;">Make %</th>'
+        '<th style="padding:2px 8px; text-align:right;">10th–90th</th>'
         '</tr>'
     )
     return (
         '<style>@media (max-width: 480px) { .cutline-manager { display: none; } }</style>'
         '<div style="overflow-x:auto;">'
-        '<table style="width:100%; border-collapse:collapse; font-size:0.85rem;">'
+        '<table style="width:100%; border-collapse:collapse; font-size:0.8rem; line-height:1.2;">'
         f'<thead>{header}</thead><tbody>{"".join(body_rows)}</tbody>'
         '</table>'
         '</div>'
