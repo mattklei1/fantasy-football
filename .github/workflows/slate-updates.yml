@@ -1,18 +1,18 @@
 name: GroupMe Slate Updates
 
-# Fires several times across a DST-safety window rather than once at a
-# fixed UTC time - GitHub Actions cron has no DST awareness, and the NFL
-# season crosses the November US DST transition. Each firing checks the
-# real Pacific time (fantasy_football/schedule_guard.py) and only the one
-# closest to the actual target does anything - see that module's
-# docstring for the full reasoning. Minutes are offset from :00/:15/:30
-# on purpose (GitHub recommends not scheduling on the exact hour/half-
-# hour, when many workflows across GitHub fire at once).
+# Single Sunday send at ~5:00pm Pacific (the 1:30pm early-slate send was
+# dropped per user request 2026-09-14 - one consolidated update instead
+# of two). Fires several times across a DST-safety window rather than
+# once at a fixed UTC time - GitHub Actions cron has no DST awareness,
+# and the NFL season crosses the November US DST transition. Each firing
+# checks the real Pacific time (fantasy_football/schedule_guard.py) and
+# only the one closest to the actual target does anything - see that
+# module's docstring for the full reasoning. Minutes are offset from
+# :00/:15/:30 on purpose (GitHub recommends not scheduling on the exact
+# hour/half-hour, when many workflows across GitHub fire at once).
 on:
   schedule:
-    # Early slate wrap (~1:30pm Pacific Sunday): 20:30 UTC (PDT) / 21:30 UTC (PST)
-    - cron: "7,22,37,52 20,21 * * 0"
-    # Afternoon slate wrap (~5:00pm Pacific Sunday): 00:00 UTC Mon (PDT) / 01:00 UTC Mon (PST)
+    # ~5:00pm Pacific Sunday: 00:00 UTC Mon (PDT) / 01:00 UTC Mon (PST)
     - cron: "7,22,37,52 0,1 * * 1"
   workflow_dispatch: {}  # manual "Run workflow" button for testing
 
@@ -25,19 +25,11 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt
-      - name: Early slate update
+      - name: Sunday slate update
         env:
           LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
           ESPN_S2: ${{ secrets.ESPN_S2 }}
           SWID: ${{ secrets.SWID }}
           CURRENT_SEASON: ${{ secrets.CURRENT_SEASON }}
           GROUPME_BOT_ID: ${{ secrets.GROUPME_BOT_ID }}
-        run: python scripts/post_slate_update.py --label "Early Slate Update" --target-hour 13 --target-minute 30
-      - name: Afternoon slate update
-        env:
-          LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
-          ESPN_S2: ${{ secrets.ESPN_S2 }}
-          SWID: ${{ secrets.SWID }}
-          CURRENT_SEASON: ${{ secrets.CURRENT_SEASON }}
-          GROUPME_BOT_ID: ${{ secrets.GROUPME_BOT_ID }}
-        run: python scripts/post_slate_update.py --label "Afternoon Slate Update" --target-hour 17 --target-minute 0
+        run: python scripts/post_slate_update.py --label "Sunday Slate Update" --target-hour 17 --target-minute 0

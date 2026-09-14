@@ -1909,6 +1909,21 @@ old raw-margin pick, and On the Bubble printed a real, hand-verifiable
 12-team list with the cutline marker landing between the correct real
 ranks. 189/189 tests passing.
 
+**Consolidated to a single Sunday slate update at 5:00pm Pacific, DONE
+2026-09-14 (same session).** User asked to drop the 1:30pm early-slate
+send going forward and keep just one - phrased as "make the 4:30pm
+update a 5pm update," which was really about today's one-off manual
+4:30pm catch-up send, not a change to the recurring schedule at all: the
+recurring "afternoon" slot was already `--target-hour 17 --target-minute 0`
+(5:00pm), so no time value actually changed. `.github/workflows/slate-
+updates.yml` simplified from 2 scheduled triggers + 2 job steps down to
+1 of each - removed the `~1:30pm` cron entry and its "Early slate
+update" step entirely, relabeled the remaining step from "Afternoon
+Slate Update" to "Sunday Slate Update" since it's no longer one of two.
+No code change needed in `slate_report.py`/`scripts/post_slate_update.py`
+- this was purely a workflow-schedule edit. Validated the YAML parses
+correctly after the edit (`yaml.safe_load`) before committing.
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip
