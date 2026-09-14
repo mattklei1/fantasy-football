@@ -1992,6 +1992,84 @@ the exact payload before submission per the informed-consent standard
 already set for this feature. Next session picking this up should
 build that properly rather than reusing the scratch script as-is.
 
+**"My Waiver Bids" real ESPN submission built into War Room, DONE
+2026-09-14 (same session, right after the write payload was verified).**
+User asked for: per-suggestion yes/no approval before anything submits,
+a browsable board of ALL available free agents ranked by projected
+points (filterable by position, suggested bid shown alongside), and a
+separate table of their own droppable roster - so they could tell Claude
+about additional claims beyond the 10 auto-generated suggestions, not
+just approve/reject those 10.
+
+Built into `war_room_data.py`:
+- `get_waiver_board()` extended with `player_id` and `ros_points` (from
+  the matched FantasyPros player's `r2p_pts`) - needed real ESPN player
+  ids to actually submit anything, and real projected points for the new
+  points-ranked board.
+- `get_my_waiver_suggestions()` extended with `player_id`/
+  `suggested_drop_id` on every suggestion (same reason).
+- `get_droppable_roster(season, team_pk)` - this team's BENCH players
+  only, worst-value-first. Deliberately bench-only: `submit_waiver_claim()`
+  assumes the drop comes off the bench slot (verified shape), so this
+  keeps the browsable "pick your own drop" table to players that are
+  actually safe to submit a real claim against.
+- `submit_waiver_claim(season, team_pk, add_player_id, drop_player_id,
+  bid_amount, dry_run=True)` + pure `_waiver_claim_payload()` - the real
+  write, using the exact payload shape verified live earlier this
+  session (`BENCH_SLOT_ID=20`, `NO_SLOT_ID=-1` as named constants, not
+  magic numbers). `dry_run` defaults `True` everywhere; bid amounts are
+  rounded to whole dollars before sending (a live AppTest check caught
+  the suggested-bid float, e.g. `25.805765...`, flowing straight into a
+  real payload unrounded - fixed before this ever reached a live call).
+  4 new tests lock in the exact confirmed payload shape (`BENCH_SLOT_ID`/
+  `NO_SLOT_ID` values included) so a future refactor can't silently
+  drift from what ESPN actually accepts.
+
+**New War Room UI (My Waiver Bids tab):**
+- A page-level "⚠️ Actually submit... (real transactions)"
+  checkbox, unchecked by default and reset on every fresh page load -
+  the actual safety gate. Unchecked = every submit is a dry run that
+  renders the exact JSON payload instead of sending it.
+- Each of the 10 suggestions gets its own "Approve" checkbox; a single
+  "Submit approved claims" (or "Preview approved claims (dry run)" when
+  the real-submit box is unchecked) button processes only the approved
+  ones and shows a per-claim result (success + real transaction id, the
+  real ESPN rejection message, or the dry-run payload).
+- Below that: "All available players (by projected points)" - the full
+  live free-agent board (up to 150 players across 6 positions),
+  filterable by position, sorted by FantasyPros ROS projected points
+  with suggested bid alongside.
+- "Your droppable roster" - bench-only, worst value first.
+- A closing caption inviting the user to name any add/drop/bid from
+  these two tables in chat for a claim outside the 10 suggestions - by
+  design this isn't a new UI form, since `submit_waiver_claim()` is
+  already callable directly for a one-off ask.
+
+**A real credential-leak near-miss caught by the harness itself, worth
+recording:** the first draft of the payload-shape unit test hardcoded
+the user's REAL SWID (captured from the live test earlier this session)
+as the "realistic" test fixture value - Claude Code's own auto-mode
+permission classifier blocked the test run with a `[Credential Leakage]`
+denial before it could be committed. Fixed immediately (swapped in an
+obviously-fake `{00000000-...}` placeholder) and grepped the full repo
++ git history to confirm the real value was never committed anywhere -
+it wasn't (caught before the first commit touching that file). **Lesson:
+a real value captured during a live debugging session is exactly the
+kind of thing that looks "realistic" enough to paste into a test without
+thinking - always use an obviously-fake placeholder for credential-
+shaped test fixtures, never a real captured one, even in a private repo.**
+
+Validated end-to-end via AppTest against real live 2026 week-1 data,
+dry-run only (never fired a real submission from this pass - the one
+earlier real test was the user's own explicit supervised request, not
+repeated here): confirmed the real-submit checkbox defaults False,
+10 real approve checkboxes render, a dry-run submit renders the exact
+real payload (real team id, real player ids, rounded bid) without
+sending it, both new boards render with real data (120-player points
+board, correctly re-sorts under the position filter; a 6-player
+droppable-bench board for the default-selected team) with zero
+exceptions. 193/193 tests passing.
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip

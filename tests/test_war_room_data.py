@@ -10,6 +10,9 @@ import pandas as pd
 import pytest
 
 from fantasy_football.war_room_data import (
+    BENCH_SLOT_ID,
+    NO_SLOT_ID,
+    _waiver_claim_payload,
     blend_trade_value,
     build_waiver_suggestion_reasoning,
     evaluate_trade,
@@ -188,3 +191,58 @@ def test_reasoning_flags_bid_exceeding_remaining_budget():
 def test_reasoning_falls_back_to_generic_when_nothing_else_applies():
     text = build_waiver_suggestion_reasoning("K", 20.0, 60.0, 2, 5.0, 50.0)
     assert text == "best available K on waivers right now"
+
+
+# --- _waiver_claim_payload -------------------------------------------------
+# Matches the EXACT shape confirmed live against the real league on
+# 2026-09-14 (see PROJECT_BRIEF) - these tests lock that shape in so a
+# future refactor can't silently drift from what ESPN actually accepts.
+
+def test_waiver_claim_payload_matches_verified_live_shape():
+    payload = _waiver_claim_payload(
+        team_id=1, add_player_id=4566158, drop_player_id=4696044,
+        bid_amount=1, scoring_period=1, member_id="{00000000-0000-0000-0000-000000000000}",
+    )
+    assert payload == {
+        "isLeagueManager": False,
+        "teamId": 1,
+        "type": "WAIVER",
+        "memberId": "{00000000-0000-0000-0000-000000000000}",
+        "bidAmount": 1,
+        "scoringPeriodId": 1,
+        "executionType": "EXECUTE",
+        "items": [
+            {
+                "playerId": 4566158, "type": "ADD",
+                "fromLineupSlotId": NO_SLOT_ID, "toLineupSlotId": BENCH_SLOT_ID, "toTeamId": 1,
+            },
+            {
+                "playerId": 4696044, "type": "DROP",
+                "fromLineupSlotId": BENCH_SLOT_ID, "toLineupSlotId": NO_SLOT_ID, "fromTeamId": 1,
+            },
+        ],
+    }
+
+
+def test_waiver_claim_payload_omits_drop_item_when_no_drop():
+    payload = _waiver_claim_payload(
+        team_id=1, add_player_id=4566158, drop_player_id=None,
+        bid_amount=5, scoring_period=2, member_id="{SOME-SWID}",
+    )
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["type"] == "ADD"
+
+
+def test_waiver_claim_payload_bench_slot_id_is_20():
+    # locked in from the real confirmed response - a magic-number typo
+    # here would silently target the wrong slot on a real claim
+    assert BENCH_SLOT_ID == 20
+    assert NO_SLOT_ID == -1
+
+
+def test_waiver_claim_payload_rounds_bid_to_whole_dollar():
+    payload = _waiver_claim_payload(
+        team_id=1, add_player_id=1, drop_player_id=None,
+        bid_amount=25.805765853658542, scoring_period=1, member_id="{X}",
+    )
+    assert payload["bidAmount"] == 26

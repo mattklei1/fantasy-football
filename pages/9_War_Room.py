@@ -155,32 +155,119 @@ with tab_mine:
         with st.spinner("Building suggestions..."):
             suggestions = wr.get_my_waiver_suggestions(season, my_team_pk, top_n=10)
 
+        real_submit = st.checkbox(
+            "⚠️ Actually submit approved claims to ESPN (real transactions, real FAAB budget)",
+            value=False, key="wr_real_submit",
+            help="Unchecked = dry run only (shows exactly what would be sent, sends nothing). This "
+            "resets to unchecked every time you load this page - it's never left on by accident.",
+        )
+        if not real_submit:
+            st.caption("Dry run mode - approving and submitting below will show you the exact payload, not send it.")
+
         if not suggestions:
             st.info("No suggestions available right now - check FANTASYPROS_API_KEY, or try again later.")
         else:
+            approved_indices = []
             for i, s in enumerate(suggestions, start=1):
                 with st.container(border=True):
-                    cols = st.columns([3, 2, 2])
+                    cols = st.columns([1, 3, 2, 2])
                     with cols[0]:
+                        approve = st.checkbox(
+                            "Approve", key=f"wr_approve_{my_team_name}_{s['player_id']}", label_visibility="visible"
+                        )
+                        if approve:
+                            approved_indices.append(i - 1)
+                    with cols[1]:
                         st.markdown(f"**#{i}. {s['player_name']}** ({s['position']}, {s['pro_team']})")
                         st.caption(s["reasoning"])
-                    with cols[1]:
+                    with cols[2]:
                         bid_label = f"${s['suggested_bid']:.0f}"
                         if not s["affordable"]:
                             bid_label += " ⚠️"
                         st.metric("Suggested bid", bid_label)
-                    with cols[2]:
+                    with cols[3]:
                         if s["suggested_drop"]:
                             st.metric("Suggested drop", s["suggested_drop"], f"{s['suggested_drop_value']:.0f} val")
                         else:
                             st.caption("No clear drop candidate (empty bench)")
 
-            st.caption(
-                "This list doesn't submit anything to ESPN yet - the auto-submit piece (a real, "
-                "money-moving write to ESPN's undocumented waiver-claim endpoint) is still being "
-                "built and verified. For now, review this list and place your picks yourself in the "
-                "ESPN app."
+            submit_label = (
+                "Submit approved claims to ESPN" if real_submit else "Preview approved claims (dry run)"
             )
+            if st.button(submit_label, disabled=not approved_indices, key="wr_submit_claims"):
+                results = []
+                for idx in approved_indices:
+                    s = suggestions[idx]
+                    result = wr.submit_waiver_claim(
+                        season, my_team_pk, s["player_id"], s["suggested_drop_id"], s["suggested_bid"],
+                        dry_run=not real_submit,
+                    )
+                    results.append((s, result))
+                st.session_state["wr_claim_results"] = results
+
+            if st.session_state.get("wr_claim_results"):
+                st.markdown("#### Results")
+                for s, result in st.session_state["wr_claim_results"]:
+                    label = f"{s['player_name']} (add) / {s['suggested_drop'] or 'no drop'}"
+                    if result["dry_run"]:
+                        st.info(f"DRY RUN - {label}: would send this payload ↓")
+                        st.json(result["payload"])
+                    elif result["success"]:
+                        st.success(f"{label}: {result['message']}")
+                    else:
+                        st.error(f"{label}: {result['message']}")
+
+    st.divider()
+    st.markdown("#### All available players (by projected points)")
+    st.caption(
+        "Every free agent on the board, ranked by FantasyPros' rest-of-season projected points (not "
+        "suggested bid) - browse the full pool yourself and tell me if you want a claim outside the "
+        "suggestions above."
+    )
+    board_for_browsing = wr.get_waiver_board(season)
+    if board_for_browsing.empty:
+        st.info("No free agent data available right now.")
+    else:
+        position_options = ["All"] + sorted(board_for_browsing["position"].dropna().unique().tolist())
+        position_filter = st.selectbox("Position", position_options, key="wr_mine_position_filter")
+        filtered_board = (
+            board_for_browsing if position_filter == "All"
+            else board_for_browsing[board_for_browsing["position"] == position_filter]
+        )
+        by_points = filtered_board[filtered_board["ros_points"].notna()].sort_values("ros_points", ascending=False)
+        display_board = by_points.rename(
+            columns={
+                "player_name": "Player", "position": "Pos", "pro_team": "Team",
+                "ros_points": "ROS Projected Pts", "suggested_bid": "Suggested Bid",
+            }
+        )
+        st.dataframe(
+            display_board[["Player", "Pos", "Team", "ROS Projected Pts", "Suggested Bid"]],
+            hide_index=True, use_container_width=True,
+            column_config={
+                "ROS Projected Pts": st.column_config.NumberColumn(format="%.1f"),
+                "Suggested Bid": st.column_config.NumberColumn(format="$%.0f"),
+            },
+        )
+
+    if not trade_rosters_for_teams.empty:
+        st.markdown("#### Your droppable roster")
+        st.caption("Your bench only (starters aren't shown here) - worst value first.")
+        droppable = wr.get_droppable_roster(season, my_team_pk)
+        if droppable.empty:
+            st.info("No bench players available to drop.")
+        else:
+            display_droppable = droppable.rename(
+                columns={"player_name": "Player", "position": "Pos", "value_score": "Value"}
+            )
+            st.dataframe(
+                display_droppable[["Player", "Pos", "Value"]],
+                hide_index=True, use_container_width=True,
+            )
+        st.caption(
+            "Tell me the exact add/drop/bid you want from these two tables and I'll submit it for you - "
+            "not limited to the 10 suggestions above."
+        )
 
 GAIN_NEUTRAL_THRESHOLD = 5.0  # value-score points; a "gain" smaller than this counts as a wash for that side
 

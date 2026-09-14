@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 
 import pandas as pd
+import requests
 import streamlit as st
 
 from . import config, player_matching
@@ -150,10 +151,12 @@ def get_waiver_board(season: int, pool_size_per_position: int = 25) -> pd.DataFr
             espn_players, fp_players, position, espn_id_map=espn_id_map
         )
         fp_pos_rank_by_espn_id = {}
+        fp_ros_points_by_espn_id = {}
         for fp in fp_players:
             espn_id = id_map.get(fp["player_id"])
             if espn_id is not None:
                 fp_pos_rank_by_espn_id[espn_id] = player_matching.parse_pos_rank(fp.get("pos_rank"))
+                fp_ros_points_by_espn_id[espn_id] = fp.get("r2p_pts")
 
         for p in free_agents:
             pos_rank = fp_pos_rank_by_espn_id.get(p.playerId)
@@ -170,6 +173,7 @@ def get_waiver_board(season: int, pool_size_per_position: int = 25) -> pd.DataFr
                 injury_status = None
             rows.append(
                 {
+                    "player_id": p.playerId,
                     "position": position,
                     "player_name": p.name,
                     "pro_team": p.proTeam,
@@ -177,6 +181,7 @@ def get_waiver_board(season: int, pool_size_per_position: int = 25) -> pd.DataFr
                     "percent_owned": percent_owned,
                     "percent_started": percent_started,
                     "fp_pos_rank": pos_rank,
+                    "ros_points": fp_ros_points_by_espn_id.get(p.playerId),
                     "suggested_bid": suggested_bid(pos_rank, percent_owned, position, scarcity),
                 }
             )
@@ -514,11 +519,13 @@ def get_my_waiver_suggestions(season: int, my_team_pk: int, top_n: int = 10) -> 
 
         suggestions.append(
             {
+                "player_id": int(fa["player_id"]),
                 "player_name": fa["player_name"],
                 "position": position,
                 "pro_team": fa["pro_team"],
                 "suggested_bid": float(fa["suggested_bid"]),
                 "suggested_drop": drop_candidate["player_name"] if drop_candidate is not None else None,
+                "suggested_drop_id": int(drop_candidate["player_id"]) if drop_candidate is not None else None,
                 "suggested_drop_value": float(drop_candidate["value_score"]) if drop_candidate is not None else None,
                 "reasoning": reasoning,
                 "affordable": bool(fa["suggested_bid"] <= budget_remaining),
@@ -529,3 +536,165 @@ def get_my_waiver_suggestions(season: int, my_team_pk: int, top_n: int = 10) -> 
             break
 
     return suggestions
+
+
+@st.cache_data(ttl=300)
+def get_droppable_roster(season: int, team_pk: int) -> pd.DataFrame:
+    """This team's bench players only, sorted worst-value-first (most
+    droppable first) - the exact same pool get_my_waiver_suggestions()
+    already draws its suggested drops from, surfaced here so the admin
+    can browse and pick a manual drop for a claim outside the auto-
+    generated suggestions. Starters are deliberately excluded: every
+    write this module supports (submit_waiver_claim()) assumes the
+    dropped player is coming off the bench, since that's the only case
+    verified against the real league so far - see that function's
+    docstring."""
+    rosters = get_trade_rosters(season)
+    if rosters.empty:
+        return rosters
+    mine = rosters[(rosters["team_pk"] == team_pk) & (rosters["is_starter"] == 0)]
+    return mine.sort_values("value_score").reset_index(drop=True)
+
+
+# --- Real ESPN waiver-claim write --------------------------------------
+#
+# Verified against the real league, 2026-09-14, at the user's explicit
+# request for a live supervised test ("player and amount don't matter,
+# I'll change it right after"). No sandbox exists for this endpoint - two
+# live attempts against the real league confirmed the exact payload
+# shape: a first try missing `toTeamId`/`fromTeamId` on the ADD/DROP
+# items came back as a clean, structured 409 naming the exact missing
+# field (`TRAN_ITEM_TO_TEAM_ID_MISSING`); adding them produced a real 200
+# with a real PENDING transaction, independently reconfirmed via
+# `league.transactions()`. Cancellation was also confirmed (the user
+# cancelled that test claim in the ESPN app): shows up as a SEPARATE
+# transaction with `executionType: "CANCEL"` and a `relatedTransactionId`
+# pointing at the original - the original's own `status` field is never
+# rewritten in place (ESPN's transaction log is append-only), so don't
+# be alarmed if a cancelled claim still shows `status: PENDING` on its
+# own record; the linked CANCEL record is what's authoritative.
+#
+# `dry_run` defaults to True in every function below - callers (the War
+# Room page) must pass dry_run=False explicitly, and only after a human
+# has reviewed the exact rendered payload. This sends a REAL transaction
+# against REAL FAAB budget with a REAL roster change every time
+# dry_run=False actually runs.
+
+WAIVER_WRITE_URL = (
+    "https://lm-api-writes.fantasy.espn.com/apis/v3/games/ffl/seasons/{season}"
+    "/segments/0/leagues/{league_id}/transactions/"
+)
+BENCH_SLOT_ID = 20  # confirmed live 2026-09-14 - ESPN's numeric id for the bench slot
+NO_SLOT_ID = -1  # "no lineup slot" - the free-agent-pool side of an ADD/DROP item
+
+
+def _waiver_claim_payload(
+    team_id: int,
+    add_player_id: int,
+    drop_player_id: int | None,
+    bid_amount: float,
+    scoring_period: int,
+    member_id: str,
+) -> dict:
+    """Pure payload builder - the exact shape confirmed live (see module
+    note above). Only the DROP item assumes BENCH_SLOT_ID as the "from"
+    slot - correct for every drop this app ever suggests (get_my_waiver_
+    suggestions()/get_droppable_roster() are both bench-only), not
+    verified for dropping a current starter."""
+    items = [
+        {
+            "playerId": add_player_id,
+            "type": "ADD",
+            "fromLineupSlotId": NO_SLOT_ID,
+            "toLineupSlotId": BENCH_SLOT_ID,
+            "toTeamId": team_id,
+        }
+    ]
+    if drop_player_id is not None:
+        items.append(
+            {
+                "playerId": drop_player_id,
+                "type": "DROP",
+                "fromLineupSlotId": BENCH_SLOT_ID,
+                "toLineupSlotId": NO_SLOT_ID,
+                "fromTeamId": team_id,
+            }
+        )
+    return {
+        "isLeagueManager": False,
+        "teamId": team_id,
+        "type": "WAIVER",
+        "memberId": member_id,
+        "bidAmount": round(bid_amount),  # real FAAB bids are whole dollars - never send our own float noise
+        "scoringPeriodId": scoring_period,
+        "executionType": "EXECUTE",
+        "items": items,
+    }
+
+
+def submit_waiver_claim(
+    season: int,
+    team_pk: int,
+    add_player_id: int,
+    drop_player_id: int | None,
+    bid_amount: float,
+    dry_run: bool = True,
+) -> dict:
+    """Submit (or, when dry_run, only preview) one real waiver claim.
+    Returns {"dry_run", "url", "payload", "success", "status_code",
+    "message", "transaction_id"} - "success" is None for a dry run (never
+    sent), True/False once a real attempt has actually been made. Never
+    raises on an ESPN-side rejection (a clean 409 is an expected, useful
+    outcome - see module note) - only a genuine network failure surfaces
+    as success=False with the exception text."""
+    from .config import load_espn_credentials
+    from .espn_client import ESPNClient
+
+    conn = dd.get_connection()
+    espn_team_id_row = conn.execute("SELECT espn_team_id FROM teams WHERE id = ?", (team_pk,)).fetchone()
+    if not espn_team_id_row:
+        return {
+            "dry_run": dry_run, "url": None, "payload": None, "success": False,
+            "status_code": None, "message": f"Unknown team_pk {team_pk}", "transaction_id": None,
+        }
+
+    creds = load_espn_credentials()
+    league = ESPNClient().get_league(season)
+    scoring_period = league.current_week
+
+    payload = _waiver_claim_payload(
+        espn_team_id_row["espn_team_id"], add_player_id, drop_player_id, bid_amount, scoring_period, creds.swid
+    )
+    url = WAIVER_WRITE_URL.format(season=season, league_id=creds.league_id)
+
+    if dry_run:
+        return {
+            "dry_run": True, "url": url, "payload": payload, "success": None,
+            "status_code": None, "message": "DRY RUN - not sent", "transaction_id": None,
+        }
+
+    cookies = {"espn_s2": creds.espn_s2, "SWID": creds.swid}
+    try:
+        resp = requests.post(url, json=payload, cookies=cookies, headers={"Content-Type": "application/json"}, timeout=20)
+    except requests.RequestException as exc:
+        return {
+            "dry_run": False, "url": url, "payload": payload, "success": False,
+            "status_code": None, "message": str(exc), "transaction_id": None,
+        }
+
+    body = {}
+    try:
+        body = resp.json()
+    except ValueError:
+        pass
+
+    if resp.status_code == 200:
+        return {
+            "dry_run": False, "url": url, "payload": payload, "success": True,
+            "status_code": 200, "message": f"PENDING (transaction {body.get('id')})", "transaction_id": body.get("id"),
+        }
+    message = "; ".join(body.get("messages") or []) or resp.text[:300] or f"HTTP {resp.status_code}"
+    return {
+        "dry_run": False, "url": url, "payload": payload, "success": False,
+        "status_code": resp.status_code, "message": message, "transaction_id": None,
+    }
