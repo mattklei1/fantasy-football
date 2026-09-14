@@ -148,7 +148,14 @@ with tab_mine:
         st.info("No roster data available yet this season.")
     else:
         my_teams = sorted(trade_rosters_for_teams["team_name"].dropna().unique().tolist())
-        my_team_name = st.selectbox("Your team", my_teams, key="wr_my_team")
+        resolved_team_pk = wr.get_my_team_pk(season)
+        default_team_name = None
+        if resolved_team_pk is not None:
+            match = trade_rosters_for_teams.loc[trade_rosters_for_teams["team_pk"] == resolved_team_pk, "team_name"]
+            if not match.empty:
+                default_team_name = match.iloc[0]
+        default_team_index = my_teams.index(default_team_name) if default_team_name in my_teams else 0
+        my_team_name = st.selectbox("Your team", my_teams, index=default_team_index, key="wr_my_team")
         my_team_pk = int(
             trade_rosters_for_teams.loc[trade_rosters_for_teams["team_name"] == my_team_name, "team_pk"].iloc[0]
         )
