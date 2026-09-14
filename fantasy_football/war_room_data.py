@@ -1289,13 +1289,21 @@ def build_ideal_lineup(season: int, team_pk: int) -> dict:
         injury_status = getattr(bp, "injuryStatus", None)
         if not isinstance(injury_status, str):
             injury_status = None  # D/ST has no real injury status (espn_api returns [] there)
+        # None when the solver's proposed slot MATCHES the current one
+        # (no real change - e.g. McCaffrey staying at RB) rather than
+        # repeating the same value in both columns, which read as if a
+        # change were being suggested when none was (user feedback
+        # 2026-09-14). A genuinely benched-with-no-slot player already
+        # gets None here too (never entered proposed_slot_by_id at all).
+        raw_proposed_slot = proposed_slot_by_id.get(bp.playerId)
+        proposed_slot = raw_proposed_slot if raw_proposed_slot != bp.slot_position else None
         lineup_detail.append(
             {
                 "player_id": bp.playerId,
                 "player_name": bp.name,
                 "position": bp.position,
                 "current_slot": bp.slot_position,
-                "proposed_slot": proposed_slot_by_id.get(bp.playerId),
+                "proposed_slot": proposed_slot,
                 "fp_positional_rank": fp_positional_rank,
                 "fp_overall_rank": fp_overall_rank,
                 "override_rank": override_rank,
