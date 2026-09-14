@@ -1,0 +1,28 @@
+name: GroupMe Lineup Suggestions (Wednesday)
+
+# Fires across a DST-safety window targeting 8am Pacific, restricted to
+# Wednesday. 8am PDT = 15:00 UTC, 8am PST = 16:00 UTC, so this window
+# covers both.
+on:
+  schedule:
+    - cron: "7,22,37,52 15,16 * * 3"
+  workflow_dispatch: {}
+
+jobs:
+  post-lineup-suggestions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Post lineup suggestions
+        env:
+          LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          SWID: ${{ secrets.SWID }}
+          CURRENT_SEASON: ${{ secrets.CURRENT_SEASON }}
+          GROUPME_PERSONAL_BOT_ID: ${{ secrets.GROUPME_PERSONAL_BOT_ID }}
+          FANTASYPROS_API_KEY: ${{ secrets.FANTASYPROS_API_KEY }}
+        run: python scripts/post_lineup_suggestions.py

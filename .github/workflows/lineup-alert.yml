@@ -1,0 +1,29 @@
+name: GroupMe Lineup Alert (Sunday)
+
+# Fires across a DST-safety window targeting 8:45am Pacific, restricted
+# to Sunday. 8:45am PDT = 15:45 UTC, 8:45am PST = 16:45 UTC - the :37/:52
+# firings each hour land within is_target_time_now's tolerance window of
+# both.
+on:
+  schedule:
+    - cron: "7,22,37,52 15,16 * * 0"
+  workflow_dispatch: {}
+
+jobs:
+  post-lineup-alert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Post Sunday lineup alert
+        env:
+          LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          SWID: ${{ secrets.SWID }}
+          CURRENT_SEASON: ${{ secrets.CURRENT_SEASON }}
+          GROUPME_PERSONAL_BOT_ID: ${{ secrets.GROUPME_PERSONAL_BOT_ID }}
+          FANTASYPROS_API_KEY: ${{ secrets.FANTASYPROS_API_KEY }}
+        run: python scripts/post_lineup_alert.py

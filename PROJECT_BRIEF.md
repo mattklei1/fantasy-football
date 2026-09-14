@@ -2420,6 +2420,35 @@ started, since it requires making `db.DB_PATH` session/league-aware
 through) and the user's own call was to finish and prove out the
 single-league Lineup Optimizer first.
 
+**Lineup Optimizer scheduled messages (2026-09-14):** completes the
+last piece of the Lineup Optimizer feature - both send to the PRIVATE
+GroupMe bot only (per explicit instruction: "no group groupmes" for
+personal lineup calls), both Pacific-time-gated like every other
+scheduled script here.
+
+- `scripts/post_lineup_suggestions.py` + `.github/workflows/lineup-
+  suggestions.yml`: Wednesday ~8am Pacific, a low-urgency early-week
+  heads-up on suggested changes (no "HIGH PRIORITY"/"ALERT" language -
+  see `lineup_alert_report.build_wednesday_message()`).
+- `scripts/post_lineup_alert.py` + `.github/workflows/lineup-alert.yml`:
+  Sunday ~8:45am Pacific, ahead of early kickoffs. Two-part message,
+  HIGH PRIORITY zero-projected-starters section always first, non-
+  optimal-decisions section second - per explicit ordering request (see
+  `build_sunday_message()`). Omits the "review in War Room" pointer
+  entirely when both sections are clean, so a quiet week doesn't nag.
+- Both reuse `war_room_data.build_ideal_lineup()` completely unchanged
+  via the same throwaway-temp-DB-plus-SWID-team-resolution pattern
+  `post_waiver_recommendations.py` already established - no new
+  DB-access code, just two message formatters (`lineup_alert_report.py`,
+  13 new unit tests) and two thin script wrappers.
+- Validated end-to-end against real live Week 1 data (both messages
+  correctly rendered "already matches the weekly consensus" and "no
+  starters projected for 0 points", matching what the War Room tab
+  itself showed). 230/230 tests passing.
+- Needs `GROUPME_PERSONAL_BOT_ID` as a GitHub Actions secret to
+  actually fire (already added earlier this session for the Tuesday
+  waiver script, so no further action needed there).
+
 **First actions for a new session:**
 1. `cd` into the repo, run `python test_connection.py` (venv should exist
    at `venv/` - recreate with `python3 -m venv venv && venv/bin/pip
