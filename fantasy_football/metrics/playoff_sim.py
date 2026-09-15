@@ -130,6 +130,7 @@ def simulate_season(
     playoff_team_count: int = SUPPORTED_PLAYOFF_TEAM_COUNT,
     n_sims: int = DEFAULT_N_SIMS,
     rng: np.random.Generator | None = None,
+    shrinkage_games_played: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """team_state columns: see TEAM_STATE_COLUMNS - one row per team, all
     REAL cumulative values as of right now (season_ppg/last3_ppg/points_for/
@@ -139,6 +140,20 @@ def simulate_season(
     not-yet-completed regular-season matchup (includes an in-progress
     current week, simulated like any other remaining game rather than
     blending in a partial live score - a deliberate v1 simplification).
+
+    shrinkage_games_played: optional override for the "how many real
+    games of evidence do we have" signal that ONLY the early-season
+    shrinkage step (shrink_expected_score) uses - defaults to the real
+    matchup record (matchup_wins+losses+ties) when not given, which is
+    correct for every normal in-season call. Exists for
+    playoff_odds_snapshots.compute_week0_snapshot_rows()'s "Week 0"
+    snapshot, where team_state's real matchup record is genuinely 0-0-0
+    (no games played) but season_ppg/last3_ppg already carry real signal
+    (each team's optimal Week-1 lineup's ESPN pregame projection) that
+    the normal games_played=0 -> "no data yet, use the league average"
+    shrinkage rule would otherwise completely discard - see that
+    function's own docstring for the RMSE calibration behind the value
+    it passes here.
 
     Returns team_pk, playoff_pct, bye_pct, seed1_pct, championship_pct.
     """
@@ -158,9 +173,12 @@ def simulate_season(
     pos = {pk: i for i, pk in enumerate(team_pks)}
 
     raw_expected = expected_score(team_state["season_ppg"].to_numpy(), team_state["last3_ppg"].to_numpy())
-    games_played = (
-        team_state["matchup_wins"] + team_state["matchup_losses"] + team_state["matchup_ties"]
-    ).to_numpy(dtype=float)
+    if shrinkage_games_played is not None:
+        games_played = np.asarray(shrinkage_games_played, dtype=float)
+    else:
+        games_played = (
+            team_state["matchup_wins"] + team_state["matchup_losses"] + team_state["matchup_ties"]
+        ).to_numpy(dtype=float)
     league_avg_ppg = float(team_state["season_ppg"].mean())
     expected = shrink_expected_score(raw_expected, games_played, league_avg_ppg)
     stdev = team_state["score_stdev"].to_numpy()

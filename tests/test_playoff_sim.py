@@ -164,6 +164,67 @@ def test_simulate_season_rejects_unsupported_playoff_team_count():
     assert SUPPORTED_PLAYOFF_TEAM_COUNT == 6
 
 
+def _round_robin_schedule(n_teams: int) -> pd.DataFrame:
+    """Standard circle-method round robin: n_teams-1 rounds (n_teams
+    even), every team plays every other team exactly once."""
+    teams = list(range(n_teams))
+    rows = []
+    for week in range(1, n_teams):
+        for i in range(n_teams // 2):
+            home, away = teams[i], teams[n_teams - 1 - i]
+            rows.append((week, home, away))
+        teams = [teams[0]] + [teams[-1]] + teams[1:-1]
+    return pd.DataFrame(rows, columns=["week", "home_team_pk", "away_team_pk"])
+
+
+def test_shrinkage_games_played_override_preserves_signal_at_zero_real_games():
+    # 8 teams (only 6 make the playoff_team_count=6 default field - real
+    # competition for spots), all with a genuinely 0-0-0 real record (a
+    # "Week 0" scenario - nobody's played yet) but a wide, real
+    # season_ppg spread (a roster-quality signal, e.g. from optimal-
+    # lineup projections). Without an override, games_played=0 collapses
+    # EVERY team's expected score to the league average (shrink_expected_
+    # score), discarding that signal and leaving only near-identical
+    # odds driven by simulation noise. With a high override, the real
+    # signal should come through and meaningfully differentiate the
+    # field. Regression test for a real bug (2026-09-15): the Week-0
+    # playoff odds feature initially had every real team landing at
+    # 49-51% for exactly this reason before shrinkage_games_played was
+    # added.
+    n_teams = 8
+    rows = [
+        {
+            "team_pk": i, "season_ppg": 80.0 + i * 10.0, "last3_ppg": 80.0 + i * 10.0,
+            "score_stdev": MIN_STDEV, "matchup_wins": 0, "matchup_losses": 0, "matchup_ties": 0,
+            "median_wins": 0, "median_losses": 0, "median_ties": 0, "points_for": 0.0,
+        }
+        for i in range(n_teams)
+    ]
+    team_state = pd.DataFrame(rows)
+    remaining = _round_robin_schedule(n_teams)
+
+    no_override = simulate_season(
+        team_state, remaining, median_scoring=False, reg_season_count=n_teams - 1,
+        n_sims=2000, rng=np.random.default_rng(0),
+    ).set_index("team_pk")
+    spread_no_override = no_override["playoff_pct"].max() - no_override["playoff_pct"].min()
+
+    with_override = simulate_season(
+        team_state, remaining, median_scoring=False, reg_season_count=n_teams - 1,
+        n_sims=2000, rng=np.random.default_rng(0),
+        shrinkage_games_played=np.full(n_teams, 100.0),
+    ).set_index("team_pk")
+    spread_with_override = with_override["playoff_pct"].max() - with_override["playoff_pct"].min()
+
+    assert spread_no_override < 0.15  # collapsed to ~identical odds, as today's real bug did
+    assert spread_with_override > spread_no_override
+    assert spread_with_override > 0.3  # the real roster-quality signal now differentiates the field
+    # and it differentiates in the RIGHT direction: the best team's own
+    # number (team 7, season_ppg=150) should clearly outrank the worst
+    # (team 0, season_ppg=80)
+    assert with_override.loc[7, "playoff_pct"] > with_override.loc[0, "playoff_pct"]
+
+
 def test_simulate_season_empty_team_state_returns_empty():
     result = simulate_season(
         pd.DataFrame(columns=["team_pk", "season_ppg", "last3_ppg", "score_stdev",

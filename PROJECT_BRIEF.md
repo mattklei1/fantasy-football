@@ -3662,3 +3662,76 @@ with why that team actually lost.
   `test_commentary.py` (extended the shared `conn` fixture with a real
   qualifying bad-beat scenario for one of its losing teams). 373/373
   tests passing overall.
+
+**Fixed silent recap truncation (2026-09-15, same session).** Found
+while live-verifying the two features above with a real Claude call: a
+real Week 1 recap got cut off mid-sentence (`stop_reason == "max_tokens"`
+at the old `MAX_TOKENS = 4096`) and `generate_claude_commentary()`
+returned the truncated text as a normal, complete recap - only a
+`"refusal"` stop_reason was treated as a failure. Raised `MAX_TOKENS` to
+8192 and added a check that raises on `"max_tokens"` too, so a truncated
+response now falls back to the placeholder instead of shipping a
+cut-off recap. 1 new test in `test_commentary.py` mocking the Anthropic
+client directly (the first test in this file to do so - every other
+Claude-path test monkeypatches `generate_claude_commentary` itself,
+since this one needs to test that function's own body). 374/374 tests
+passing.
+
+**Week 0 playoff odds were flat ~49-51% for every team - a real bug,
+not a data artifact (2026-09-15, same session).** User, after seeing the
+first live numbers: "I wouldn't expect all teams to be at 49-51% at
+week 0. After the draft we have a pretty good idea of who will make the
+playoffs based on projected score and draft rankings from fantasypros
+api." Root cause: `playoff_sim.simulate_season()`'s early-season
+shrinkage (`shrink_expected_score()`) blends a team's own expected score
+toward the league average by `games_played/(games_played+SHRINKAGE_
+GAMES)` - and Week 0's `team_state` has a genuinely real `0-0-0` matchup
+record (nobody's played yet), so `games_played=0` made the shrinkage
+weight EXACTLY 0, discarding the real Week-1-optimal-lineup-projection
+signal `compute_week0_team_state()` had just computed and replacing
+EVERY team's expected score with the flat league average - the
+shrinkage step, designed to stop a lucky week-1 fluke from looking like
+a permanent skill gap, was (correctly, for its original purpose, but
+wrongly here) treating a real pregame PROJECTION exactly like an absent
+observation.
+
+- Confirmed the projection genuinely predicts real outcomes before
+  fixing anything: RMSE-swept blend weights (0.00-1.00) predicting each
+  team's REAL rest-of-season PPG from `w * week1_optimal_projection +
+  (1-w) * league_avg_projection`, across the 6 completed real seasons
+  with usable Week-1 projection data (2019-2022, 2024-2025 - 2023
+  excluded, a real data-quality issue that season, its league_avg_proj
+  came out ~18 vs. a real ~114 PPG average). w=0 (today's bug) gave RMSE
+  9.95 across 72 team-seasons; the minimum, RMSE 9.22, sat at w=0.85
+  (flat within +/-0.05 either side, not a knife-edge optimum) -
+  confirming the user's intuition directly: a team's Week-1 pregame
+  projection really does predict its rest-of-season scoring better than
+  assuming every team is average.
+- `simulate_season()` gained an optional `shrinkage_games_played`
+  override parameter - when given, it replaces the real matchup-record-
+  derived `games_played` used ONLY by the shrinkage step, leaving every
+  normal in-season call (which doesn't pass it) completely unchanged.
+  New `playoff_odds_snapshots.WEEK0_TRUST_GAMES = 45.0` (the games_played
+  equivalent of w=0.85 given `SHRINKAGE_GAMES=8`:
+  `8*0.85/(1-0.85) ≈ 45`) is passed as that override from
+  `compute_week0_snapshot_rows()`.
+- Live-verified against the real 2026 production league: the same 12
+  real teams that previously clustered at 0.489-0.511 playoff_pct now
+  spread from 0.011 (Hammer Time, a real bottom-tier Week-1 roster) to
+  0.860 (Derelic My Balls, a real top-tier one) - a meaningful, sensible
+  distribution driven by actual roster quality instead of simulation
+  noise. Corrected the already-backfilled real `playoff_odds_snapshots/
+  2026.json` "0" entry in place (same GitHub-MCP-direct-write path as
+  the original backfill, since this dev sandbox still can't write
+  GitHub Contents API directly) - the earlier flat numbers were live on
+  `main` for under an hour before this fix replaced them.
+- 1 new test in `test_playoff_sim.py` (`shrinkage_games_played` override
+  preserves a real season_ppg spread at 0 real games, where the default
+  behavior collapses it - regression test for the exact bug above) and
+  6 new tests in `test_playoff_odds_snapshots.py` (a new DB-backed
+  `week0_conn` fixture with 8 teams at genuinely different Week-1
+  projections - `compute_week0_team_state`/`compute_week0_snapshot_rows`
+  had NO unit test coverage at all before this, which is exactly how
+  this bug shipped in the first place; the key regression test asserts
+  a >0.3 playoff_pct spread, not just that the function runs). 380/380
+  tests passing overall.
