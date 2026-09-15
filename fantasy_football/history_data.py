@@ -173,8 +173,11 @@ def get_hall_of_fame() -> pd.DataFrame:
     season-relative PPG percentile (metrics_weekly.ppg_percentile at each
     season's final week - the same cross-season design note in
     ingest.py/season_metrics.py). Also returns `championship_years` (list
-    of season_id, sorted) and `playoff_byes` (a real playoff-bracket bye -
-    NOT counted in playoff_wins/losses/ties, a bye isn't a game played)."""
+    of season_id, sorted), `playoff_byes` (a real playoff-bracket bye -
+    NOT counted in playoff_wins/losses/ties, a bye isn't a game played),
+    and `last_place_finishes` (regular-season standing only - see the
+    dedicated comment above its computation for why that's NOT the same
+    as `teams.final_standing`)."""
     conn = dd.get_connection()
 
     teams_query = f"""
@@ -302,6 +305,40 @@ def get_hall_of_fame() -> pd.DataFrame:
     else:
         agg["playoff_byes"] = 0
     agg["playoff_byes"] = agg["playoff_byes"].fillna(0).astype(int)
+
+    # Regular-season last-place finishes - ranked by the SAME combined
+    # win% + points-for tiebreak real ESPN standings use (metrics_
+    # weekly.actual_win_pct, already folds in the median bonus when a
+    # season uses it), taken at exactly week = reg_season_count (the
+    # final REGULAR season week) - deliberately NOT teams.final_standing
+    # (ESPN's post-FULL-season rank, which reflects whoever lost every
+    # game in the separate LOSERS_CONSOLATION_LADDER "toilet bowl"
+    # bracket, not who was actually worst during the regular season -
+    # user, 2026-09-16: "This is based on regular season last place
+    # finish. Disregard what happened in the losers consolation
+    # bracket"). A season still in progress has no row at week =
+    # reg_season_count yet, so it's naturally excluded until it's over.
+    last_place_rows = pd.read_sql_query(
+        f"""
+        SELECT m.season_id, m.actual_win_pct, m.points_for, t_mgr.manager_id
+        FROM metrics_weekly m
+        JOIN seasons s ON s.season_id = m.season_id
+        JOIN teams t ON t.id = m.team_pk
+        {_primary_manager_sql('t')}
+        WHERE m.week = s.reg_season_count AND t_mgr.manager_id IS NOT NULL
+        """,
+        conn,
+    )
+    if not last_place_rows.empty:
+        last_place_rows["manager_id"] = last_place_rows["manager_id"].map(lambda m: canonical_map.get(m, m))
+        worst_per_season = (
+            last_place_rows.sort_values(["actual_win_pct", "points_for"]).groupby("season_id").head(1)
+        )
+        last_place_counts = worst_per_season.groupby("manager_id").size().rename("last_place_finishes")
+        agg = agg.merge(last_place_counts, on="manager_id", how="left")
+    else:
+        agg["last_place_finishes"] = 0
+    agg["last_place_finishes"] = agg["last_place_finishes"].fillna(0).astype(int)
 
     if not best_worst.empty:
         season_end = best_worst.sort_values("week").groupby(["manager_id", "season_id"]).tail(1)

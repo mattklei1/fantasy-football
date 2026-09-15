@@ -4591,3 +4591,38 @@ decision, not a bug fix.
   excluded too (previously only `LOSERS_CONSOLATION_LADDER` was
   checked, since at the time `WINNERS_CONSOLATION_LADDER` was expected
   to be present). 400/400 tests passing.
+
+**History page: new "Last Place" column in Hall of Fame, regular-season
+only.** User: "in history where we show championships and playoff
+appearances. Add a column for last place finishes. This is based on
+regular season last place finish. Disregard what happened in the
+losers consolation bracket." Deliberately NOT `teams.final_standing`
+(ESPN's `rankCalculatedFinal` - confirmed straight from the installed
+espn_api library source, `Team.__init__`: `self.final_standing =
+data['rankCalculatedFinal']`) - that reflects the FULL season including
+the separate LOSERS_CONSOLATION_LADDER "toilet bowl" bracket, so a team
+that finished mid-pack in the regular season but then lost every
+placement game afterward would show as last place there, which is
+exactly the case the user wants excluded. Also confirmed `teams.
+standing` isn't a usable substitute either - it's `playoffSeed`, not a
+regular-season rank at all.
+- `history_data.get_hall_of_fame()`: new `last_place_finishes` - for
+  each season, takes every team's `metrics_weekly` row at exactly
+  `week = seasons.reg_season_count` (the final REGULAR season week,
+  before any playoff/consolation games), ranks by `actual_win_pct` then
+  `points_for` ascending (the same combined win% + points tiebreak real
+  ESPN standings use - `actual_win_pct` already folds in the median
+  bonus when a season uses one), and counts whoever's worst per season
+  by canonical manager identity. A season still in progress has no row
+  at that week yet, so it's naturally excluded until it's actually
+  over - no separate "is this season done" check needed.
+- `pages/5_History.py`: new "Last Place" column in the Hall of Fame
+  table, placed next to Playoffs per the user's own framing. Also
+  tightened the existing "Playoffs" column's help text while touching
+  this area - it still said "excludes ESPN's separate consolation
+  ladder for teams that missed the playoffs" only, stale after the
+  same-day WINNERS_CONSOLATION_LADDER exclusion above.
+400/400 tests passing (live-verification against real multi-season
+league data in progress - this environment's ESPN calls were running
+slower than usual, taking multiple background attempts to complete a
+full 12-season re-ingest; will confirm here once it lands).

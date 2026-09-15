@@ -60,6 +60,7 @@ with tab_hof:
             return str(n)
 
         display["🏆"] = display.apply(_championships, axis=1)
+        display["Last Place"] = display["last_place_finishes"].astype(int)
         display["Career Points For"] = display["career_points_for"].round(0).astype(int)
         display["Career Points Against"] = display["career_points_against"].round(0).astype(int)
         display["Norm. Points For"] = (display["career_points_for_pct"] * 100).round(0).astype(int)
@@ -74,7 +75,7 @@ with tab_hof:
         display = display.sort_values("championships", ascending=False)
 
         table = display[
-            ["manager_name", "🏆", "finals_appearances", "playoff_appearances",
+            ["manager_name", "🏆", "finals_appearances", "playoff_appearances", "Last Place",
              "Regular Season Record", "Playoff Record",
              "Career Points For", "Career Points Against",
              "Norm. Points For", "Norm. Points Against",
@@ -107,8 +108,13 @@ with tab_hof:
                     help="Same as Norm. Points For, but for points allowed to opponents.",
                 ),
                 "Playoffs": st.column_config.NumberColumn(
-                    help="Real playoff bracket appearances only - excludes ESPN's separate "
-                    "consolation ladder for teams that missed the playoffs.",
+                    help="Real championship-bracket appearances only - excludes both of ESPN's "
+                    "placement/consolation ladders.",
+                ),
+                "Last Place": st.column_config.NumberColumn(
+                    help="Regular-season last place only (ranked by real record + points "
+                    "tiebreak, same as ESPN's own standings) - disregards whatever happened in "
+                    "the separate losers' consolation bracket afterward.",
                 ),
                 "Best Season": st.column_config.NumberColumn(format="%d", help="Year of the season with the highest season-relative PPG percentile."),
                 "Worst Season": st.column_config.NumberColumn(format="%d", help="Year of the season with the lowest season-relative PPG percentile."),
