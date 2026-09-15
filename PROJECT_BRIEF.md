@@ -2949,3 +2949,63 @@ global once per page load, not touching the ~20 functions that call it.
   optimizer posts" was the original framing, not yet built).
 - 306/306 tests passing (`test_league_context.py`, `test_league_
   registry.py` new).
+
+**Multi-league support, Phase 2: per-user access control (2026-09-15,
+same session):** all 3 of the user's other real leagues registered
+live (validated against ESPN first - `KleHaBe Champions League`
+1827422962, `BIR and Friends` 1243473, `The Worst League of All Time`
+177023783 - the primary account's own team in each confirmed live too:
+Cee-dees McMillion Lambs / Team Gypsy Gypsy / Chasin McMillions
+respectively). Then a real requirement beyond Phase 1's "admin sees
+everything, everyone else sees only the primary league": other real
+managers need to see ONLY the league(s) they're actually in, some
+managers overlap 2 leagues and need the selector too (not just the
+primary admin), and one manager (Madeline Klei) is getting War Room
+access scoped to her own team across her 2 leagues.
+
+- **New `access_control.py`**: durable (git-committed, same
+  `GITHUB_TOKEN` as everything else - no new secret) per-user grants,
+  `{email: {"leagues": [...], "war_room": bool}}` in `league_access.json`
+  at repo root. Two tiers: the ONE primary `config.admin_email()`
+  implicitly sees every registered league and always has War Room
+  (never needs an entry); everyone else defaults to the primary league
+  only and no War Room unless explicitly granted here. Primary-admin-
+  only to manage (a new "👤 Manage league access" sidebar expander,
+  parallel to "➕ Manage leagues") - not self-service like the league
+  registry itself, since granting ACCESS is a different, higher-trust
+  action than just adding a league to browse.
+- **`ui_common.is_admin()` split into two concepts**: `is_primary_admin()`
+  (the one deployment owner - governs league registration and access
+  grants) and a broadened `is_admin()` (primary admin OR anyone
+  `access_control.has_war_room_access()` - gates the War Room page
+  itself, now genuinely multi-user).
+- **League selector generalized** from "primary-admin-only" to "anyone
+  with 2+ accessible leagues" - a granted user sees ONLY their own
+  granted leagues (primary + extras), never the full registry; a
+  single-league user (the common case) sees no selector at all, nothing
+  to pick.
+- **`require_login()` extended**: anyone with an explicit
+  `access_control` grant can log in even if not separately added to
+  the `ALLOWED_EMAILS` Streamlit secret - avoids a redundant two-step
+  "add to the site allowlist AND grant league access" for every new
+  manager added to another league.
+- Verified live via AppTest (three real scenarios, zero exceptions in
+  each): primary admin sees all 4 leagues + both manage expanders; a
+  granted non-admin user sees only their 3 granted leagues and neither
+  manage expander; an ungranted user sees no selector and stays locked
+  out of War Room.
+- **The one piece deliberately NOT built yet, flagged rather than
+  guessed**: Madeline's ability to have `war_room_data.get_my_team_pk()`
+  (and real writes - waiver claims, lineup submits) resolve to HER OWN
+  team specifically, not the primary account's. That resolution matches
+  against the ONE globally configured SWID cookie; ESPN's write
+  endpoints authenticate via that same SWID, and it's genuinely unknown
+  whether the primary account holds commissioner/manager rights over
+  her team in either of her leagues (which might let a single SWID act
+  on her behalf) versus needing HER OWN espn_s2/SWID captured from her
+  own browser session (the same real per-user credential this project
+  has otherwise deliberately never stored for anyone but the primary
+  account). Asked the user directly rather than guessing, given real
+  FAAB budget and real roster changes are on the other side of getting
+  this wrong.
+- 318/318 tests passing (`test_access_control.py` new).

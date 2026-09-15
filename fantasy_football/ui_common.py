@@ -356,7 +356,10 @@ def require_login() -> None:
 
     email = (st.user.email or "").strip().lower()
     admin = config.admin_email()
-    if email not in config.allowed_emails() and email != admin:
+    from . import access_control
+
+    explicitly_granted = email in access_control.load_access()
+    if email not in config.allowed_emails() and email != admin and not explicitly_granted:
         st.title("🏈 Fantasy Dashboard")
         st.error(
             f"Signed in as {email}, but that address isn't on the league's access list. "
@@ -366,21 +369,41 @@ def require_login() -> None:
         st.stop()
 
 
-def is_admin() -> bool:
-    """True only when the signed-in visitor is config.admin_email() -
-    gates the commissioner-only War Room page (pages/9_War_Room.py).
-    Never raises: returns False for any not-logged-in/not-configured
-    state, so local dev and everyone else just sees the page's locked
-    teaser rather than a crash."""
+def _current_email() -> str | None:
     try:
         if not st.user.is_logged_in:
-            return False
+            return None
     except Exception:
-        return False
+        return None
+    return (st.user.email or "").strip().lower() or None
+
+
+def is_primary_admin() -> bool:
+    """True only for config.admin_email() - the ONE original owner of
+    this deployment, who can manage OTHER users' league access and the
+    registered-leagues list (see access_control.py/league_registry.py).
+    Distinct from is_admin() below: every War Room user is "an admin"
+    for their own team, but only the primary admin governs who else
+    gets that."""
+    email = _current_email()
     admin = config.admin_email()
-    if not admin:
+    return bool(email and admin and email == admin)
+
+
+def is_admin() -> bool:
+    """True for the primary admin OR anyone access_control.py has
+    explicitly granted war_room access - gates the War Room page
+    (pages/9_War_Room.py). Never raises: returns False for any not-
+    logged-in/not-configured state, so local dev and everyone else just
+    sees the page's locked teaser rather than a crash."""
+    email = _current_email()
+    if not email:
         return False
-    return (st.user.email or "").strip().lower() == admin
+    if is_primary_admin():
+        return True
+    from . import access_control
+
+    return access_control.has_war_room_access(email)
 
 
 def ensure_data_bootstrapped() -> None:
@@ -467,41 +490,57 @@ def show_flash(key: str) -> None:
 
 
 def render_league_selector() -> None:
-    """Admin-only "which league is this" sidebar picker - the ORIGINAL
-    request ("select at the top what league this is for, only when
-    signed in as admin, like me"). Every visitor gets league_context.
+    """"Which league is this" sidebar picker - visible to the primary
+    admin (sees every registered league) AND to any signed-in visitor
+    access_control.py has explicitly granted 2+ leagues to ("overlap
+    managers... should see the league selector option"). Anyone with
+    only ONE accessible league (the common case) sees no selector at
+    all - nothing to pick. Every visitor still gets league_context.
     sync_db_path() called unconditionally first (cheap - just points
     db.DB_PATH at whichever league is active for THIS session, primary
-    for everyone but an admin who's picked something else), so a
-    regular league member's session is completely unaffected regardless
-    of what the admin is currently browsing in their own session -
-    Streamlit session_state is per-browser-session, never shared."""
-    from . import league_context, league_registry
+    for everyone but a multi-league user who's picked something else),
+    so a regular single-league member's session is completely
+    unaffected regardless of what anyone else is browsing in their own
+    session - Streamlit session_state is per-browser-session, never
+    shared. "Manage leagues"/"Manage league access" stay primary-admin-
+    only - a multi-league user can switch between THEIR OWN leagues,
+    not register new ones or grant access to others."""
+    from . import access_control, league_context, league_registry
 
     league_context.sync_db_path()
 
-    if not is_admin():
-        return
-
     primary_id = config.load_espn_credentials().league_id
     registered = league_registry.load_registered_leagues()
-    options = [primary_id] + sorted(registered.keys())
+    email = _current_email()
+
+    if is_primary_admin():
+        accessible_ids = [primary_id] + sorted(registered.keys())
+    elif email:
+        granted = access_control.get_user_leagues(email, primary_id)
+        accessible_ids = [primary_id] + sorted(registered.keys()) if granted == "all" else granted
+    else:
+        accessible_ids = [primary_id]
+
     labels = {primary_id: "My league (primary)"}
     for lid, info in registered.items():
         labels[lid] = info.get("name") or f"League {lid}"
 
-    current = league_context.get_active_league_id()
-    if current not in options:
-        current = primary_id
-    choice = st.sidebar.selectbox(
-        "League (admin)", options, index=options.index(current), format_func=lambda lid: labels.get(lid, str(lid)),
-        key="league_selector",
-    )
-    if choice != current:
-        league_context.set_active_league_id(choice)
-        league_context.sync_db_path()
-        dd.clear_all_caches()
-        st.rerun()
+    if len(accessible_ids) > 1:
+        current = league_context.get_active_league_id()
+        if current not in accessible_ids:
+            current = primary_id
+        choice = st.sidebar.selectbox(
+            "League", accessible_ids, index=accessible_ids.index(current),
+            format_func=lambda lid: labels.get(lid, str(lid)), key="league_selector",
+        )
+        if choice != current:
+            league_context.set_active_league_id(choice)
+            league_context.sync_db_path()
+            dd.clear_all_caches()
+            st.rerun()
+
+    if not is_primary_admin():
+        return
 
     with st.sidebar.expander("➕ Manage leagues"):
         show_flash("league_registry")
@@ -546,6 +585,43 @@ def render_league_selector() -> None:
                     league_context.sync_db_path()
                 if not save_result["committed"]:
                     set_flash("league_registry", "warning", save_result["commit_message"])
+                st.rerun()
+
+    with st.sidebar.expander("👤 Manage league access"):
+        st.caption(
+            "Grant a signed-in user access to specific leagues (beyond the primary one everyone gets) "
+            "and/or War Room. Also lets them log in at all, even if they're not separately on "
+            "ALLOWED_EMAILS."
+        )
+        show_flash("league_access")
+        access = access_control.load_access()
+        if access:
+            for granted_email, entry in access.items():
+                league_names = ", ".join(labels.get(lid, str(lid)) for lid in entry["leagues"]) or "(primary only)"
+                wr = " · War Room" if entry["war_room"] else ""
+                st.caption(f"**{granted_email}**: {league_names}{wr}")
+
+        grant_email = st.text_input("Email", key="league_access_email")
+        grant_league_ids = st.multiselect(
+            "Extra leagues", sorted(registered.keys()), format_func=lambda lid: labels.get(lid, str(lid)),
+            key="league_access_leagues",
+        )
+        grant_war_room = st.checkbox("War Room access", key="league_access_war_room")
+        col_grant, col_revoke = st.columns(2)
+        with col_grant:
+            if st.button("Save grant", key="league_access_save") and grant_email.strip():
+                save_result = access_control.set_user_access(grant_email, grant_league_ids, grant_war_room)
+                level = "success" if save_result["committed"] else "warning"
+                set_flash(
+                    "league_access", level,
+                    "Saved." if save_result["committed"] else f"Saved locally only. {save_result['commit_message']}",
+                )
+                st.rerun()
+        with col_revoke:
+            if st.button("Revoke", key="league_access_revoke") and grant_email.strip():
+                save_result = access_control.remove_user_access(grant_email)
+                if not save_result["committed"]:
+                    set_flash("league_access", "warning", save_result["commit_message"])
                 st.rerun()
 
 
