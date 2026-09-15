@@ -1,0 +1,41 @@
+name: Matchup Win-Probability Snapshot
+
+# Fires every 10 minutes, every day - the script itself decides whether
+# to actually do anything via schedule_guard.is_within_live_window()
+# (real NFL broadcast windows only: Thu/Mon evening, all Sunday), so a
+# firing outside real game time no-ops in a couple seconds with no
+# ESPN/GitHub calls. Simpler than trying to express "every 10 min but
+# only Thu evening/Sunday/Mon evening" as a single cron expression, and
+# the script's own Pacific-time check is what's actually authoritative
+# (see fantasy_football/schedule_guard.py).
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+# Needed so the auto-provided secrets.GITHUB_TOKEN below can push a
+# commit to the matchup-snapshots branch it creates on first use - no
+# manually-created secret required for this write path (unlike the
+# Streamlit Cloud app's own GITHUB_TOKEN, which the admin DOES have to
+# set up themselves to read this data back for the chart - see
+# fantasy_football/config.py's github_token() docstring).
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Capture matchup snapshot
+        env:
+          LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          SWID: ${{ secrets.SWID }}
+          CURRENT_SEASON: ${{ secrets.CURRENT_SEASON }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/post_matchup_snapshot.py

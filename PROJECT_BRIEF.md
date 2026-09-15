@@ -2759,3 +2759,77 @@ semantics). New `tests/test_dashboard_data.py` (first test file for
 this module - previously untested per the "live-data functions get
 AppTest, pure logic gets pytest" convention, and this function turned
 out to be pure). 263/263 tests passing.
+
+**Win-probability-over-time chart on the Matchups page (2026-09-15):**
+new section between Median Cutline and the individual matchup cards - a
+Plotly line chart, one line per team, x-axis real wall-clock time
+across the whole week, toggle between three metrics (win probability /
+projected score / chance to make the median cutline). User's own spec,
+one real architectural problem solved along the way:
+
+- **The problem, found before writing any code**: every other durable-
+  storage feature this project has (rank overrides, protected players)
+  commits to `main`, and Streamlit Cloud redeploys on every push to the
+  branch it's watching. A snapshot every 10 minutes during live games
+  would mean ~90-100 forced restarts of the live site per week, each
+  one dropping every visitor's in-progress session - unacceptable for
+  a feature that's purely additive chart data. Fixed by committing to a
+  DEDICATED branch (`matchup-snapshots`) Streamlit Cloud never watches;
+  the live app reads that branch's content directly over the GitHub API
+  instead of relying on its own local checkout, so new data shows up on
+  the next page load/cache refresh with zero redeploys.
+- **Storage shape**: one GROWING JSONL manifest file per (season, week)
+  - not one file per snapshot - so the chart needs exactly one file
+  fetch per page load, not N. Each collector run does one read (current
+  content + sha) - append one line - commit-with-that-sha; a real but
+  small and accepted race window since only a single cron writes here.
+- **Sampling**: every 10 minutes, but gated by a new schedule_guard.
+  is_within_live_window() (Thu/Mon evening, all Sunday, Pacific time) -
+  sampling around the clock would just repeat the same static pregame
+  number for ~5 non-game days/week, pure waste. New GitHub Actions
+  workflow (`matchup-snapshot.yml`) fires the cron unconditionally
+  every 10 min; the SCRIPT decides whether to actually call ESPN, same
+  "workflow fires broadly, script gates on real timing" pattern the
+  DST-safety scripts already use.
+- **Zero new secrets for the WRITE side**: the collector script runs
+  inside GitHub Actions, which auto-provides its own `secrets.
+  GITHUB_TOKEN` to every workflow run (a different, ephemeral token
+  from the user's own manually-created PAT) - passed through as an env
+  var so `config.github_token()` picks it up for free, with `permissions:
+  contents: write` in the workflow so that auto-token can actually push.
+  The user's own manually-created `GITHUB_TOKEN` Streamlit Cloud secret
+  (already needed for rank overrides/protected players) is what the
+  LIVE APP uses to READ this branch back for the chart - if that's not
+  configured, the chart section degrades to a plain explanatory
+  caption, never a crash.
+- **New module `github_sync.py` capabilities**: `ensure_branch_exists()`
+  (creates a branch from another branch's current HEAD if missing, idem-
+  potent) and `get_file_content()` (fetches a file's content+sha off any
+  branch) - both generalize this project's existing GitHub Contents API
+  wrapper beyond "commit to main" for the first time.
+- **`benchmark_ticks()`**: the chart's x-axis TICK LABELS only show the
+  5 real broadcast-window benchmarks the user asked for (Post-TNF/
+  Post-10am games/Post-1pm games/Post-SNF/Post-MNF) - anchored to the
+  ACTUAL calendar dates the collected snapshots span (not a hardcoded
+  NFL schedule lookup), so it works for any week without new data. The
+  underlying LINE still plots every 10-minute point collected, exactly
+  as the user asked ("gathering more screenshots... even if the x-axis
+  labels don't go into that detail").
+- **Added beyond the literal ask**: a "biggest mover" caption under the
+  chart (whoever's currently-toggled metric swung most since the last
+  snapshot) - proposed to the user as a suggested addition, confirmed
+  before building.
+- Verified live: `capture_snapshot()` produces correct real win
+  probabilities/projections/make-cut percentages against the live
+  league (confirmed several already-finished teams correctly show a
+  hard 0%/100% win probability, consistent with today's earlier
+  zero-stdev-when-done fix); `branch_exists()`/`get_file_content()`
+  confirmed working against the real repo (this sandbox's network
+  proxy blocks the WRITE calls specifically, same restriction hit
+  earlier for rank overrides - not a real problem, just untestable from
+  here). AppTest confirms the chart renders with zero exceptions both
+  with no data yet (degrade path) and with synthetic snapshot data (full
+  chart + toggle + biggest-mover caption).
+- 286/286 tests passing (`test_matchup_snapshots.py` new, plus new
+  `is_within_live_window` coverage in `test_schedule_guard.py` and new
+  branch/read-content coverage in `test_github_sync.py`).

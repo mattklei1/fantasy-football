@@ -81,3 +81,68 @@ def test_delete_file_sends_sha_and_reports_success(monkeypatch):
     assert calls["delete"]["sha"] == "sha1"
     assert result["success"] is True
     assert result["commit_sha"] == "sha2"
+
+
+# --- branch_exists / ensure_branch_exists -------------------------------
+
+def test_branch_exists_true_on_200(monkeypatch):
+    monkeypatch.setattr(github_sync.requests, "get", lambda *a, **k: _FakeResponse(200))
+    assert github_sync.branch_exists("me/repo", "tok", "data-snapshots") is True
+
+
+def test_branch_exists_false_on_404(monkeypatch):
+    monkeypatch.setattr(github_sync.requests, "get", lambda *a, **k: _FakeResponse(404))
+    assert github_sync.branch_exists("me/repo", "tok", "data-snapshots") is False
+
+
+def test_ensure_branch_exists_is_a_noop_when_already_there(monkeypatch):
+    calls = {"post": 0}
+    monkeypatch.setattr(github_sync.requests, "get", lambda *a, **k: _FakeResponse(200))
+    monkeypatch.setattr(github_sync.requests, "post", lambda *a, **k: calls.__setitem__("post", calls["post"] + 1))
+
+    result = github_sync.ensure_branch_exists("me/repo", "tok", "data-snapshots", "main")
+
+    assert result["success"] is True
+    assert calls["post"] == 0  # never tried to create it
+
+
+def test_ensure_branch_exists_creates_from_base_branch_head(monkeypatch):
+    calls = {}
+
+    def fake_get(url, headers, timeout, **kwargs):
+        if url.endswith("/git/ref/heads/data-snapshots"):
+            return _FakeResponse(404)
+        if url.endswith("/git/ref/heads/main"):
+            return _FakeResponse(200, {"object": {"sha": "main-head-sha"}})
+        raise AssertionError(f"unexpected GET {url}")
+
+    def fake_post(url, headers, json, timeout):
+        calls["post"] = json
+        return _FakeResponse(201)
+
+    monkeypatch.setattr(github_sync.requests, "get", fake_get)
+    monkeypatch.setattr(github_sync.requests, "post", fake_post)
+
+    result = github_sync.ensure_branch_exists("me/repo", "tok", "data-snapshots", "main")
+
+    assert result["success"] is True
+    assert calls["post"] == {"ref": "refs/heads/data-snapshots", "sha": "main-head-sha"}
+
+
+# --- get_file_content ----------------------------------------------------
+
+def test_get_file_content_returns_none_when_missing(monkeypatch):
+    monkeypatch.setattr(github_sync.requests, "get", lambda *a, **k: _FakeResponse(404))
+    assert github_sync.get_file_content("me/repo", "tok", "path/file.jsonl", "data-snapshots") is None
+
+
+def test_get_file_content_decodes_base64_and_returns_sha(monkeypatch):
+    import base64
+
+    encoded = base64.b64encode(b"hello world").decode("ascii")
+    monkeypatch.setattr(
+        github_sync.requests, "get", lambda *a, **k: _FakeResponse(200, {"content": encoded, "sha": "filesha"})
+    )
+    content, sha = github_sync.get_file_content("me/repo", "tok", "path/file.jsonl", "data-snapshots")
+    assert content == b"hello world"
+    assert sha == "filesha"

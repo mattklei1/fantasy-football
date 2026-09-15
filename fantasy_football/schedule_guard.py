@@ -30,6 +30,36 @@ def is_target_time_now(target_hour: int, target_minute: int = 0, tolerance_minut
     return delta <= tolerance_minutes
 
 
+#: Real NFL game windows, in Pacific local time (Thu/Mon night games kick
+#: off ~5:15pm PT, Sunday's early slate ~10am PT, running through Sunday
+#: Night Football ending ~8:45pm PT). Generous on both ends on purpose -
+#: this only gates the matchup-snapshot collector (scripts/post_matchup_
+#: snapshot.py), where an extra few wasted ticks pregame/postgame cost
+#: nothing (one skipped ESPN call), but missing a real live window would
+#: leave a visible gap in the win-probability chart.
+LIVE_GAME_WINDOWS_BY_WEEKDAY = {
+    3: (16, 30, 21, 0),   # Thursday: 4:30pm-9:00pm PT (TNF)
+    6: (9, 30, 21, 0),    # Sunday: 9:30am-9:00pm PT (early slate through SNF)
+    0: (16, 30, 21, 0),   # Monday: 4:30pm-9:00pm PT (MNF)
+}
+
+
+def is_within_live_window(now: datetime.datetime | None = None) -> bool:
+    """True during the real NFL broadcast windows this league's games
+    are actually played in (see LIVE_GAME_WINDOWS_BY_WEEKDAY) - used to
+    gate the matchup-snapshot collector so it only actually calls ESPN
+    (and commits a snapshot) while scores can realistically be changing,
+    not around the clock every 10 minutes for a full week."""
+    now = now or datetime.datetime.now(PACIFIC)
+    window = LIVE_GAME_WINDOWS_BY_WEEKDAY.get(now.weekday())
+    if window is None:
+        return False
+    start_hour, start_minute, end_hour, end_minute = window
+    start = now.replace(hour=start_hour, minute=start_minute, second=0, microsecond=0)
+    end = now.replace(hour=end_hour, minute=end_minute, second=0, microsecond=0)
+    return start <= now <= end
+
+
 def should_refresh_daily(last_refreshed_at: str | None, hour: int = 6) -> bool:
     """True if a daily boundary has passed since `last_refreshed_at` (a
     UTC timestamp string as SQLite's datetime('now') produces, or None if

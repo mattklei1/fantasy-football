@@ -9,10 +9,14 @@ win-probability field at all - confirmed against the installed espn_api
 source), centered on that live projected total once one exists."""
 from __future__ import annotations
 
+import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
+from fantasy_football import config
 from fantasy_football import dashboard_data as dd
 from fantasy_football import history_data as hd
+from fantasy_football import matchup_snapshots
 from fantasy_football import ui_common as ui
 
 st.set_page_config(page_title="Matchups", page_icon="🏈", layout="wide")
@@ -192,6 +196,70 @@ if meta.get("median_scoring") and not is_final_week and not is_future_week and n
                 "score as a bell curve centered on its live projection, using that team's own real "
                 "scoring volatility this season."
             )
+
+if not is_final_week and not is_future_week and not live_error:
+    # Win-probability-over-time chart: a live snapshot is collected every
+    # 10 minutes during real NFL broadcast windows only (Thu/Mon evening,
+    # Sunday - see scripts/post_matchup_snapshot.py) and committed to a
+    # separate branch the deployed app reads over the GitHub API (see
+    # matchup_snapshots.py's module docstring for why NOT the usual
+    # commit-to-main pattern - that would redeploy the live site itself
+    # every 10 minutes). Degrades to a plain explanatory caption, never a
+    # crash, if no token is configured or nothing's collected yet.
+    snapshots = matchup_snapshots.load_snapshots(season, week)
+    with st.container(border=True):
+        st.markdown("#### Win Probability Over Time")
+        if not snapshots:
+            if not config.github_token():
+                st.caption(
+                    "Win-probability tracking isn't set up on this deployment yet "
+                    "(GITHUB_TOKEN not configured)."
+                )
+            else:
+                st.caption("No snapshots collected yet this week - check back once Thursday's games kick off.")
+        else:
+            metric_label = st.radio(
+                "Metric", ["Win probability", "Projected score", "Chance to make cut"],
+                horizontal=True, key="matchup_chart_metric",
+            )
+            metric_key = {
+                "Win probability": "win_probability",
+                "Projected score": "projected_score",
+                "Chance to make cut": "p_making_it",
+            }[metric_label]
+
+            rows_df = pd.DataFrame(matchup_snapshots.snapshots_to_rows(snapshots))
+            rows_df["timestamp"] = pd.to_datetime(rows_df["timestamp"])
+
+            fig = go.Figure()
+            for team_name, group in rows_df.groupby("team_name"):
+                group = group.sort_values("timestamp")
+                fig.add_trace(
+                    go.Scatter(x=group["timestamp"], y=group[metric_key], mode="lines+markers", name=team_name)
+                )
+
+            ticks = matchup_snapshots.benchmark_ticks(snapshots)
+            if ticks:
+                fig.update_xaxes(tickmode="array", tickvals=[t for t, _ in ticks], ticktext=[lbl for _, lbl in ticks])
+            if metric_key in ("win_probability", "p_making_it"):
+                fig.update_yaxes(tickformat=".0%", range=[0, 1])
+            else:
+                fig.update_yaxes(title="Projected points")
+            fig.update_layout(
+                height=450, hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                margin=dict(t=10),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            mover = matchup_snapshots.biggest_mover(snapshots, metric=metric_key)
+            if mover and abs(mover["delta"]) > 1e-9:
+                direction = "up" if mover["delta"] > 0 else "down"
+                if metric_key == "projected_score":
+                    delta_text = f"{abs(mover['delta']):.1f} pts"
+                else:
+                    delta_text = f"{abs(mover['delta']) * 100:.0f} pts"
+                st.caption(f"📈 Biggest mover: **{mover['team_name']}** {direction} {delta_text} since the last check.")
 
 for _, m in matchups.iterrows():
     with st.container(border=True):

@@ -1,11 +1,21 @@
-"""Minimal wrapper around GitHub's Contents API - used ONLY by
-war_room_data.save_rank_override()/clear_rank_override() to commit an
-uploaded weekly rank override directly to this repo, so it durably
-survives a Streamlit Cloud disk wipe and is visible to the Wednesday/
-Sunday GitHub Actions scripts (a completely separate environment that
-only ever sees what's actually in the repo - see rank_overrides.py's
-module docstring for the full reasoning). Deliberately narrow: create-
-or-update a single file, nothing else - not a general git client.
+"""Minimal wrapper around GitHub's Contents/Git-refs APIs - used by:
+
+- war_room_data.save_rank_override()/clear_rank_override() and
+  save_protected_players() to commit real admin-uploaded data to this
+  repo's default branch, so it durably survives a Streamlit Cloud disk
+  wipe and is visible to the Wednesday/Sunday GitHub Actions scripts (a
+  completely separate environment that only ever sees what's actually
+  in the repo - see rank_overrides.py's module docstring for the full
+  reasoning).
+- matchup_snapshots.py, which commits to a SEPARATE branch (not `main`)
+  it creates on first use via ensure_branch_exists() - see that
+  module's docstring for why (short version: Streamlit Cloud redeploys
+  on every push to the branch it's watching, and this needs to commit
+  every ~10 minutes during live games without restarting the live app
+  each time).
+
+Deliberately narrow: create/read/update a single file, create a branch
+if missing - not a general git client.
 """
 from __future__ import annotations
 
@@ -35,6 +45,63 @@ def _existing_sha(repo: str, token: str, path: str, branch: str) -> str | None:
     if resp.status_code == 200:
         return resp.json().get("sha")
     return None  # 404 (new file) or any other non-200 - fall through to a plain create attempt
+
+
+def branch_exists(repo: str, token: str, branch: str) -> bool:
+    resp = requests.get(
+        f"{API_BASE}/repos/{repo}/git/ref/heads/{branch}", headers=_headers(token), timeout=TIMEOUT_SECONDS
+    )
+    return resp.status_code == 200
+
+
+def ensure_branch_exists(repo: str, token: str, branch: str, base_branch: str = "main") -> dict:
+    """Creates `branch` pointing at `base_branch`'s current HEAD if it
+    doesn't already exist - a no-op success if it does. Used by the
+    matchup-snapshot collector to create a dedicated data branch
+    (matchup-snapshots) that Streamlit Cloud never watches for deploys,
+    so committing a snapshot every 10 minutes during live games doesn't
+    also restart the live site every 10 minutes (see matchup_snapshots.py
+    module docstring)."""
+    if branch_exists(repo, token, branch):
+        return {"success": True, "message": "Branch already exists"}
+
+    base_resp = requests.get(
+        f"{API_BASE}/repos/{repo}/git/ref/heads/{base_branch}", headers=_headers(token), timeout=TIMEOUT_SECONDS
+    )
+    if base_resp.status_code != 200:
+        return {"success": False, "message": f"Couldn't resolve base branch {base_branch}: HTTP {base_resp.status_code}"}
+    base_sha = base_resp.json()["object"]["sha"]
+
+    create_resp = requests.post(
+        f"{API_BASE}/repos/{repo}/git/refs",
+        headers=_headers(token),
+        json={"ref": f"refs/heads/{branch}", "sha": base_sha},
+        timeout=TIMEOUT_SECONDS,
+    )
+    if create_resp.status_code == 201:
+        return {"success": True, "message": "Branch created"}
+    try:
+        detail = create_resp.json().get("message", create_resp.text[:300])
+    except ValueError:
+        detail = create_resp.text[:300]
+    return {"success": False, "message": detail}
+
+
+def get_file_content(repo: str, token: str, path: str, branch: str) -> tuple[bytes, str] | None:
+    """(content_bytes, sha) for one file on `branch`, or None if it
+    doesn't exist there. Used to read back a growing snapshot manifest
+    before appending to it (see matchup_snapshots.append_snapshot()) and
+    by the live app to render the win-probability chart from it."""
+    resp = requests.get(
+        f"{API_BASE}/repos/{repo}/contents/{path}",
+        headers=_headers(token),
+        params={"ref": branch},
+        timeout=TIMEOUT_SECONDS,
+    )
+    if resp.status_code != 200:
+        return None
+    body = resp.json()
+    return base64.b64decode(body["content"]), body["sha"]
 
 
 def commit_file(repo: str, token: str, path: str, content_bytes: bytes, message: str, branch: str = "main") -> dict:

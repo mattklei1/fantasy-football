@@ -3,7 +3,7 @@ import datetime
 from zoneinfo import ZoneInfo
 
 from fantasy_football import schedule_guard
-from fantasy_football.schedule_guard import PACIFIC, is_target_time_now, should_refresh_daily
+from fantasy_football.schedule_guard import PACIFIC, is_target_time_now, is_within_live_window, should_refresh_daily
 
 
 def _freeze_now(monkeypatch, dt: datetime.datetime):
@@ -83,3 +83,44 @@ def test_should_refresh_daily_true_early_morning_before_yesterdays_refresh_bound
     _freeze_now(monkeypatch, datetime.datetime(2026, 9, 16, 3, 0, tzinfo=PACIFIC))
     last_refreshed = datetime.datetime(2026, 9, 15, 5, 0, tzinfo=PACIFIC).astimezone(datetime.timezone.utc).isoformat()
     assert should_refresh_daily(last_refreshed) is True
+
+
+# --- is_within_live_window ---------------------------------------------
+
+def test_live_window_true_during_thursday_night_football():
+    # a Thursday in the fixed dates above is 2026-09-17
+    assert is_within_live_window(datetime.datetime(2026, 9, 17, 18, 0, tzinfo=PACIFIC)) is True
+
+
+def test_live_window_false_thursday_before_kickoff():
+    assert is_within_live_window(datetime.datetime(2026, 9, 17, 10, 0, tzinfo=PACIFIC)) is False
+
+
+def test_live_window_true_during_sunday_early_slate():
+    # 2026-09-13 is a Sunday
+    assert is_within_live_window(datetime.datetime(2026, 9, 13, 10, 30, tzinfo=PACIFIC)) is True
+
+
+def test_live_window_true_during_sunday_night_football():
+    assert is_within_live_window(datetime.datetime(2026, 9, 13, 20, 30, tzinfo=PACIFIC)) is True
+
+
+def test_live_window_false_sunday_late_night():
+    assert is_within_live_window(datetime.datetime(2026, 9, 13, 23, 0, tzinfo=PACIFIC)) is False
+
+
+def test_live_window_true_during_monday_night_football():
+    # 2026-09-14 is a Monday
+    assert is_within_live_window(datetime.datetime(2026, 9, 14, 18, 0, tzinfo=PACIFIC)) is True
+
+
+def test_live_window_false_on_a_non_game_weekday():
+    # Wednesday - no NFL games at all
+    assert is_within_live_window(datetime.datetime(2026, 9, 16, 18, 0, tzinfo=PACIFIC)) is False
+
+
+def test_live_window_defaults_to_real_now_when_unspecified():
+    # just confirm it doesn't blow up with no arg - real "now" will land
+    # inside or outside a window depending on when the suite runs, so
+    # this only checks it returns a plain bool, not a specific value.
+    assert isinstance(is_within_live_window(), bool)
