@@ -95,3 +95,35 @@ def test_get_active_espn_client_swaps_league_id_but_keeps_same_account_creds(mon
     assert client.credentials.espn_s2 == creds.espn_s2
     assert client.credentials.swid == creds.swid
     assert client.credentials.current_season == creds.current_season
+
+
+def test_get_active_espn_client_uses_signed_in_managers_own_credentials(monkeypatch):
+    """A different real manager (e.g. Madeline) with her own ESPN
+    session configured must get HER OWN espn_s2/SWID, not the shared
+    primary account's - this is what makes "my team"/real writes
+    resolve to her team specifically."""
+    _use_fake_session(monkeypatch)
+    _use_primary(monkeypatch, league_id=1025842)
+    monkeypatch.setattr(league_context, "_current_user_email", lambda: "madeline@example.com")
+    monkeypatch.setattr(
+        league_context.config, "get_manager_credentials",
+        lambda email: ("madeline-s2", "{MADELINE-SWID}") if email == "madeline@example.com" else None,
+    )
+    league_context.set_active_league_id(1827422962)
+
+    client = league_context.get_active_espn_client()
+
+    assert client.credentials.league_id == 1827422962
+    assert client.credentials.espn_s2 == "madeline-s2"
+    assert client.credentials.swid == "{MADELINE-SWID}"
+
+
+def test_get_active_espn_client_falls_back_to_primary_when_user_has_no_own_credentials(monkeypatch):
+    _use_fake_session(monkeypatch)
+    creds = _use_primary(monkeypatch, league_id=1025842)
+    monkeypatch.setattr(league_context, "_current_user_email", lambda: "randomvisitor@example.com")
+    monkeypatch.setattr(league_context.config, "get_manager_credentials", lambda email: None)
+
+    client = league_context.get_active_espn_client()
+
+    assert client.credentials == creds

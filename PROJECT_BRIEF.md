@@ -3009,3 +3009,38 @@ access scoped to her own team across her 2 leagues.
   FAAB budget and real roster changes are on the other side of getting
   this wrong.
 - 318/318 tests passing (`test_access_control.py` new).
+
+**Multi-league Phase 3: per-manager ESPN credentials (2026-09-15, same
+session):** user's answer to the question above - "she'll use her own
+ESPN cookies." New `config.get_manager_credentials(email) -> (espn_s2,
+swid) | None`, reading a nested Streamlit secrets table
+(`[manager_credentials."her-email@example.com"]`) - Streamlit secrets
+ONLY, never git-committed (same sensitivity as the primary account's
+own ESPN_S2/SWID, unlike league_registry.py/access_control.py's
+committed config, which isn't a credential). `league_context.
+get_active_espn_client()` now checks the SIGNED-IN user's own
+credentials FIRST, falling back to the shared primary account's only
+when they don't have their own configured - this was the one deferred
+piece: every "my team" resolution and real write (waiver claims,
+lineup submits) already keyed off `client.credentials.swid` via this
+same single choke point, so a signed-in manager with her own
+credentials now automatically resolves to HER team everywhere, with
+zero changes needed in war_room_data.py or anywhere else downstream.
+
+To actually turn this on for Madeline: add to Streamlit Cloud secrets
+(hers, not committed anywhere):
+
+    [manager_credentials."madeline's-google-email@example.com"]
+    espn_s2 = "..."
+    swid = "{...}"
+
+then grant her access via the sidebar's "Manage league access" (her
+2 leagues + War Room) - same self-service flow already built for any
+other manager, no code changes needed for future managers either.
+
+Not yet live-verified against her REAL cookies (don't have them - the
+user confirmed the APPROACH, not the actual values yet) - the credential
+-priority logic itself is unit-tested (get_active_espn_client() picks
+the signed-in user's own credentials over the primary's when both are
+configured, falls back correctly when they're not). 326/326 tests
+passing (`test_config.py` new, `test_league_context.py` extended).

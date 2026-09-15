@@ -38,6 +38,15 @@ def _primary_credentials() -> config.ESPNCredentials:
     return config.load_espn_credentials()
 
 
+def _current_user_email() -> str | None:
+    try:
+        if not st.user.is_logged_in:
+            return None
+    except Exception:  # noqa: BLE001 - no Streamlit auth/session context (e.g. a script)
+        return None
+    return (st.user.email or "").strip().lower() or None
+
+
 def get_active_league_id() -> int:
     """The currently selected league's ESPN id - session-scoped, so it
     only ever differs from the primary league for an admin who's
@@ -60,14 +69,34 @@ def set_active_league_id(league_id: int | None) -> None:
 
 
 def get_active_espn_client():
-    """ESPNClient for whichever league is currently active - the
-    primary env-configured credentials unchanged, or the same ESPN_S2/
-    SWID (same account) with league_id swapped for a selected extra
-    league."""
+    """ESPNClient for whichever league is currently active.
+
+    If the SIGNED-IN user has their own ESPN session credentials
+    configured (config.get_manager_credentials() - a different real
+    manager, e.g. Madeline, using HER OWN espn_s2/SWID rather than the
+    shared primary account's), those are used instead - this is what
+    makes "my team" resolution (war_room_data.get_my_team_pk) and real
+    writes (waiver claims, lineup submits) correctly resolve to HER
+    team specifically, not the primary account's, since every one of
+    those already keys off client.credentials.swid. Falls back to the
+    primary env-configured credentials (same ESPN_S2/SWID, league_id
+    swapped for a selected extra league) for everyone else - unchanged
+    from before per-manager credentials existed."""
     from .espn_client import ESPNClient
 
     primary = _primary_credentials()
     league_id = get_active_league_id()
+
+    email = _current_user_email()
+    manager_creds = config.get_manager_credentials(email) if email else None
+    if manager_creds:
+        espn_s2, swid = manager_creds
+        return ESPNClient(
+            credentials=config.ESPNCredentials(
+                league_id=league_id, espn_s2=espn_s2, swid=swid, current_season=primary.current_season,
+            )
+        )
+
     if league_id == primary.league_id:
         return ESPNClient(credentials=primary)
     return ESPNClient(

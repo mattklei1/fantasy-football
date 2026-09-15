@@ -114,6 +114,45 @@ def allowed_emails() -> set[str]:
     return {e.strip().lower() for e in raw.split(",") if e.strip()}
 
 
+def get_manager_credentials(email: str) -> tuple[str, str] | None:
+    """Optional PER-MANAGER ESPN session credentials (espn_s2, swid) -
+    lets a specific real person (identified by their Google login email
+    - see ui_common.require_login()) act as THEMSELVES for "my team"
+    resolution and real writes (waiver claims, lineup submits) via
+    league_context.get_active_espn_client(), instead of silently using
+    the shared primary account's credentials for everyone. These are
+    real per-person session credentials, same sensitivity as the
+    primary ESPN_S2/SWID - Streamlit secrets ONLY, never git-committed
+    (contrast access_control.py/league_registry.py, which store real
+    but non-sensitive config - who can see what - and ARE committed).
+
+    Configure in Streamlit Cloud -> Settings -> Secrets as a nested
+    table, one per manager:
+
+        [manager_credentials."their-google-email@example.com"]
+        espn_s2 = "..."
+        swid = "{...}"
+
+    None if this email has no entry, or secrets aren't configured at
+    all (local dev without secrets.toml) - callers should fall back to
+    the shared primary credentials in that case, exactly like before
+    this existed."""
+    try:
+        import streamlit as st
+
+        table = st.secrets.get("manager_credentials", {})
+    except Exception:  # noqa: BLE001 - no secrets.toml / no Streamlit runtime (e.g. a script)
+        return None
+    entry = table.get((email or "").strip().lower())
+    if not entry:
+        return None
+    espn_s2 = entry.get("espn_s2")
+    swid = entry.get("swid")
+    if not espn_s2 or not swid:
+        return None
+    return espn_s2, swid
+
+
 def groupme_bot_id() -> str | None:
     """The GroupMe Bot's `bot_id` (from dev.groupme.com, after creating a
     bot for the league's group) - required to post scheduled messages
