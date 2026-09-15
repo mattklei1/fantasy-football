@@ -19,6 +19,25 @@ from fantasy_football import war_room_data as wr
 st.set_page_config(page_title="War Room", page_icon="🔒", layout="wide")
 ui.inject_css()
 
+
+def _set_flash(key: str, level: str, message: str) -> None:
+    """Stashes a status message in session_state to survive the
+    st.rerun() that follows a save/clear action - a message shown via
+    st.success()/st.warning() right before st.rerun() gets wiped before
+    the user ever sees it (a real bug found live 2026-09-15: a PDF
+    override upload that failed to commit showed no warning at all,
+    just the green "active override" box from the reloaded local
+    state). show_flash() displays it once on the next run, then clears
+    it so it doesn't linger on every later rerun."""
+    st.session_state[f"_flash_{key}"] = (level, message)
+
+
+def _show_flash(key: str) -> None:
+    flash = st.session_state.pop(f"_flash_{key}", None)
+    if flash:
+        level, message = flash
+        getattr(st, level)(message)
+
 season, week = ui.render_sidebar()
 
 if not ui.is_admin():
@@ -175,6 +194,7 @@ with tab_mine:
                 "bench depth in the reasoning text - just never the drop itself). Standing per-team "
                 "preference, not a one-week thing."
             )
+            _show_flash("protect")
             droppable = wr.get_droppable_roster(season, my_team_pk)
             if droppable.empty:
                 st.caption("No bench players to protect right now.")
@@ -194,9 +214,9 @@ with tab_mine:
                     save_result = wr.save_protected_players(my_team_pk, selected_ids)
                     wr.get_my_waiver_suggestions.clear()
                     if save_result["committed"]:
-                        st.success("Saved and committed to git - durable across redeploys.")
+                        _set_flash("protect", "success", "Saved and committed to git - durable across redeploys.")
                     else:
-                        st.warning(save_result["commit_message"])
+                        _set_flash("protect", "warning", save_result["commit_message"])
                     st.rerun()
 
         with st.spinner("Building suggestions..."):
@@ -536,6 +556,7 @@ with tab_lineup:
             "best-effort parse - always review the table below and fix/delete rows before saving."
         )
 
+        _show_flash("override")
         active_override = wr.get_active_rank_override_meta(season, lineup_week)
         if active_override:
             uploaded_at = (active_override.get("uploaded_at") or "")[:16].replace("T", " ")
@@ -546,7 +567,7 @@ with tab_lineup:
             if st.button("Clear this week's override", key="wr_override_clear"):
                 clear_result = wr.clear_rank_override(season, lineup_week)
                 if not clear_result["committed"]:
-                    st.warning(clear_result["commit_message"])
+                    _set_flash("override", "warning", clear_result["commit_message"])
                 st.session_state.pop("wr_lineup_result", None)
                 st.rerun()
 
@@ -587,9 +608,12 @@ with tab_lineup:
                     clean_rows = edited_rows.dropna(subset=["rank", "player_name"]).to_dict("records")
                     save_result = wr.save_rank_override(season, lineup_week, clean_rows, uploaded_pdf.name)
                     if save_result["committed"]:
-                        st.success(f"Saved {len(clean_rows)} ranks and committed to git - live everywhere.")
+                        _set_flash("override", "success", f"Saved {len(clean_rows)} ranks and committed to git - live everywhere.")
                     else:
-                        st.warning(f"Saved {len(clean_rows)} ranks locally only. {save_result['commit_message']}")
+                        _set_flash(
+                            "override", "warning",
+                            f"Saved {len(clean_rows)} ranks locally only. {save_result['commit_message']}",
+                        )
                     for key in ("wr_override_parsed_filename", "wr_override_parse_error", "wr_override_rows"):
                         st.session_state.pop(key, None)
                     st.session_state.pop("wr_lineup_result", None)  # force a recompute with the new override
