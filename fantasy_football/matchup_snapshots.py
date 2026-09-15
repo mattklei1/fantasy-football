@@ -223,6 +223,115 @@ def biggest_mover(snapshots: list[dict], metric: str = "win_probability") -> dic
     return best
 
 
+#: A 12-team league needs 12 visually distinct line colors - Plotly's
+#: DEFAULT qualitative palette only has 10, so team #11/#12 would
+#: silently repeat a color already used by someone else, making two
+#: different teams' lines indistinguishable. Light24 has 24 distinct
+#: colors, comfortably covering any league size this project supports.
+#: Populated lazily (see _line_colors()) so importing this module
+#: doesn't require plotly for callers that only need the pure functions
+#: above (e.g. the unit tests).
+_LINE_COLORS = None
+
+
+def _line_colors():
+    global _LINE_COLORS
+    if _LINE_COLORS is None:
+        import plotly.colors as pc
+
+        _LINE_COLORS = pc.qualitative.Light24
+    return _LINE_COLORS
+
+
+#: Comfortably above the normal ~10-minute collection cadence, safely
+#: below the multi-hour dead time between real game windows (Thursday
+#: night through Sunday morning, Sunday night through Monday evening) -
+#: see _dead_time_rangebreaks().
+DEAD_TIME_GAP_THRESHOLD_MINUTES = 25
+
+
+def _dead_time_rangebreaks(snapshots: list[dict]) -> list[dict]:
+    """Plotly x-axis rangebreaks compressing out any real gap between
+    consecutive snapshots wider than DEAD_TIME_GAP_THRESHOLD_MINUTES -
+    the same technique real stock charts use to skip weekends/after-
+    hours on an otherwise-continuous time axis. Without this, Plotly
+    draws a straight line directly connecting the last Thursday-night
+    reading to the first Sunday-morning one, which VISUALLY implies a
+    smooth multi-hour drift that never actually happened (nothing was
+    live to change) - confirmed by rendering it (see PROJECT_BRIEF).
+    Compressing each dead gap down to near-zero width on the axis both
+    removes that misleading diagonal (it collapses to a near-vertical
+    jump instead) and stops the chart wasting most of its width on dead
+    time between game windows - directly answers "set the zoom to a
+    good spot" without hardcoding what a "good spot" is: it's derived
+    from the actual gaps in the collected data, not assumed NFL times."""
+    timestamps = sorted({s["timestamp"] for s in snapshots if s.get("timestamp")})
+    if len(timestamps) < 2:
+        return []
+    parsed = [datetime.datetime.fromisoformat(t) for t in timestamps]
+    threshold = datetime.timedelta(minutes=DEAD_TIME_GAP_THRESHOLD_MINUTES)
+    return [
+        {"bounds": [prev.isoformat(), cur.isoformat()]}
+        for prev, cur in zip(parsed, parsed[1:])
+        if cur - prev > threshold
+    ]
+
+
+def build_chart_figure(snapshots: list[dict], metric_key: str):
+    """The actual go.Figure for the Win Probability Over Time chart -
+    one line per team, x=real timestamp, y=whichever metric_key the
+    page's toggle selected ("win_probability"/"projected_score"/
+    "p_making_it"). Pulled out of pages/1_Matchups.py so it's directly
+    callable (and visually checkable) without going through Streamlit -
+    used by both the live page and ad-hoc visual QA."""
+    import plotly.graph_objects as go
+
+    rows = snapshots_to_rows(snapshots)
+    by_team: dict[str, list[dict]] = {}
+    for r in rows:
+        by_team.setdefault(r["team_name"], []).append(r)
+
+    colors = _line_colors()
+    fig = go.Figure()
+    for i, (team_name, team_rows) in enumerate(sorted(by_team.items())):
+        team_rows = sorted(team_rows, key=lambda r: r["timestamp"])
+        fig.add_trace(
+            go.Scatter(
+                x=[r["timestamp"] for r in team_rows],
+                y=[r[metric_key] for r in team_rows],
+                mode="lines+markers",
+                name=team_name,
+                line=dict(color=colors[i % len(colors)], width=2),
+                marker=dict(size=4),
+            )
+        )
+
+    ticks = benchmark_ticks(snapshots)
+    if ticks:
+        fig.update_xaxes(tickmode="array", tickvals=[t for t, _ in ticks], ticktext=[lbl for _, lbl in ticks])
+    rangebreaks = _dead_time_rangebreaks(snapshots)
+    if rangebreaks:
+        fig.update_xaxes(rangebreaks=rangebreaks)
+
+    if metric_key in ("win_probability", "p_making_it"):
+        fig.update_yaxes(tickformat=".0%", range=[0, 1])
+    else:
+        all_values = [r[metric_key] for r in rows if r.get(metric_key) is not None]
+        if all_values:
+            pad = max(2.0, (max(all_values) - min(all_values)) * 0.08)
+            fig.update_yaxes(title="Projected points", range=[min(all_values) - pad, max(all_values) + pad])
+        else:
+            fig.update_yaxes(title="Projected points")
+
+    fig.update_layout(
+        height=480,
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(size=11)),
+        margin=dict(t=10, l=10, r=10, b=10),
+    )
+    return fig
+
+
 def benchmark_ticks(snapshots: list[dict]) -> list[tuple[str, str]]:
     """(iso_timestamp, label) for each real NFL-week broadcast-window
     benchmark (see BENCHMARK_MARKERS) that falls within the collected

@@ -2833,3 +2833,44 @@ one real architectural problem solved along the way:
 - 286/286 tests passing (`test_matchup_snapshots.py` new, plus new
   `is_within_live_window` coverage in `test_schedule_guard.py` and new
   branch/read-content coverage in `test_github_sync.py`).
+
+**Visual QA against real synthetic data, same day (2026-09-15):** user
+asked directly how the chart actually looks with a full 12 teams and
+whether the zoom/axis needed tuning - since no real snapshots exist yet
+this early in the season, generated a realistic full Thu-through-Mon
+week of synthetic data for all 12 real team names and rendered the
+actual `build_chart_figure()` (pulled out of pages/1_Matchups.py into
+matchup_snapshots.py so it's directly callable/screenshot-able without
+Streamlit) via kaleido + the sandbox's pre-installed headless Chromium.
+Found and fixed one real problem this surfaced, not hypothetical:
+
+- **The dead-time gap between game windows was rendering as a
+  misleading diagonal** - Thursday night's last reading connected
+  directly to Sunday morning's first one with a straight line, visually
+  implying a smooth ~36-hour drift that never happened (nothing was
+  live to change). Also wasted most of the chart's width on that same
+  dead space. Fixed with Plotly `rangebreaks` - the identical technique
+  stock charts use to skip weekends/after-hours - computed directly
+  from the ACTUAL gaps in the collected data (`_dead_time_rangebreaks()`,
+  any gap over `DEAD_TIME_GAP_THRESHOLD_MINUTES=25`), not a hardcoded
+  NFL schedule assumption. Confirmed by re-rendering: dead time now
+  compresses to near-zero width, the three live windows each get
+  proportionally more of the chart, and the misleading diagonal is gone.
+- **Color palette**: switched from Plotly's default 10-color qualitative
+  palette (would silently repeat a color for team #11/#12, making two
+  different teams' lines indistinguishable) to `Light24` (24 distinct
+  colors) - confirmed all 12 lines stay visually distinguishable even
+  with several teams clustered in the same probability band mid-chart
+  (real interactivity - `hovermode="x unified"` - resolves any remaining
+  ambiguity in the live app; a static screenshot can't show that part).
+- Y-axis: win%/make-cut already fixed at [0,1] (the natural "zoom to
+  show everyone" for a bounded percentage); projected-score now
+  auto-ranges to the real data's min/max with an 8% padding margin
+  instead of Plotly's unpadded default.
+- 12 lines confirmed NOT too crowded once the above two fixes were in
+  place - some visual clustering mid-week is real data (several teams
+  genuinely having similar win probabilities at the same moment), not a
+  chart design flaw.
+- kaleido (PNG export, not a runtime dependency of the deployed app -
+  only used for this ad-hoc visual QA) installed in the venv but
+  deliberately NOT added to requirements.txt.

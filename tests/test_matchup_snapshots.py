@@ -5,7 +5,13 @@ API calls), validated via AppTest/live checks instead, per PROJECT_BRIEF
 testing convention."""
 import pytest
 
-from fantasy_football.matchup_snapshots import benchmark_ticks, biggest_mover, snapshots_to_rows
+from fantasy_football.matchup_snapshots import (
+    DEAD_TIME_GAP_THRESHOLD_MINUTES,
+    _dead_time_rangebreaks,
+    benchmark_ticks,
+    biggest_mover,
+    snapshots_to_rows,
+)
 
 
 def _snap(ts, **teams):
@@ -97,3 +103,50 @@ def test_benchmark_ticks_only_includes_weekdays_actually_spanned():
     ticks = benchmark_ticks(snapshots)
     labels = [label for _, label in ticks]
     assert labels == ["Post-TNF"]
+
+
+# --- _dead_time_rangebreaks ------------------------------------------------
+
+def test_no_rangebreaks_with_fewer_than_two_timestamps():
+    assert _dead_time_rangebreaks([]) == []
+    assert _dead_time_rangebreaks([_snap("2026-09-17T20:00:00+00:00")]) == []
+
+
+def test_no_rangebreak_for_normal_10_minute_cadence():
+    snapshots = [
+        _snap("2026-09-17T20:00:00+00:00"),
+        _snap("2026-09-17T20:10:00+00:00"),
+        _snap("2026-09-17T20:20:00+00:00"),
+    ]
+    assert _dead_time_rangebreaks(snapshots) == []
+
+
+def test_rangebreak_inserted_for_a_real_dead_time_gap():
+    # Thursday night straight to Sunday morning - a real multi-hour gap
+    snapshots = [
+        _snap("2026-09-17T23:00:00+00:00"),
+        _snap("2026-09-20T17:00:00+00:00"),
+    ]
+    breaks = _dead_time_rangebreaks(snapshots)
+    assert breaks == [{"bounds": ["2026-09-17T23:00:00+00:00", "2026-09-20T17:00:00+00:00"]}]
+
+
+def test_rangebreak_threshold_boundary():
+    import datetime
+
+    start = datetime.datetime(2026, 9, 17, 20, 0, tzinfo=datetime.timezone.utc)
+    just_under = start + datetime.timedelta(minutes=DEAD_TIME_GAP_THRESHOLD_MINUTES - 1)
+    just_over = start + datetime.timedelta(minutes=DEAD_TIME_GAP_THRESHOLD_MINUTES + 1)
+
+    assert _dead_time_rangebreaks([_snap(start.isoformat()), _snap(just_under.isoformat())]) == []
+    assert _dead_time_rangebreaks([_snap(start.isoformat()), _snap(just_over.isoformat())]) != []
+
+
+def test_multiple_dead_time_gaps_each_get_their_own_rangebreak():
+    snapshots = [
+        _snap("2026-09-17T23:00:00+00:00"),  # Thu night
+        _snap("2026-09-20T17:00:00+00:00"),  # Sun day
+        _snap("2026-09-22T02:00:00+00:00"),  # Mon night
+    ]
+    breaks = _dead_time_rangebreaks(snapshots)
+    assert len(breaks) == 2

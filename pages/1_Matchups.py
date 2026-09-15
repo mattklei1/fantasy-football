@@ -9,8 +9,6 @@ win-probability field at all - confirmed against the installed espn_api
 source), centered on that live projected total once one exists."""
 from __future__ import annotations
 
-import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 
 from fantasy_football import config
@@ -228,28 +226,7 @@ if not is_final_week and not is_future_week and not live_error:
                 "Chance to make cut": "p_making_it",
             }[metric_label]
 
-            rows_df = pd.DataFrame(matchup_snapshots.snapshots_to_rows(snapshots))
-            rows_df["timestamp"] = pd.to_datetime(rows_df["timestamp"])
-
-            fig = go.Figure()
-            for team_name, group in rows_df.groupby("team_name"):
-                group = group.sort_values("timestamp")
-                fig.add_trace(
-                    go.Scatter(x=group["timestamp"], y=group[metric_key], mode="lines+markers", name=team_name)
-                )
-
-            ticks = matchup_snapshots.benchmark_ticks(snapshots)
-            if ticks:
-                fig.update_xaxes(tickmode="array", tickvals=[t for t, _ in ticks], ticktext=[lbl for _, lbl in ticks])
-            if metric_key in ("win_probability", "p_making_it"):
-                fig.update_yaxes(tickformat=".0%", range=[0, 1])
-            else:
-                fig.update_yaxes(title="Projected points")
-            fig.update_layout(
-                height=450, hovermode="x unified",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-                margin=dict(t=10),
-            )
+            fig = matchup_snapshots.build_chart_figure(snapshots, metric_key)
             st.plotly_chart(fig, use_container_width=True)
 
             mover = matchup_snapshots.biggest_mover(snapshots, metric=metric_key)
