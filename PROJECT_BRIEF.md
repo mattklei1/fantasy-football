@@ -3455,3 +3455,85 @@ and a real Claude generation pass - confirmed all 4 changes render
 correctly with real data, including the free-agent fallback actually
 firing. 23 new/updated tests in `test_commentary.py`, 15 (was 9) in
 `test_weekly_awards.py`. 353/353 tests passing overall.
+
+**GAME OF THE WEEK redefined + new PLAYOFF ODDS recap section + chart
+now anchored at preseason (2026-09-15, same session).** Three related
+requests, all about connecting the Weekly Recap and the Playoff Odds
+simulator more directly:
+
+1. **GAME OF THE WEEK is no longer the closest score margin** - it's
+   the real matchup that swung a PLAYOFF ODDS outcome the most for
+   either participant, positively or negatively (user: "highlight the
+   game that can swing one person's playoff odds the most"). New
+   `_game_of_the_week()`: for each real matchup that week, builds a
+   counterfactual `team_state` with ONLY that game's `matchup_wins`/
+   `matchup_losses` flipped between the two teams (median win/loss,
+   every other team's record, and both teams' real `points_for` are
+   left completely untouched), re-runs `playoff_sim.simulate_season()`,
+   and measures `|actual_playoff_pct - flipped_playoff_pct|` for both
+   teams - the bigger of the two is that game's "swing." Per the user's
+   second point ("assume a 50-50 shot at the median... should really be
+   about the matchup, not also factoring in the median win or loss"):
+   median is left identical in both the actual and flipped scenarios
+   being diffed, so it cancels out of the comparison automatically,
+   without needing a separate adjustment. Verified with a hand-traced
+   (then simulation-confirmed) 8-team fixture where the closest-margin
+   game (60 points) turned out to swing NOBODY's odds at all, while a
+   blowout (150 points) swung a bubble team from a hard "out" to a hard
+   "in" - concretely proving these are genuinely different questions.
+2. **New PLAYOFF ODDS section** - top-3 teams by playoff odds, biggest
+   riser/faller vs. last week, and the season's biggest riser vs. a
+   preseason baseline. Placed 2nd in `SECTION_ORDER`, right after
+   HEADLINE (user: "layer it in somewhere near the top, but not at the
+   very top"). New `_playoff_odds_summary()` reads last week's real
+   value from `playoff_odds_snapshots.load_snapshots()` (falls back to
+   the preseason baseline when there's no real history yet, e.g.
+   recapping week 1 itself) and the season-long comparison always uses
+   the preseason baseline.
+3. **Preseason baseline, shared by both features above**: new
+   `playoff_odds_snapshots.preseason_baseline_rows()` - before any real
+   games are played every team is equally likely, so this is a pure
+   fair-share constant (`playoff_team_count/N` teams, `2/N` bye,
+   `1/N` each for seed1/championship), never stored, always synthesized
+   on demand from the current team list.
+4. **Playoff Odds Over Time chart now starts with that same preseason
+   point** as its first x-axis tick (user: "I want to see preseason
+   odds as the first point... post week one as the second..."), with
+   ticks relabeled "Preseason"/"Post Wk1"/"Post Wk2"/... instead of bare
+   integers. Re-confirmed (not a new finding, but worth restating since
+   the user flagged it): the collector already only ever produces ONE
+   point per real week - `save_snapshot()` keys the manifest by week
+   number and overwrites, it doesn't append - so "no midweek changes"
+   was already true by construction; the actual gap was just the
+   missing preseason anchor.
+
+Performance: each `simulate_season()` call for these new features uses
+a new `RECAP_PLAYOFF_SIM_N_SIMS = 3000` (vs. the Playoff Odds page's
+own `DEFAULT_N_SIMS = 10,000`) - a relative comparison (which game
+swings odds most, who's up/down) doesn't need publish-grade precision,
+and a week can have up to ~6 matchups each needing their own flipped
+simulation. Confirmed live against the real production league: total
+added CPU time for all these Monte Carlo calls was well under 5 seconds
+(most of a full recap-generation run's ~30s wall time is the real
+ESPN/FantasyPros ingest, unrelated to this).
+
+New `_playoff_sim_baseline()` shares the real team_state/remaining_
+matchups/`simulate_season()` result between `_game_of_the_week()` and
+`_playoff_odds_summary()` - computed once, not twice. Degrades to None
+(both new sections show a plain "not available" message, and GAME OF
+THE WEEK falls back to the old `awards.closest_game`) when the season
+isn't the 6-team/top-2-bye format `playoff_sim.py` supports, or -
+defensively, not expected in a real league - there aren't even enough
+real teams to seed a 6-team bracket (caught a real crash here: the
+project's own small 4-team test fixture has `playoff_team_count=6`
+declared but only 4 real teams, which used to crash deep inside
+`simulate_bracket_once` trying to unpack `seed_order[:6]`).
+
+15 new tests across `test_commentary.py` (hand-verified-then-simulation-
+confirmed 8-team fixture for the swing/summary logic) and
+`test_playoff_odds_snapshots.py` (preseason baseline, chart prepending/
+labeling). 365/365 tests passing. Verified live against the real
+production league - all 3 changes render correctly with real data, and
+the chart's preseason-anchor behavior separately confirmed via a
+rendered synthetic 12-team image (visually checked: a single point at
+50% for every team, diverging cleanly starting at Post Wk1).

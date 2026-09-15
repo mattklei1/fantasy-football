@@ -5,9 +5,12 @@ testing requirements) - the Claude path is exercised with a monkeypatched
 generate_claude_commentary, never the real API."""
 import sqlite3
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from fantasy_football import commentary, db
+from fantasy_football.metrics.playoff_sim import simulate_season
 
 
 @pytest.fixture
@@ -328,3 +331,147 @@ def test_force_regenerate_overwrites_existing_recap(conn, monkeypatch):
     assert result["commentary"] == "HEADLINE\nNew version"
     count = conn.execute("SELECT COUNT(*) FROM weekly_recaps WHERE season_id = 2099 AND week = 1").fetchone()[0]
     assert count == 1  # upsert, not a duplicate row
+
+
+# --- GAME OF THE WEEK / PLAYOFF ODDS ---------------------------------------
+
+def _ts_row(pk, mw, ml, medw, medl, pf):
+    return {
+        "team_pk": pk, "season_ppg": pf, "last3_ppg": pf, "score_stdev": 15.0,
+        "matchup_wins": mw, "matchup_losses": ml, "matchup_ties": 0,
+        "median_wins": medw, "median_losses": medl, "median_ties": 0, "points_for": pf,
+    }
+
+
+def _eight_team_state():
+    # 8 teams, 6 playoff spots, reg_season_count=1 with NO remaining
+    # games - fully deterministic seeding (no Monte Carlo noise on
+    # playoff_pct itself), same technique test_playoff_sim.py uses for
+    # its own "no games remain" determinism test. Teams 1/3/5/7 went
+    # 1-0 (matchup) AND above the week's median; teams 2/4/6/8 went 0-1
+    # and below median - so win_pct is a clean 1.0 vs 0.0 split, with
+    # points_for as the only tiebreaker (all distinct values).
+    return pd.DataFrame(
+        [
+            _ts_row(1, 1, 0, 1, 0, 200.0), _ts_row(2, 0, 1, 0, 1, 50.0),
+            _ts_row(3, 1, 0, 1, 0, 180.0), _ts_row(4, 0, 1, 0, 1, 60.0),
+            _ts_row(5, 1, 0, 1, 0, 160.0), _ts_row(6, 0, 1, 0, 1, 70.0),
+            _ts_row(7, 1, 0, 1, 0, 140.0), _ts_row(8, 0, 1, 0, 1, 80.0),
+        ]
+    )
+
+
+_EIGHT_TEAM_NAMES = {i: {"team_name": f"Team{i}", "manager_name": f"Mgr{i}"} for i in range(1, 9)}
+_EMPTY_REMAINING = pd.DataFrame(columns=["week", "home_team_pk", "away_team_pk"])
+
+
+def test_game_of_the_week_picks_the_matchup_with_the_biggest_real_playoff_swing():
+    # Verified by hand and by direct simulation before writing this
+    # test: with this exact team_state, flipping 1v2 (team1 crushed
+    # team2, but team1 was SO far ahead on points_for he stays in even
+    # at a hypothetical 0.5 win_pct, while team2 swings from a clean
+    # "out" to "in") changes playoff_pct for team2 (0.0 -> 1.0, a real
+    # 100-point swing); flipping 7v8 (the actual seed4/5 bubble game)
+    # changes NOTHING - both teams make the field either way. The
+    # "closest score margin" version of this fixture would have picked
+    # 7v8 (60-point margin) over 1v2 (150-point margin) - the opposite
+    # of what actually matters for anyone's playoff odds.
+    team_state = _eight_team_state()
+    actual = simulate_season(
+        team_state, _EMPTY_REMAINING, median_scoring=True, reg_season_count=1,
+        n_sims=2000, rng=np.random.default_rng(1),
+    ).set_index("team_pk")
+    matchups_week = pd.DataFrame(
+        [
+            {"week": 1, "home_team_pk": 1, "away_team_pk": 2, "home_score": 200.0, "away_score": 50.0},
+            {"week": 1, "home_team_pk": 7, "away_team_pk": 8, "home_score": 140.0, "away_score": 80.0},
+        ]
+    )
+    result = commentary._game_of_the_week(
+        matchups_week, _EIGHT_TEAM_NAMES, team_state, _EMPTY_REMAINING, True, 1, actual,
+    )
+    assert result is not None
+    assert {result["home"]["team_pk"], result["away"]["team_pk"]} == {1, 2}
+    assert result["swung_team"]["team_pk"] == 2
+    assert result["playoff_odds_swing"] == pytest.approx(1.0)
+    # team2 actually LOST this game and it kept them out (0.0 real vs
+    # 1.0 in the counterfactual where they win) - the real result hurt them
+    assert result["swing_direction"] == "down"
+
+
+def test_game_of_the_week_none_without_a_playoff_sim_baseline():
+    matchups_week = pd.DataFrame(
+        [{"week": 1, "home_team_pk": 1, "away_team_pk": 2, "home_score": 100.0, "away_score": 90.0}]
+    )
+    assert commentary._game_of_the_week(matchups_week, {}, None, None, None, None, None) is None
+
+
+def test_game_of_the_week_none_with_no_matchups():
+    team_state = _eight_team_state()
+    actual = simulate_season(
+        team_state, _EMPTY_REMAINING, median_scoring=True, reg_season_count=1, n_sims=500,
+    ).set_index("team_pk")
+    empty_matchups = pd.DataFrame(columns=["week", "home_team_pk", "away_team_pk", "home_score", "away_score"])
+    assert commentary._game_of_the_week(
+        empty_matchups, _EIGHT_TEAM_NAMES, team_state, _EMPTY_REMAINING, True, 1, actual
+    ) is None
+
+
+def test_playoff_odds_summary_top3_and_season_riser_vs_preseason(monkeypatch):
+    team_state = _eight_team_state()
+    actual = simulate_season(
+        team_state, _EMPTY_REMAINING, median_scoring=True, reg_season_count=1,
+        n_sims=2000, rng=np.random.default_rng(1),
+    ).set_index("team_pk")
+    # no real snapshot history at all - forces the season-long/weekly
+    # comparisons to fall back to the preseason fair-share baseline
+    monkeypatch.setattr(commentary.playoff_odds_snapshots, "load_snapshots", lambda season: {})
+
+    result = commentary._playoff_odds_summary(2099, week=1, names=_EIGHT_TEAM_NAMES, actual=actual)
+    assert result is not None
+    assert len(result["top3"]) == 3
+    # all 3 of the top-3 must be real playoff locks (playoff_pct == 1.0)
+    assert all(t["playoff_pct"] == pytest.approx(1.0) for t in result["top3"])
+    assert result["weekly_compared_to_preseason"] is True
+    # preseason baseline for 8 teams / 6 playoff spots = 6/8 = 0.75 -
+    # team1 (a real 1.0 lock) rose the most above that baseline
+    assert result["season_riser"]["delta"] == pytest.approx(0.25)
+
+
+def test_playoff_odds_summary_uses_real_last_week_snapshot_when_present(monkeypatch):
+    team_state = _eight_team_state()
+    actual = simulate_season(
+        team_state, _EMPTY_REMAINING, median_scoring=True, reg_season_count=1,
+        n_sims=2000, rng=np.random.default_rng(1),
+    ).set_index("team_pk")
+    # team2 was already projected at 100% last week, but this week's
+    # real result dropped them to 0% - the biggest FALLER, even though
+    # the preseason baseline would have shown a smaller drop
+    last_week_rows = [
+        {"team_pk": pk, "team_name": _EIGHT_TEAM_NAMES[pk]["team_name"], "playoff_pct": 1.0 if pk == 2 else 0.75,
+         "bye_pct": 0.0, "seed1_pct": 0.0, "championship_pct": 0.0}
+        for pk in range(1, 9)
+    ]
+    monkeypatch.setattr(
+        commentary.playoff_odds_snapshots, "load_snapshots", lambda season: {"1": last_week_rows}
+    )
+
+    result = commentary._playoff_odds_summary(2099, week=2, names=_EIGHT_TEAM_NAMES, actual=actual)
+    assert result["weekly_compared_to_preseason"] is False
+    assert result["weekly_faller"]["team"]["team_pk"] == 2
+    assert result["weekly_faller"]["delta"] == pytest.approx(-1.0)
+
+
+def test_playoff_odds_summary_none_without_actual_sim():
+    assert commentary._playoff_odds_summary(2099, 1, {}, None) is None
+
+
+def test_playoff_sim_baseline_none_when_not_enough_real_teams(conn):
+    # the fixture's own conn only has 4 real teams but declares
+    # playoff_team_count=6 - simulate_season can't seed a 6-team bracket
+    # from 4 teams, so this must degrade gracefully, not crash
+    team_state, remaining, median_scoring, reg_season_count, actual = commentary._playoff_sim_baseline(
+        conn, 2099, 1
+    )
+    assert team_state is None
+    assert actual is None

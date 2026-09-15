@@ -85,7 +85,10 @@ with st.container(border=True):
             "#1 Seed %": "seed1_pct",
         }[metric_label]
 
-        fig = playoff_odds_snapshots.build_chart_figure(snapshots, metric_key)
+        team_names = dict(zip(df["team_pk"], df["team_name"]))
+        fig = playoff_odds_snapshots.build_chart_figure(
+            snapshots, metric_key, team_names=team_names, playoff_team_count=6,
+        )
         st.plotly_chart(fig, use_container_width=True)
 
         mover = playoff_odds_snapshots.biggest_mover(snapshots, metric=metric_key)

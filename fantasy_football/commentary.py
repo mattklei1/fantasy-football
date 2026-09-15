@@ -33,9 +33,11 @@ import sqlite3
 
 import pandas as pd
 
-from . import config, db
+from . import config, db, playoff_odds_snapshots
+from .metrics import loaders as metric_loaders
 from .metrics.lineup_optimizer import RosterPlayer, optimal_lineup
 from .metrics.loaders import load_matchups, load_roster_with_projections, load_weekly_scores
+from .metrics.playoff_sim import SUPPORTED_PLAYOFF_TEAM_COUNT, simulate_season
 from .metrics.weekly_awards import compute_weekly_awards
 from .metrics.win_probability import MIN_STDEV, TeamProjection, win_probability
 
@@ -46,11 +48,21 @@ from .metrics.win_probability import MIN_STDEV, TeamProjection, win_probability
 #: design goal in its docstring).
 NEXT_WEEK_POSITIONS = ["QB", "RB", "WR", "TE", "K", "D/ST"]
 
+#: Fewer trials than the Playoff Odds page's own DEFAULT_N_SIMS (10,000)
+#: - GAME OF THE WEEK/PLAYOFF ODDS need up to 1 (baseline) + one per
+#: real matchup that week (~6) simulate_season() calls, and a RELATIVE
+#: comparison (which game swings odds the most, who's up/down) doesn't
+#: need publish-grade precision the way the headline Playoff Odds page
+#: number does - this keeps recap generation from taking several times
+#: longer than everything else in it combined.
+RECAP_PLAYOFF_SIM_N_SIMS = 3000
+
 CLAUDE_MODEL = "claude-opus-5"
 MAX_TOKENS = 4096
 
 SECTION_ORDER = [
     "HEADLINE",
+    "PLAYOFF ODDS",
     "GAME OF THE WEEK",
     "BEATDOWN OF THE WEEK",
     "BAD BEAT",
@@ -253,6 +265,157 @@ def _game_to_watch(
     return best
 
 
+def _playoff_sim_baseline(conn: sqlite3.Connection, season: int, week: int):
+    """Shared setup for GAME OF THE WEEK / PLAYOFF ODDS: the real
+    team_state/remaining_matchups as of the just-completed week (see
+    metrics.loaders.load_playoff_sim_state) and the "actual" Monte Carlo
+    result computed from it, at RECAP_PLAYOFF_SIM_N_SIMS trials - both
+    real, unmodified inputs used as the baseline every counterfactual
+    below compares against. Returns (team_state, remaining_matchups,
+    median_scoring, reg_season_count, actual_df) - all None if this
+    season's format isn't the 6-team/top-2-bye shape playoff_sim
+    supports, there aren't at least that many real teams to seed a
+    bracket from (simulate_season/simulate_bracket_once assume a real
+    6-team field once playoff_team_count says 6 - not expected in a real
+    league, but defensive against a partial/test DB), or there's no
+    playoff-sim state yet (no completed week)."""
+    meta_row = conn.execute(
+        "SELECT playoff_team_count, median_scoring, reg_season_count FROM seasons WHERE season_id = ?",
+        (season,),
+    ).fetchone()
+    if not meta_row or meta_row[0] != SUPPORTED_PLAYOFF_TEAM_COUNT:
+        return None, None, None, None, None
+    _, median_scoring_raw, reg_season_count = meta_row
+    median_scoring = bool(median_scoring_raw)
+
+    team_state, remaining_matchups = metric_loaders.load_playoff_sim_state(conn, season)
+    if team_state.empty or team_state["team_pk"].nunique() < SUPPORTED_PLAYOFF_TEAM_COUNT:
+        return None, None, None, None, None
+
+    actual = simulate_season(
+        team_state, remaining_matchups, median_scoring, reg_season_count, n_sims=RECAP_PLAYOFF_SIM_N_SIMS,
+    ).set_index("team_pk")
+    return team_state, remaining_matchups, median_scoring, reg_season_count, actual
+
+
+def _game_of_the_week(
+    matchups_week: pd.DataFrame, names: dict, team_state: pd.DataFrame | None,
+    remaining_matchups: pd.DataFrame | None, median_scoring: bool | None, reg_season_count: int | None,
+    actual: pd.DataFrame | None,
+) -> dict | None:
+    """The week's real matchup that swung a PLAYOFF ODDS outcome the
+    MOST for either participant, positively or negatively - deliberately
+    NOT the closest score margin (user feedback 2026-09-15: "highlight
+    the game that can swing one person's playoff odds the most"). For
+    each real matchup, builds a counterfactual team_state with ONLY that
+    one game's matchup win/loss flipped between the two teams involved -
+    median win/loss, every other team's record, and both teams' real
+    points_for are left completely untouched, which isolates the swing
+    to just the head-to-head result (user feedback, same message: "the
+    game of the week should really be about the matchup, not also
+    factoring in... the median win or loss" - median contributes
+    IDENTICALLY to both the actual and flipped scenarios being diffed
+    here, so it cancels out of the comparison regardless of what its
+    real value was, without needing any separate "treat median as 50/50"
+    step). Re-simulates the flipped state and measures |actual_playoff_
+    pct - flipped_playoff_pct| for both teams; the matchup with the
+    single biggest such swing (for either team) wins. None if there's
+    nothing to compare (no matchups, or the playoff-sim baseline wasn't
+    available - see _playoff_sim_baseline)."""
+    if matchups_week.empty or team_state is None or team_state.empty or actual is None:
+        return None
+    best = None
+    for r in matchups_week.itertuples():
+        home_pk, away_pk = int(r.home_team_pk), int(r.away_team_pk)
+        if home_pk not in actual.index or away_pk not in actual.index:
+            continue
+        home_won = r.home_score > r.away_score
+        winner_pk, loser_pk = (home_pk, away_pk) if home_won else (away_pk, home_pk)
+
+        flipped_state = team_state.copy()
+        w_idx = flipped_state["team_pk"] == winner_pk
+        l_idx = flipped_state["team_pk"] == loser_pk
+        flipped_state.loc[w_idx, "matchup_wins"] -= 1
+        flipped_state.loc[w_idx, "matchup_losses"] += 1
+        flipped_state.loc[l_idx, "matchup_wins"] += 1
+        flipped_state.loc[l_idx, "matchup_losses"] -= 1
+
+        flipped = simulate_season(
+            flipped_state, remaining_matchups, median_scoring, reg_season_count, n_sims=RECAP_PLAYOFF_SIM_N_SIMS,
+        ).set_index("team_pk")
+
+        home_swing = abs(actual.loc[home_pk, "playoff_pct"] - flipped.loc[home_pk, "playoff_pct"])
+        away_swing = abs(actual.loc[away_pk, "playoff_pct"] - flipped.loc[away_pk, "playoff_pct"])
+        swung_pk = home_pk if home_swing >= away_swing else away_pk
+        swing = float(max(home_swing, away_swing))
+
+        if best is None or swing > best["playoff_odds_swing"]:
+            helped = actual.loc[swung_pk, "playoff_pct"] > flipped.loc[swung_pk, "playoff_pct"]
+            best = {
+                "home": _label(names, home_pk), "away": _label(names, away_pk),
+                "home_score": float(r.home_score), "away_score": float(r.away_score),
+                "margin": float(abs(r.home_score - r.away_score)),
+                "swung_team": _label(names, swung_pk),
+                "playoff_odds_swing": round(swing, 3),
+                "swing_direction": "up" if helped else "down",
+            }
+    return best
+
+
+def _playoff_odds_summary(season: int, week: int, names: dict, actual: pd.DataFrame | None) -> dict | None:
+    """Top-3 teams by playoff odds this week, plus the week's biggest
+    riser/faller (playoff_pct change vs. last week's real committed
+    snapshot - playoff_odds_snapshots.py) and the season's biggest riser
+    (vs. the preseason fair-share baseline - see that module's
+    preseason_baseline_rows()). User feedback 2026-09-15: "there should
+    also be a section around playoff odds... top three teams... biggest
+    riser from the past week, the biggest faller from the past week, and
+    the biggest riser season long." None if this week's playoff sim
+    isn't available (see _playoff_sim_baseline)."""
+    if actual is None or actual.empty:
+        return None
+
+    ranked = actual.sort_values("playoff_pct", ascending=False)
+    top3 = [
+        {"team": _label(names, int(pk)), "playoff_pct": round(float(row["playoff_pct"]), 3)}
+        for pk, row in ranked.head(3).iterrows()
+    ]
+
+    team_names = {int(pk): names[int(pk)]["team_name"] for pk in actual.index if int(pk) in names}
+    manifest = playoff_odds_snapshots.load_snapshots(season)
+    last_week_rows = manifest.get(str(week - 1)) if week > 1 else None
+    preseason_rows = playoff_odds_snapshots.preseason_baseline_rows(
+        team_names, playoff_team_count=SUPPORTED_PLAYOFF_TEAM_COUNT
+    )
+    preseason_pct = {r["team_pk"]: r["playoff_pct"] for r in preseason_rows}
+    last_week_pct = {r["team_pk"]: r["playoff_pct"] for r in last_week_rows} if last_week_rows else preseason_pct
+
+    weekly_riser = weekly_faller = season_riser = None
+    for pk_raw, row in actual.iterrows():
+        pk = int(pk_raw)
+        now = float(row["playoff_pct"])
+        weekly_delta = now - last_week_pct.get(pk, now)
+        season_delta = now - preseason_pct.get(pk, now)
+        if weekly_riser is None or weekly_delta > weekly_riser["delta"]:
+            weekly_riser = {"team": _label(names, pk), "delta": round(weekly_delta, 3), "playoff_pct": round(now, 3)}
+        if weekly_faller is None or weekly_delta < weekly_faller["delta"]:
+            weekly_faller = {"team": _label(names, pk), "delta": round(weekly_delta, 3), "playoff_pct": round(now, 3)}
+        if season_riser is None or season_delta > season_riser["delta"]:
+            season_riser = {"team": _label(names, pk), "delta": round(season_delta, 3), "playoff_pct": round(now, 3)}
+
+    return {
+        "top3": top3,
+        "weekly_riser": weekly_riser,
+        "weekly_faller": weekly_faller,
+        "season_riser": season_riser,
+        # True when there was no real last-week snapshot to compare
+        # against (e.g. recapping week 1) - the weekly figures above
+        # fell back to the preseason baseline instead, so callers should
+        # say "since preseason", not "since last week".
+        "weekly_compared_to_preseason": last_week_rows is None,
+    }
+
+
 def _starting_rosters(conn: sqlite3.Connection, season: int, week: int, names: dict) -> list[dict]:
     """Real starting lineups for the week (team, player name/position/
     points) - not a calculated stat, a plain roster+score lookup. Exists
@@ -339,11 +502,21 @@ def build_weekly_facts(conn: sqlite3.Connection, season: int, week: int, league=
         r = fraud_rows.iloc[0]
         biggest_fraud = {"team": _label(names, int(r.team_pk)), "fraud_index": round(float(r.fraud_index), 3)}
 
+    team_state, remaining_matchups, median_scoring, reg_season_count, actual_sim = _playoff_sim_baseline(
+        conn, season, week
+    )
+    game_of_the_week = _game_of_the_week(
+        matchups_week, names, team_state, remaining_matchups, median_scoring, reg_season_count, actual_sim
+    )
+    playoff_odds_summary = _playoff_odds_summary(season, week, names, actual_sim)
+
     return {
         "season": season,
         "week": week,
         "awards": awards,
         "biggest_fraud": biggest_fraud,
+        "game_of_the_week": game_of_the_week,
+        "playoff_odds_summary": playoff_odds_summary,
         "power_rank_movers": _power_rank_movers(conn, season, week, names),
         "next_week_game_to_watch": _game_to_watch(conn, season, week, names, position_slot_counts, league=league),
         "starting_rosters": _starting_rosters(conn, season, week, names),
@@ -378,12 +551,38 @@ def generate_placeholder_commentary(facts: dict) -> str:
         f"Week {facts['week']} is in the books - {_fmt_team(hs and hs.get('team'))} led all scorers.",
     )
 
+    pos = facts.get("playoff_odds_summary")
+    if pos:
+        po_lines = [
+            "Top 3: " + ", ".join(f"{_fmt_team(t['team'])} {t['playoff_pct']:.0%}" for t in pos["top3"])
+        ]
+        since = "since preseason" if pos["weekly_compared_to_preseason"] else "this week"
+        wr, wf, sr = pos["weekly_riser"], pos["weekly_faller"], pos["season_riser"]
+        if wr:
+            po_lines.append(f"Riser ({since}): {_fmt_team(wr['team'])} {wr['delta']:+.0%} (now {wr['playoff_pct']:.0%})")
+        if wf:
+            po_lines.append(f"Faller ({since}): {_fmt_team(wf['team'])} {wf['delta']:+.0%} (now {wf['playoff_pct']:.0%})")
+        if sr:
+            po_lines.append(f"Season-long riser: {_fmt_team(sr['team'])} {sr['delta']:+.0%} since preseason (now {sr['playoff_pct']:.0%})")
+        section("PLAYOFF ODDS", *po_lines)
+    else:
+        section("PLAYOFF ODDS", "Not available yet this season.")
+
+    gow = facts.get("game_of_the_week")
     cg = a.get("closest_game")
-    section(
-        "GAME OF THE WEEK",
-        f"{_fmt_team(cg['home'])} {cg['home_score']:.1f} - {cg['away_score']:.1f} {_fmt_team(cg['away'])} "
-        f"(margin: {cg['margin']:.1f})" if cg else "No games played this week.",
-    )
+    if gow:
+        section(
+            "GAME OF THE WEEK",
+            f"{_fmt_team(gow['home'])} {gow['home_score']:.1f} - {gow['away_score']:.1f} {_fmt_team(gow['away'])}. "
+            f"Biggest playoff-odds swing of the week: {_fmt_team(gow['swung_team'])} "
+            f"{gow['swing_direction']} {gow['playoff_odds_swing']:.0%}.",
+        )
+    else:
+        section(
+            "GAME OF THE WEEK",
+            f"{_fmt_team(cg['home'])} {cg['home_score']:.1f} - {cg['away_score']:.1f} {_fmt_team(cg['away'])} "
+            f"(margin: {cg['margin']:.1f})" if cg else "No games played this week.",
+        )
 
     bo = a.get("biggest_blowout")
     section(
@@ -484,6 +683,17 @@ def _build_claude_prompt(facts: dict) -> str:
         "final recap text below."
     )
     other_instructions = (
+        "For PLAYOFF ODDS: base it on `playoff_odds_summary` - `top3` (the current top-3 teams and their "
+        "playoff odds), `weekly_riser`/`weekly_faller` (biggest playoff-odds swing since last week - or "
+        "since preseason if `weekly_compared_to_preseason` is true, e.g. week 1), and `season_riser` "
+        "(biggest swing since the preseason fair-share baseline, always). Keep it snappy - a few sentences, "
+        "not a full leaderboard dump.\n\n"
+        "For GAME OF THE WEEK: this is NOT about the closest score margin - it's about `game_of_the_week`, "
+        "the real matchup that swung a PLAYOFF ODDS outcome the most for one of its two participants "
+        "(`swung_team`, `playoff_odds_swing`, `swing_direction` - 'up' means the real result helped that "
+        "team's odds, 'down' means it hurt them). Report the real score too (`home_score`/`away_score`), "
+        "but the HEADLINE of this section should be the playoff-odds stakes, not who won by the most or by "
+        "the least. If `game_of_the_week` is null, fall back to `awards.closest_game` instead.\n\n"
         "For MANAGER OF THE WEEK: this is about roster MANAGEMENT, not who scored the most or won by the "
         "most (that's BEATDOWN OF THE WEEK) - base it on `awards.best_lineup_efficiency` (how close to "
         "their own optimal possible lineup they actually got). If `awards.smart_lineup_call` is present, "

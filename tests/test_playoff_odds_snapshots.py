@@ -84,3 +84,53 @@ def test_biggest_mover_respects_metric_argument():
     mover = biggest_mover(manifest, metric="playoff_pct")
     assert mover["team_name"] == "A"
     assert mover["delta"] == pytest.approx(0.40)
+
+
+# --- preseason_baseline_rows -----------------------------------------------
+
+def test_preseason_baseline_is_fair_share_for_every_team():
+    from fantasy_football.playoff_odds_snapshots import preseason_baseline_rows
+
+    team_names = {i: f"Team{i}" for i in range(1, 9)}  # 8 teams
+    rows = preseason_baseline_rows(team_names, playoff_team_count=6)
+    assert len(rows) == 8
+    for r in rows:
+        assert r["playoff_pct"] == pytest.approx(6 / 8)
+        assert r["bye_pct"] == pytest.approx(2 / 8)
+        assert r["seed1_pct"] == pytest.approx(1 / 8)
+        assert r["championship_pct"] == pytest.approx(1 / 8)
+
+
+def test_preseason_baseline_empty_for_no_teams():
+    from fantasy_football.playoff_odds_snapshots import preseason_baseline_rows
+
+    assert preseason_baseline_rows({}, playoff_team_count=6) == []
+
+
+# --- build_chart_figure -----------------------------------------------------
+
+def test_build_chart_figure_prepends_a_preseason_point_when_team_names_given():
+    from fantasy_football.playoff_odds_snapshots import build_chart_figure
+
+    manifest = {"1": [_row(1, "A", 0.20), _row(2, "B", 0.10)]}
+    team_names = {1: "A", 2: "B"}
+    fig = build_chart_figure(manifest, "championship_pct", team_names=team_names, playoff_team_count=6)
+    trace_a = next(t for t in fig.data if t.name == "A")
+    assert list(trace_a.x) == [0, 1]  # preseason (0) then week 1
+
+
+def test_build_chart_figure_x_axis_labels_preseason_and_post_week():
+    from fantasy_football.playoff_odds_snapshots import build_chart_figure
+
+    manifest = {"1": [_row(1, "A", 0.20)], "2": [_row(1, "A", 0.25)]}
+    fig = build_chart_figure(manifest, "championship_pct", team_names={1: "A"}, playoff_team_count=6)
+    assert list(fig.layout.xaxis.ticktext) == ["Preseason", "Post Wk1", "Post Wk2"]
+
+
+def test_build_chart_figure_without_team_names_has_no_preseason_point():
+    from fantasy_football.playoff_odds_snapshots import build_chart_figure
+
+    manifest = {"1": [_row(1, "A", 0.20)]}
+    fig = build_chart_figure(manifest, "championship_pct")
+    trace_a = next(t for t in fig.data if t.name == "A")
+    assert list(trace_a.x) == [1]

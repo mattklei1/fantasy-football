@@ -27,6 +27,35 @@ from . import config
 
 METRICS = ("championship_pct", "playoff_pct", "bye_pct", "seed1_pct")
 
+#: The only bracket shape playoff_sim.py supports (top-2-bye, 6-team
+#: field) - see that module's own SUPPORTED_PLAYOFF_TEAM_COUNT.
+PLAYOFF_BYE_COUNT = 2
+
+
+def preseason_baseline_rows(team_names: dict[int, str], playoff_team_count: int = 6) -> list[dict]:
+    """Before any real games are played, every team is equally likely -
+    fair-share odds for N teams / playoff_team_count playoff spots / 2
+    byes / 1 eventual champion. Used as the FIRST point on the Playoff
+    Odds Over Time chart (user feedback 2026-09-15: "I want to see
+    preseason odds as the first point on the x-axis") and as the
+    "season long" baseline for the weekly recap's PLAYOFF ODDS section
+    riser callout. Not stored anywhere - a pure constant derived from
+    league size and format, not real collected data, so it's always
+    synthesized on demand rather than persisted."""
+    n = len(team_names)
+    if n == 0:
+        return []
+    return [
+        {
+            "team_pk": pk, "team_name": name,
+            "playoff_pct": playoff_team_count / n,
+            "bye_pct": PLAYOFF_BYE_COUNT / n,
+            "seed1_pct": 1 / n,
+            "championship_pct": 1 / n,
+        }
+        for pk, name in team_names.items()
+    ]
+
 
 def _path(season: int) -> str:
     return f"playoff_odds_snapshots/{season}.json"
@@ -98,17 +127,36 @@ def snapshots_to_rows(manifest: dict[str, list[dict]]) -> list[dict]:
     return rows
 
 
-def build_chart_figure(manifest: dict[str, list[dict]], metric_key: str):
+def build_chart_figure(
+    manifest: dict[str, list[dict]], metric_key: str,
+    team_names: dict[int, str] | None = None, playoff_team_count: int = 6,
+):
     """The actual go.Figure for the Playoff Odds Over Time chart - one
-    line per team, x=week number, y=whichever metric_key the page's
-    toggle selected. Pulled out of pages/6_Playoff_Odds.py so it's
-    directly callable (and visually checkable) without going through
-    Streamlit - same convention as matchup_snapshots.build_chart_figure."""
+    line per team, x=week number (week 0 = a synthetic "Preseason" point
+    - fair-share odds before any real games are played, see
+    preseason_baseline_rows()), y=whichever metric_key the page's toggle
+    selected. Pulled out of pages/6_Playoff_Odds.py so it's directly
+    callable (and visually checkable) without going through Streamlit -
+    same convention as matchup_snapshots.build_chart_figure.
+
+    Only ONE point per real week is ever possible here by construction -
+    save_snapshot()/the collector script key each week's row by week
+    number and overwrite rather than append (unlike matchup_snapshots.py's
+    growing intra-week JSONL manifest), so there is no mid-week noise to
+    filter out (user feedback 2026-09-15: "I don't want to see midweek
+    changes"). `team_names` (only needed to synthesize the preseason
+    point - omit to just chart the real collected weeks starting at
+    week 1) should be the CURRENT full team roster for the season, not
+    just teams that have snapshot history yet."""
     import plotly.graph_objects as go
 
     from .matchup_snapshots import _line_colors
 
-    rows = snapshots_to_rows(manifest)
+    full_manifest = dict(manifest)
+    if team_names:
+        full_manifest = {"0": preseason_baseline_rows(team_names, playoff_team_count), **full_manifest}
+
+    rows = snapshots_to_rows(full_manifest)
     by_team: dict[str, list[dict]] = {}
     for r in rows:
         by_team.setdefault(r["team_name"], []).append(r)
@@ -128,7 +176,11 @@ def build_chart_figure(manifest: dict[str, list[dict]], metric_key: str):
             )
         )
 
-    fig.update_xaxes(title="Week", dtick=1, tick0=1)
+    all_weeks = sorted({r["week"] for r in rows})
+    fig.update_xaxes(
+        title=None, dtick=1, tick0=0, tickmode="array", tickvals=all_weeks,
+        ticktext=["Preseason" if w == 0 else f"Post Wk{w}" for w in all_weeks],
+    )
     fig.update_yaxes(tickformat=".0%", range=[0, 1])
     fig.update_layout(
         height=480,
