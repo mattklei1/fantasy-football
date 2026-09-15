@@ -3610,3 +3610,55 @@ it at all and stays a pure fair-share constant.
   `test_commentary.py` (plus 2 existing tests updated for the new
   `weekly_compared_to`/`season_compared_to` field names). 367/367 tests
   passing overall.
+- **Backfilled the real 2026 Week 0 + Week 1 snapshots directly** (same
+  session, immediately after the above landed on `main`): the local dev
+  sandbox's network proxy blocks direct GitHub Contents API writes (see
+  above), but the GitHub MCP server tools available in this environment
+  aren't subject to that same restriction, so `playoff_odds_snapshots/
+  2026.json` was written directly via `mcp__github__create_or_update_
+  file` using the real computed Week 0 rows plus the real post-Week-1
+  simulation - no need to wait on the unreliable scheduled cron. Both
+  weeks' real numbers are now live on the chart and available to the
+  Weekly Recap's PLAYOFF ODDS section.
+
+**BAD BEAT rebuilt around one specific underperforming starter, not just
+"highest scorer among losers" (2026-09-15, same session).** User: "I
+liked what you had before where Quinn had darnold hurt and that lost him
+the matchup (maybe median too?). Not just people who had down weeks."
+The underlying `bad_beat` stat had never actually been about a specific
+bad-luck event - it was always just "the highest score among that week's
+real losers," so Claude's web-search step was searching for SOME injury
+story to loosely connect to whichever team that happened to be, with no
+guarantee the story it found (or the team it picked) had anything to do
+with why that team actually lost.
+
+- New `weekly_awards._bad_beat()`: for each real losing team, finds the
+  ACTUAL STARTER (never a bench player) with the biggest shortfall
+  (pregame `projected_points` minus real `points`), then checks whether
+  that ONE player alone hitting their own projection - every other real
+  result unchanged - would have flipped the real matchup (`score -
+  actual + projected > points_against`) and/or that week's median result
+  (same counterfactual-median recompute pattern as `coaching_disaster`).
+  Only qualifies if it flips at least one of the two (user: "maybe
+  median too?"). Picks the single biggest qualifying shortfall across
+  all of that week's losing teams. Returns None (not a forced pick) when
+  no losing team has one - a real, if less dramatic, outcome some weeks.
+  Falls back to the old plain "highest scorer among losers" stat with no
+  player-level detail for pre-2019 seasons (no box-score/projection data
+  to compute shortfalls from).
+- `commentary.py`'s BAD BEAT prompt now scopes Claude's web search to
+  that ONE named player (not just "someone on this team's roster") and
+  states the exact computed shortfall and which real result(s) it would
+  have flipped, so Claude's job is purely to find and report the REAL
+  reason that specific player underperformed - never to guess who or
+  whether it mattered, since both are now already-computed facts. Three
+  prompt branches: a real qualifying player (the common case going
+  forward), the old team-only pre-2019 fallback, and an explicit "don't
+  invent one" instruction when `awards.bad_beat` is null. Placeholder
+  (non-Claude) commentary path updated the same way.
+- 8 new/updated tests across `test_weekly_awards.py` (no-flip vs.
+  matchup-flip vs. median-flip vs. bench-players-never-count vs.
+  picking-the-biggest-shortfall-among-multiple-teams) and
+  `test_commentary.py` (extended the shared `conn` fixture with a real
+  qualifying bad-beat scenario for one of its losing teams). 373/373
+  tests passing overall.

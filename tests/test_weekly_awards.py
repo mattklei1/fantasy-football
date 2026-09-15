@@ -51,11 +51,106 @@ def test_biggest_blowout_and_closest_game():
     assert awards["closest_game"]["margin"] == pytest.approx(5.0)
 
 
-def test_bad_beat_is_highest_scoring_loser():
+def test_bad_beat_falls_back_to_highest_scoring_loser_without_roster_data():
+    # no roster_df passed at all - pre-2019 seasons have no box-score
+    # eligibility data, so bad_beat degrades to the old, plain stat.
     awards = compute_weekly_awards(SCORES, MATCHUPS)
-    # team4 scored 95 and still lost to team3's 100 - the highest score among all losers
     assert awards["bad_beat"]["team_pk"] == 4
     assert awards["bad_beat"]["score"] == pytest.approx(95.0)
+    assert "player_name" not in awards["bad_beat"]
+
+
+def test_bad_beat_none_when_no_single_starter_shortfall_would_have_flipped_anything():
+    # team2 (40) lost badly to team1 (150), and also sits well below the
+    # week's median. Its worst starter missed their projection by only 3
+    # points - nowhere near enough to flip the matchup OR clear the
+    # median on their own. This is "just a down week", not a bad beat,
+    # and should NOT be reported as one.
+    roster = pd.DataFrame(
+        {
+            "week": [1, 1],
+            "team_pk": [2, 2],
+            "player_id": [201, 202],
+            "player_name": ["Mild Miss", "Solid Starter"],
+            "position": ["WR", "RB"],
+            "is_starter": [1, 1],
+            "points": [15.0, 25.0],
+            "projected_points": [18.0, 25.0],
+        }
+    )
+    awards = compute_weekly_awards(SCORES, MATCHUPS, roster_df=roster)
+    assert awards["bad_beat"] is None
+
+
+def test_bad_beat_identifies_the_single_underperforming_starter_that_flipped_the_matchup():
+    # team4 (95) lost to team3 (100). Its starting QB was projected for 30
+    # but scored only 5 - a 25-point shortfall. Had he hit his projection,
+    # team4's would-be score is 95-5+30=120, which beats team3's real 100.
+    roster = pd.DataFrame(
+        {
+            "week": [1, 1],
+            "team_pk": [4, 4],
+            "player_id": [401, 402],
+            "player_name": ["Hurt QB", "Fine RB"],
+            "position": ["QB", "RB"],
+            "is_starter": [1, 1],
+            "points": [5.0, 90.0],
+            "projected_points": [30.0, 90.0],
+        }
+    )
+    awards = compute_weekly_awards(SCORES, MATCHUPS, roster_df=roster)
+    bb = awards["bad_beat"]
+    assert bb["team_pk"] == 4
+    assert bb["player_name"] == "Hurt QB"
+    assert bb["position"] == "QB"
+    assert bb["projected_points"] == pytest.approx(30.0)
+    assert bb["actual_points"] == pytest.approx(5.0)
+    assert bb["shortfall"] == pytest.approx(25.0)
+    assert bb["flipped_matchup"] is True
+
+
+def test_bad_beat_only_considers_actual_starters_not_the_bench():
+    # team4's bench has a huge shortfall, but a bench player never affects
+    # the real result - only a rostered STARTER's underperformance counts.
+    roster = pd.DataFrame(
+        {
+            "week": [1, 1],
+            "team_pk": [4, 4],
+            "player_id": [401, 402],
+            "player_name": ["Starter", "Benched Bust"],
+            "position": ["RB", "RB"],
+            "is_starter": [1, 0],
+            "points": [95.0, 2.0],
+            "projected_points": [95.0, 50.0],
+        }
+    )
+    awards = compute_weekly_awards(SCORES, MATCHUPS, roster_df=roster)
+    assert awards["bad_beat"] is None
+
+
+def test_bad_beat_picks_the_biggest_shortfall_among_multiple_qualifying_teams():
+    # team2 (40, lost to team1's 150) qualifies via a MEDIAN flip (a
+    # 60-point shortfall: would-be score 90->100 clears the recomputed
+    # median of 97.5) and team4 (95, lost to team3's 100) qualifies via a
+    # MATCHUP flip (an 80-point shortfall: would-be score 175 beats
+    # team3's 100) - team4's bigger shortfall wins even though team2's
+    # raw score was worse.
+    roster = pd.DataFrame(
+        {
+            "week": [1, 1],
+            "team_pk": [2, 4],
+            "player_id": [201, 401],
+            "player_name": ["Small Miss", "Big Miss"],
+            "position": ["WR", "WR"],
+            "is_starter": [1, 1],
+            "points": [10.0, 20.0],
+            "projected_points": [70.0, 100.0],
+        }
+    )
+    awards = compute_weekly_awards(SCORES, MATCHUPS, roster_df=roster)
+    assert awards["bad_beat"]["team_pk"] == 4
+    assert awards["bad_beat"]["player_name"] == "Big Miss"
+    assert awards["bad_beat"]["shortfall"] == pytest.approx(80.0)
 
 
 def test_unluckiest_loss_uses_all_play_not_just_raw_score():

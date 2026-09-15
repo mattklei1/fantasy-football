@@ -73,6 +73,19 @@ def conn():
         "VALUES (2099, 1, 1, 2, 'BE', 0, '[\"RB\", \"BE\"]')"
     )
     c.execute("INSERT INTO player_week_scores (season_id, week, player_id, points) VALUES (2099, 1, 1, 45.2)")
+
+    # a genuine bad beat for team4 (Team D, lost 110-120 to Team C): its
+    # starting RB was projected for 25 but scored only 5 - a 20-point
+    # shortfall that alone would have flipped the matchup (110-5+25=130 > 120)
+    c.execute("INSERT INTO players (player_id, player_name, default_position) VALUES (3, 'Hurt Star', 'RB')")
+    c.execute(
+        "INSERT INTO weekly_rosters (season_id, week, team_pk, player_id, slot_position, is_starter, eligible_slots) "
+        "VALUES (2099, 1, 4, 3, 'RB', 1, '[\"RB\", \"BE\"]')"
+    )
+    c.execute(
+        "INSERT INTO player_week_scores (season_id, week, player_id, points, projected_points) "
+        "VALUES (2099, 1, 3, 5.0, 25.0)"
+    )
     c.commit()
     return c
 
@@ -270,13 +283,36 @@ def test_game_to_watch_none_without_position_slot_counts(conn):
     assert facts["next_week_game_to_watch"] is None
 
 
-def test_bad_beat_prompt_scopes_to_the_specific_bad_beat_team(conn):
+def test_bad_beat_prompt_scopes_to_the_specific_bad_beat_player(conn):
     facts = commentary.build_weekly_facts(conn, 2099, 1)
-    bad_beat_pk = facts["awards"]["bad_beat"]["team"]["team_pk"]
+    bad_beat = facts["awards"]["bad_beat"]
+    assert bad_beat["player_name"] == "Hurt Star"
+    assert bad_beat["flipped_matchup"] is True
+    assert bad_beat["shortfall"] == pytest.approx(20.0)
     prompt = commentary._build_claude_prompt(facts)
-    assert f"team_pk {bad_beat_pk!r}" in prompt
+    assert f"team_pk {bad_beat['team']['team_pk']!r}" in prompt
+    assert "'Hurt Star'" in prompt
+    assert "never cite news about a different player" in prompt
+
+
+def test_bad_beat_prompt_falls_back_to_team_scoped_instructions_without_player_data():
+    facts = {
+        "season": 2099, "week": 1,
+        "awards": {"bad_beat": {"team_pk": 4, "score": 95.0, "team": {"team_pk": 4, "team_name": "Team D", "manager_name": "Dan"}}},
+        "biggest_fraud": None, "power_rank_movers": [], "next_week_game_to_watch": None, "starting_rosters": [],
+    }
+    prompt = commentary._build_claude_prompt(facts)
     assert "never cite a real news story about a player on a DIFFERENT team" in prompt
     assert "never add an 'honorable mention'" in prompt
+
+
+def test_bad_beat_prompt_tells_claude_not_to_invent_one_when_null():
+    facts = {
+        "season": 2099, "week": 1, "awards": {"bad_beat": None}, "biggest_fraud": None,
+        "power_rank_movers": [], "next_week_game_to_watch": None, "starting_rosters": [],
+    }
+    prompt = commentary._build_claude_prompt(facts)
+    assert "Do NOT invent one" in prompt
 
 
 def test_prompt_directs_manager_of_the_week_to_lineup_efficiency_not_blowouts():

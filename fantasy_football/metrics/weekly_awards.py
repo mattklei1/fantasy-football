@@ -82,9 +82,9 @@ def compute_weekly_awards(
     losers = merged[merged["matchup_loss"] == 1]
     winners = merged[merged["matchup_win"] == 1]
 
+    awards["bad_beat"] = _bad_beat(losers, roster_df, scores_df)
+
     if not losers.empty:
-        bad_beat = losers.loc[losers["score"].idxmax()]
-        awards["bad_beat"] = {"team_pk": int(bad_beat["team_pk"]), "score": float(bad_beat["score"])}
         unluckiest = losers.loc[losers["all_play_win"].idxmax()]
         awards["unluckiest_loss"] = {
             "team_pk": int(unluckiest["team_pk"]),
@@ -92,7 +92,6 @@ def compute_weekly_awards(
             "all_play_wins": int(unluckiest["all_play_win"]),
         }
     else:
-        awards["bad_beat"] = None
         awards["unluckiest_loss"] = None
 
     if not winners.empty:
@@ -172,6 +171,76 @@ def compute_weekly_awards(
         awards["smart_lineup_call"] = None
 
     return awards
+
+
+def _bad_beat(losers: pd.DataFrame, roster_df: pd.DataFrame | None, scores_df: pd.DataFrame) -> dict | None:
+    """The week's real "bad beat": a loss caused by ONE specific rostered
+    starter badly missing their own pregame projection - not just "the
+    highest-scoring loser" (any losing team can land there simply by
+    everyone having a solid week while the opponent has a slightly better
+    one; per user feedback, "not just people who had down weeks"). Only
+    qualifies when that single player's shortfall (projected - actual) is
+    large enough that hitting their own projection would have flipped the
+    real matchup and/or that week's median (top-half) result - a
+    concrete, computed fact commentary.py's web-search step then explains
+    (e.g. a real in-game injury). None if no losing team has such a
+    player this week (a real, if less dramatic, outcome - not every week
+    has one). Falls back to the plain "highest scorer among losers" stat
+    with no player-level detail when roster/projection data isn't
+    available at all (pre-2019 seasons, which have no box-score
+    eligibility data)."""
+    if losers.empty:
+        return None
+    if roster_df is None or roster_df.empty or "projected_points" not in roster_df.columns:
+        bb = losers.loc[losers["score"].idxmax()]
+        return {"team_pk": int(bb["team_pk"]), "score": float(bb["score"])}
+
+    df = roster_df.copy()
+    df["projected_points"] = df["projected_points"].fillna(0.0)
+    starters = df[df["is_starter"] == 1]
+
+    best = None
+    for row in losers.itertuples():
+        team_pk = int(row.team_pk)
+        team_starters = starters[starters["team_pk"] == team_pk]
+        if team_starters.empty:
+            continue
+
+        shortfalls = team_starters["projected_points"] - team_starters["points"]
+        culprit_idx = shortfalls.idxmax()
+        shortfall = float(shortfalls.loc[culprit_idx])
+        if shortfall <= 0:
+            continue  # nobody on this team missed their own projection at all
+        culprit = team_starters.loc[culprit_idx]
+
+        # If ONLY this one player had hit their own projection (every other
+        # real result on both sides unchanged), would this team's score
+        # have been enough to win the matchup and/or clear the median?
+        would_be_score = float(row.score) - float(culprit["points"]) + float(culprit["projected_points"])
+        flipped_matchup = would_be_score > float(row.points_against)
+
+        other_scores = scores_df.loc[scores_df["team_pk"] != team_pk, "score"]
+        counterfactual_median = pd.concat([other_scores, pd.Series([would_be_score])]).median()
+        flipped_median = would_be_score > counterfactual_median
+
+        if not (flipped_matchup or flipped_median):
+            continue
+
+        candidate = {
+            "team_pk": team_pk,
+            "score": float(row.score),
+            "player_name": culprit["player_name"],
+            "position": culprit["position"],
+            "projected_points": round(float(culprit["projected_points"]), 1),
+            "actual_points": round(float(culprit["points"]), 1),
+            "shortfall": round(shortfall, 1),
+            "flipped_matchup": bool(flipped_matchup),
+            "flipped_median": bool(flipped_median),
+        }
+        if best is None or candidate["shortfall"] > best["shortfall"]:
+            best = candidate
+
+    return best
 
 
 def _smart_lineup_call(roster_df: pd.DataFrame) -> dict | None:

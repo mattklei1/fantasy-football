@@ -612,10 +612,21 @@ def generate_placeholder_commentary(facts: dict) -> str:
     )
 
     bb = a.get("bad_beat")
-    section(
-        "BAD BEAT",
-        f"{_fmt_team(bb['team'])} scored {bb['score']:.1f} and still lost." if bb else "No qualifying bad beat this week.",
-    )
+    if bb and "player_name" in bb:
+        flips = [
+            label for cond, label in [(bb["flipped_matchup"], "the matchup"), (bb["flipped_median"], "the median")]
+            if cond
+        ]
+        bb_text = (
+            f"{_fmt_team(bb['team'])} scored {bb['score']:.1f} and still lost. "
+            f"{bb['player_name']} ({bb['position']}) was projected for {bb['projected_points']:.1f} but managed "
+            f"only {bb['actual_points']:.1f} - hit that number and {_fmt_team(bb['team'])} wins {' and '.join(flips)}."
+        )
+    elif bb:
+        bb_text = f"{_fmt_team(bb['team'])} scored {bb['score']:.1f} and still lost."
+    else:
+        bb_text = "No qualifying bad beat this week."
+    section("BAD BEAT", bb_text)
 
     mow = a.get("best_lineup_efficiency")
     mow_lines = [
@@ -683,25 +694,59 @@ def generate_placeholder_commentary(facts: dict) -> str:
 
 def _build_claude_prompt(facts: dict) -> str:
     season, week = facts["season"], facts["week"]
-    bad_beat_team_pk = ((facts["awards"].get("bad_beat") or {}).get("team") or {}).get("team_pk")
-    bad_beat_instructions = (
-        "For the BAD BEAT section specifically, you have a `web_search` tool - use it to look up REAL NFL "
-        f"news from the actual {season} NFL season, Week {week} (in-game injuries, overturned/reviewed "
-        "plays, garbage-time or kneel-down finishes, officiating controversies, or any other real 'bad "
-        "beat' storyline from that week's real games). This section is ABOUT ONE SPECIFIC TEAM: "
-        f"`awards.bad_beat.team` (team_pk {bad_beat_team_pk!r} - the highest scorer among that week's real "
-        "losing teams, i.e. a team that scored well but still lost). Search only for news connecting to "
-        "PLAYERS ON THAT TEAM'S OWN ROSTER (look them up in `starting_rosters` for that team_pk) - never "
-        "cite a real news story about a player on a DIFFERENT team, even if it's a great story, and never "
-        "add an 'honorable mention' about an unrelated team/player. The story must plausibly explain why "
-        "this specific team's week went badly (an injury, a bad break, bad luck) - not just any player on "
-        "their roster who happens to be in the news. Describe only what your search results actually "
-        "support (never embellish beyond them). If nothing search-worthy connects to THIS team's own "
-        "roster, skip the news angle and just report the plain fact from `awards.bad_beat` (they scored "
-        "X and still lost) instead of forcing a connection that isn't real, or reaching for a different "
-        "team's story. Do not narrate your search process (no \"I'll search for...\") - output only the "
-        "final recap text below."
-    )
+    bad_beat = facts["awards"].get("bad_beat")
+    bad_beat_team_pk = ((bad_beat or {}).get("team") or {}).get("team_pk")
+    if bad_beat and "player_name" in bad_beat:
+        flips = [
+            label for cond, label in
+            [(bad_beat["flipped_matchup"], "the matchup"), (bad_beat["flipped_median"], "the median")]
+            if cond
+        ]
+        bad_beat_instructions = (
+            "For the BAD BEAT section specifically, you have a `web_search` tool - use it to look up REAL NFL "
+            f"news from the actual {season} NFL season, Week {week}, about ONE SPECIFIC PLAYER: "
+            f"`awards.bad_beat.player_name` ({bad_beat['player_name']!r}, {bad_beat['position']}, rostered by "
+            f"team_pk {bad_beat_team_pk!r} - see `starting_rosters` for that team's full roster). This is a "
+            f"real, already-computed fact, not a guess: this player was projected for "
+            f"{bad_beat['projected_points']} points and actually scored only {bad_beat['actual_points']} - a "
+            f"{bad_beat['shortfall']}-point shortfall that BY ITSELF would have flipped {' and '.join(flips)} "
+            "for their team had this one player merely hit their own projection (every other real result that "
+            "week stays exactly the same in that comparison). Search for the REAL reason this specific player "
+            "underperformed that week (an in-game injury, a benching, a blowout garbage-time role, a bad "
+            "officiating call, whatever actually happened) and use it to explain the bad beat - never cite "
+            "news about a different player, even a more interesting story. Describe only what your search "
+            "results actually support (never embellish beyond them). If nothing search-worthy turns up for "
+            "this specific player, just report the plain computed fact (projected X, scored Y, would have "
+            "flipped the matchup/median) without inventing a reason. Do not narrate your search process (no "
+            "\"I'll search for...\") - output only the final recap text below."
+        )
+    elif bad_beat:
+        bad_beat_instructions = (
+            "For the BAD BEAT section specifically, you have a `web_search` tool - use it to look up REAL NFL "
+            f"news from the actual {season} NFL season, Week {week} (in-game injuries, overturned/reviewed "
+            "plays, garbage-time or kneel-down finishes, officiating controversies, or any other real 'bad "
+            "beat' storyline from that week's real games). This section is ABOUT ONE SPECIFIC TEAM: "
+            f"`awards.bad_beat.team` (team_pk {bad_beat_team_pk!r} - the highest scorer among that week's real "
+            "losing teams, i.e. a team that scored well but still lost; player-level roster/projection data "
+            "isn't available for this older season). Search only for news connecting to PLAYERS ON THAT "
+            "TEAM'S OWN ROSTER (look them up in `starting_rosters` for that team_pk) - never cite a real news "
+            "story about a player on a DIFFERENT team, even if it's a great story, and never add an "
+            "'honorable mention' about an unrelated team/player. The story must plausibly explain why this "
+            "specific team's week went badly (an injury, a bad break, bad luck) - not just any player on "
+            "their roster who happens to be in the news. Describe only what your search results actually "
+            "support (never embellish beyond them). If nothing search-worthy connects to THIS team's own "
+            "roster, skip the news angle and just report the plain fact from `awards.bad_beat` (they scored "
+            "X and still lost) instead of forcing a connection that isn't real, or reaching for a different "
+            "team's story. Do not narrate your search process (no \"I'll search for...\") - output only the "
+            "final recap text below."
+        )
+    else:
+        bad_beat_instructions = (
+            "For the BAD BEAT section: `awards.bad_beat` is null - no single starter's shortfall against "
+            "their own projection was large enough to have flipped that team's matchup or median result this "
+            "week. Do NOT invent one. Write a brief, honest line that there's no real bad beat to report this "
+            "week (you can still have fun with the tone, just don't fabricate a stat, player, or story)."
+        )
     other_instructions = (
         "For PLAYOFF ODDS: base it on `playoff_odds_summary` - `top3` (the current top-3 teams and their "
         "playoff odds), `weekly_riser`/`weekly_faller` (biggest playoff-odds swing - `weekly_compared_to` "
