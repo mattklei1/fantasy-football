@@ -15,16 +15,22 @@ draft but before week 1 games"):
 - **Pre-draft** (x=-1): every team is equally likely - a pure fair-share
   constant, synthesized on demand, never stored (preseason_baseline_
   rows()).
-- **Week 0** (x=0): REAL playoff odds computed from Week-1 roster
-  quality alone, before any games were played - each team's expected
-  score is their optimal Week-1 lineup's total using ESPN's real
-  PREGAME Week-1 projections (confirmed these stay frozen at their
-  pregame values, not overwritten once games start or finish - e.g. a
-  real check against this league's actual week-1 data: a player
-  projected 18.49 who then scored 0.0 still shows 18.49, not something
-  adjusted toward the real result). This is stored in the same manifest
-  as every other week (key "0"), computed once and never recomputed -
-  see compute_week0_snapshot_rows().
+- **Week 0** (x=0): REAL playoff odds computed from Week-1 ROSTER
+  STRENGTH, before any games were played (user, 2026-09-16: "Rebuild
+  week 0 playoff odds. It should be roster strength" - superseded an
+  earlier version driven by raw Week-1 point projection alone). Uses
+  the same roster_strength.py blend the Roster Strength page uses any
+  other week (40% FantasyPros positional rank, 20% ESPN weekly
+  projection), except the FantasyPros signal is the real Week-0 ADP
+  (Average Draft Position) snapshot - genuine draft-time consensus, not
+  a rest-of-season rank that's already drifted forward with in-season
+  performance (see ingest.ingest_fantasypros_adp_rankings). Roster
+  Strength (0-100) is remapped onto real point units via a z-score
+  transplant onto that week's actual optimal-lineup ESPN point
+  projections' own distribution - see compute_week0_team_state() for
+  why. This is stored in the same manifest as every other week (key
+  "0"), computed once and never recomputed - see compute_week0_
+  snapshot_rows().
 
 STORAGE, and why it's the normal "commit to main" pattern (unlike
 matchup_snapshots.py's dedicated non-deploying branch): that one exists
@@ -52,21 +58,33 @@ METRICS = ("championship_pct", "playoff_pct", "bye_pct", "seed1_pct")
 #: field) - see that module's own SUPPORTED_PLAYOFF_TEAM_COUNT.
 PLAYOFF_BYE_COUNT = 2
 
-#: How much to trust a team's Week-0 season_ppg (its optimal Week-1
-#: lineup's ESPN pregame projection) vs. the league average, expressed
-#: as an equivalent games_played fed into playoff_sim.shrink_expected_
-#: score() (see compute_week0_snapshot_rows()). NOT guessed: RMSE-swept
-#: blend weights (0.00-1.00) predicting each team's REAL rest-of-season
-#: PPG from `w * week1_optimal_projection + (1-w) * league_avg_projection`
-#: across 6 completed real seasons with usable Week-1 projection data
-#: (2019-2022, 2024-2025 - 2023 excluded, its Week-1 projected_points
-#: data is bad that season, league_avg_proj came out ~18 vs. a real
-#: ~114 PPG average). w=0 (today's bug - full shrinkage to the league
-#: average) gave RMSE 9.95; the minimum, RMSE 9.22, sat at w=0.85 (flat
-#: within +/-0.05 either side - not a knife-edge optimum), confirming a
-#: team's Week-1 pregame projection genuinely predicts its rest-of-
-#: season scoring better than just assuming every team is average.
-#: w=games/(games+SHRINKAGE_GAMES) => games = SHRINKAGE_GAMES*w/(1-w).
+#: How much to trust a team's Week-0 season_ppg vs. the league average,
+#: expressed as an equivalent games_played fed into playoff_sim.shrink_
+#: expected_score() (see compute_week0_snapshot_rows()). NOT guessed:
+#: RMSE-swept blend weights (0.00-1.00) predicting each team's REAL
+#: rest-of-season PPG from `w * week1_optimal_projection + (1-w) *
+#: league_avg_projection` across 6 completed real seasons with usable
+#: Week-1 projection data (2019-2022, 2024-2025 - 2023 excluded, its
+#: Week-1 projected_points data is bad that season, league_avg_proj came
+#: out ~18 vs. a real ~114 PPG average). w=0 (the original bug - full
+#: shrinkage to the league average) gave RMSE 9.95; the minimum, RMSE
+#: 9.22, sat at w=0.85 (flat within +/-0.05 either side - not a
+#: knife-edge optimum), confirming a team's Week-1 pregame projection
+#: genuinely predicts its rest-of-season scoring better than just
+#: assuming every team is average. w=games/(games+SHRINKAGE_GAMES) =>
+#: games = SHRINKAGE_GAMES*w/(1-w).
+#:
+#: CAVEAT (2026-09-16, since compute_week0_team_state() switched to a
+#: Roster-Strength-driven season_ppg): this calibration was run against
+#: the RAW week-1 point projection, not the Roster-Strength-based
+#: re-ranking that replaced it - there's no historical Roster Strength
+#: data to re-run the same RMSE sweep against (FantasyPros/roster_
+#: strength_weekly only exist for the current season). Carried over as
+#: the best available estimate because the re-ranked values share the
+#: EXACT same mean/stdev as what was calibrated (the z-score remap only
+#: changes which team gets which value, not the distribution's shape) -
+#: worth re-validating for real once multiple seasons of Roster Strength
+#: history exist.
 WEEK0_TRUST_GAMES = 45.0
 
 
@@ -98,17 +116,39 @@ def preseason_baseline_rows(team_names: dict[int, str], playoff_team_count: int 
 def compute_week0_team_state(conn: sqlite3.Connection, season: int, position_slot_counts: dict) -> pd.DataFrame:
     """team_state (same shape playoff_sim.simulate_season expects) for
     "right after the draft, before any Week-1 games" - matchup/median
-    records and points_for all zero (nothing's been decided yet),
-    season_ppg/last3_ppg set to each team's OPTIMAL Week-1 lineup total
-    using ESPN's real PREGAME Week-1 projections (the same eligible-
-    slots-respecting optimal_lineup() solver used for the Weekly
-    Recap's NEXT WEEK'S GAME TO WATCH - see commentary.
-    _team_next_week_optimal_projection), score_stdev set to win_
-    probability.MIN_STDEV (this league's own empirically-grounded
-    small-sample floor, ~20 points - there's no real per-team variance
-    yet to compute one from). Empty DataFrame if Week-1 roster/
-    projection data isn't available."""
+    records and points_for all zero (nothing's been decided yet).
+
+    season_ppg/last3_ppg are driven by ROSTER STRENGTH (user, 2026-09-16:
+    "Rebuild week 0 playoff odds. It should be roster strength" - a
+    broader, FantasyPros-informed quality signal than the raw Week-1
+    point projection this used before), computed from the REAL Week-1
+    roster (the actual draft result) blended against the FantasyPros
+    Week-0 ADP snapshot (draft-time consensus, NOT rest-of-season rank -
+    see ingest.ingest_fantasypros_adp_rankings and loaders.
+    load_week0_roster_for_strength) exactly like the Roster Strength page
+    computes it any other week, reusing roster_strength.py's already-
+    calibrated compute_player_values()/compute_team_roster_strength()
+    unchanged.
+
+    Roster Strength is a 0-100 percentile-ish score, not points, and
+    playoff_sim.simulate_season() needs real point units - there's no
+    historical Roster Strength data to RMSE-calibrate a conversion
+    against (FantasyPros/roster_strength_weekly only exist for THIS
+    season; unlike the Week-1-point-projection signal this replaces,
+    which had 6 real prior seasons to validate against - see
+    WEEK0_TRUST_GAMES's docstring). Instead: z-score each team's roster
+    strength against the league (roster_strength drives the RANKING and
+    SPREAD entirely), then remap that z-score onto the real distribution
+    (mean/stdev) of this week's actual optimal-Week-1-lineup ESPN point
+    projections - borrowing real point-scale units without letting the
+    raw point projection influence the ranking at all. score_stdev set
+    to win_probability.MIN_STDEV (this league's own empirically-grounded
+    small-sample floor - there's no real per-team variance yet to
+    compute one from). Empty DataFrame if Week-1 roster/projection data
+    isn't available."""
+    from .metrics import loaders as metric_loaders
     from .metrics.lineup_optimizer import RosterPlayer, optimal_lineup
+    from .metrics.roster_strength import compute_player_values, compute_team_roster_strength
     from .metrics.win_probability import MIN_STDEV
 
     rows = pd.read_sql_query(
@@ -126,20 +166,49 @@ def compute_week0_team_state(conn: sqlite3.Connection, season: int, position_slo
     rows["eligible_slots"] = rows["eligible_slots"].apply(lambda s: frozenset(json.loads(s)))
     rows["projected_points"] = rows["projected_points"].fillna(0.0)
 
-    team_rows = []
+    # Scale anchor: each team's real optimal-Week-1-lineup ESPN point
+    # total - same computation this function used to return directly,
+    # now used only to give roster strength's ranking real point units.
+    optimal_points_by_team: dict[int, float] = {}
     for team_pk, g in rows.groupby("team_pk"):
         players = [
             RosterPlayer(int(r.player_id), float(r.projected_points), r.eligible_slots)
             for r in g.itertuples()
         ]
         optimal_points, _ = optimal_lineup(players, position_slot_counts)
-        team_rows.append(
-            {
-                "team_pk": int(team_pk), "season_ppg": optimal_points, "last3_ppg": optimal_points,
-                "score_stdev": MIN_STDEV, "matchup_wins": 0, "matchup_losses": 0, "matchup_ties": 0,
-                "median_wins": 0, "median_losses": 0, "median_ties": 0, "points_for": 0.0,
-            }
-        )
+        optimal_points_by_team[int(team_pk)] = optimal_points
+
+    reg_season_count_row = conn.execute(
+        "SELECT reg_season_count FROM seasons WHERE season_id = ?", (season,)
+    ).fetchone()
+    reg_season_count = reg_season_count_row[0] if reg_season_count_row and reg_season_count_row[0] else 14
+
+    roster_df = metric_loaders.load_week0_roster_for_strength(conn, season)
+    valued = compute_player_values(roster_df)
+    strength = compute_team_roster_strength(valued, week=1, reg_season_count=reg_season_count).set_index("team_pk")[
+        "roster_strength"
+    ]
+
+    team_pks = sorted(optimal_points_by_team)
+    optimal_points = pd.Series({pk: optimal_points_by_team[pk] for pk in team_pks})
+    strength = strength.reindex(team_pks)
+
+    scale_mean, scale_std = optimal_points.mean(), optimal_points.std(ddof=0)
+    strength_mean, strength_std = strength.mean(), strength.std(ddof=0)
+    if strength_std > 0:
+        z = (strength - strength_mean) / strength_std
+        expected = scale_mean + z * scale_std
+    else:
+        expected = pd.Series(scale_mean, index=team_pks)  # every team graded identically - no basis to differentiate
+
+    team_rows = [
+        {
+            "team_pk": pk, "season_ppg": float(expected[pk]), "last3_ppg": float(expected[pk]),
+            "score_stdev": MIN_STDEV, "matchup_wins": 0, "matchup_losses": 0, "matchup_ties": 0,
+            "median_wins": 0, "median_losses": 0, "median_ties": 0, "points_for": 0.0,
+        }
+        for pk in team_pks
+    ]
     return pd.DataFrame(team_rows)
 
 

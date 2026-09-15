@@ -3,11 +3,21 @@
 simulation results (fantasy_football.playoff_odds_snapshots) that back
 the Playoff Odds page's trend-over-time chart - both the latest
 completed real week, AND (once, ever, per season) "Week 0" - real
-playoff odds computed from Week-1 roster/projection quality alone,
-right after the draft before any games (user feedback 2026-09-15: "show
-week 0... after draft but before week 1 games... calculate using roster
-strength at that time" - see playoff_odds_snapshots.
-compute_week0_snapshot_rows()).
+playoff odds computed from Week-1 ROSTER STRENGTH, right after the
+draft before any games (user feedback 2026-09-15: "show week 0... after
+draft but before week 1 games... calculate using roster strength at
+that time"; 2026-09-16: "Rebuild week 0 playoff odds. It should be
+roster strength" - see playoff_odds_snapshots.compute_week0_snapshot_
+rows()/compute_week0_team_state()).
+
+Before computing Week 0, also does a ONE-TIME ingest of FantasyPros'
+real Average Draft Position rankings (ingest_fantasypros_adp_rankings) -
+genuine draft-time consensus, distinct from and not the same as their
+rest-of-season rankings (confirmed live: FantasyPros has no separate
+"draft" ranking type despite what its query params suggest - ADP is the
+real, correct signal for this). Best-effort: if FANTASYPROS_API_KEY
+isn't configured or the call fails, Roster Strength degrades to its
+ESPN-only signal, same as the live Roster Strength page does.
 
 Fires once a day (see .github/workflows/playoff-odds-snapshot.yml).
 Self-gates BEFORE any expensive work: one lightweight ESPN call
@@ -33,9 +43,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from fantasy_football import db
+from fantasy_football import config, db
 from fantasy_football.espn_client import ESPNClient
-from fantasy_football.ingest import ingest_season
+from fantasy_football.ingest import ingest_fantasypros_adp_rankings, ingest_season
 from fantasy_football.metrics.pipeline import compute_and_store_season_metrics
 
 
@@ -64,6 +74,12 @@ def main() -> int:
         compute_and_store_season_metrics(conn, season)
 
         if need_week0:
+            fp_api_key = config.fantasypros_api_key()
+            if fp_api_key:
+                try:
+                    ingest_fantasypros_adp_rankings(conn, season, fp_api_key, log=print)
+                except Exception as exc:  # noqa: BLE001 - Roster Strength degrades gracefully without it
+                    print(f"[warn] FantasyPros ADP (Week 0) ingest failed: {exc}")
             week0_rows = playoff_odds_snapshots.compute_week0_snapshot_rows(conn, season)
             if week0_rows:
                 result = playoff_odds_snapshots.save_snapshot(season, 0, week0_rows)

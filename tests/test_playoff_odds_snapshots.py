@@ -206,7 +206,17 @@ def week0_conn():
     return c
 
 
-def test_compute_week0_team_state_uses_optimal_week1_lineup_projection(week0_conn):
+def test_compute_week0_team_state_ranks_teams_without_fantasypros_data(week0_conn):
+    # week0_conn has no fantasypros_rankings rows at all - Roster Strength
+    # degrades to its ESPN-weekly-projection-percentile signal alone
+    # (same graceful degradation the live Roster Strength page uses).
+    # Since this fixture's 8 teams have evenly-spaced, strictly-ordered
+    # Week-1 point projections (80, 90, ..., 150) and one single-player
+    # roster each, the percentile-rank-based Roster Strength preserves
+    # that EXACT same ordering, and the z-score remap onto the real
+    # point-projection distribution reproduces very close to the
+    # original evenly-spaced values - confirming the mechanism preserves
+    # a sensible ranking/scale even in the ESPN-only degraded case.
     from fantasy_football.metrics.win_probability import MIN_STDEV
     from fantasy_football.playoff_odds_snapshots import compute_week0_team_state
 
@@ -218,6 +228,36 @@ def test_compute_week0_team_state_uses_optimal_week1_lineup_projection(week0_con
         assert team_state.loc[i, "score_stdev"] == pytest.approx(MIN_STDEV)
         assert team_state.loc[i, "matchup_wins"] == 0
         assert team_state.loc[i, "matchup_losses"] == 0
+    # strictly increasing with team_pk, proving order was preserved
+    values = [team_state.loc[i, "season_ppg"] for i in range(1, 9)]
+    assert values == sorted(values)
+
+
+def test_compute_week0_team_state_is_driven_by_roster_strength_not_raw_points(week0_conn):
+    # Regression test for the actual rebuild (2026-09-16, user: "Rebuild
+    # week 0 playoff odds. It should be roster strength"): give team 1
+    # (lowest raw Week-1 point projection, 80) the BEST FantasyPros ADP
+    # rank (1st overall) and team 8 (highest raw projection, 150) the
+    # WORST (rank 100) - FantasyPros is weighted 40/60 of the Roster
+    # Strength blend (vs. ESPN weekly projection's 20/60), so team 1's
+    # roster strength should come out HIGHER than team 8's despite its
+    # much lower raw point projection, and season_ppg should follow that
+    # inverted ranking - proving this is genuinely roster-strength-driven,
+    # not a raw-points computation still using a different name.
+    week0_conn.execute(
+        "INSERT INTO fantasypros_rankings (season_id, week, player_id, position, rank_ecr, pos_rank) "
+        "VALUES (2099, 0, 1, 'QB', 1, 1)"
+    )
+    week0_conn.execute(
+        "INSERT INTO fantasypros_rankings (season_id, week, player_id, position, rank_ecr, pos_rank) "
+        "VALUES (2099, 0, 8, 'QB', 100, 100)"
+    )
+    week0_conn.commit()
+
+    from fantasy_football.playoff_odds_snapshots import compute_week0_team_state
+
+    team_state = compute_week0_team_state(week0_conn, 2099, {"QB": 1}).set_index("team_pk")
+    assert team_state.loc[1, "season_ppg"] > team_state.loc[8, "season_ppg"]
 
 
 def test_compute_week0_team_state_empty_without_week1_roster_data():

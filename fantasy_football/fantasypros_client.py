@@ -59,6 +59,37 @@ def fetch_all_ros_rankings(api_key: str, season: int) -> dict[str, list[dict]]:
     return {position: fetch_ros_rankings(api_key, position, season) for position in POSITIONS}
 
 
+def fetch_adp_rankings(api_key: str, position: str, season: int) -> list[dict]:
+    """One position's Average Draft Position consensus - FantasyPros'
+    real, distinct draft-time ranking (NOT rest-of-season). Confirmed
+    live (2026-09-16): `type="DRAFT"` and `type="PRESEASON"` are NOT
+    real supported values - both return byte-identical responses to an
+    outright garbage/invalid `type` string, i.e. the API silently falls
+    back to some default list rather than a draft-specific one. `type=
+    "ADP"` IS genuinely distinct (different response, same player-list
+    schema as ROS/weekly: rank_ecr, pos_rank, tier, etc. - directly
+    usable by player_matching.parse_pos_rank() and roster_strength.
+    rank_to_score() unchanged). Used for the Week-0 Roster Strength
+    snapshot (see ingest.ingest_fantasypros_adp_rankings) - ADP reflects
+    draft-day consensus and, unlike ROS, doesn't drift with in-season
+    performance, so it's the right signal for "what did we know right
+    after the draft" even when fetched well into the season."""
+    resp = requests.get(
+        f"{BASE_URL}/{season}/consensus-rankings",
+        params={"type": "ADP", "position": position},
+        headers={"x-api-key": api_key},
+        timeout=TIMEOUT_SECONDS,
+    )
+    resp.raise_for_status()
+    return resp.json().get("players", [])
+
+
+def fetch_all_adp_rankings(api_key: str, season: int) -> dict[str, list[dict]]:
+    """All 6 positions' ADP rankings, keyed by position - see
+    fetch_adp_rankings()."""
+    return {position: fetch_adp_rankings(api_key, position, season) for position in POSITIONS}
+
+
 def fetch_overall_ros_rankings(api_key: str, season: int) -> list[dict]:
     """The TRUE cross-position rest-of-season ranking (position="ALL"),
     NOT the same as calling fetch_ros_rankings() once per position and
