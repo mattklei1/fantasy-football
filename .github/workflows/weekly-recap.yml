@@ -26,4 +26,12 @@ jobs:
           CURRENT_SEASON: ${{ secrets.CURRENT_SEASON }}
           GROUPME_BOT_ID: ${{ secrets.GROUPME_BOT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Read-only use (playoff_odds_snapshots.load_snapshots(), for the
+          # PLAYOFF ODDS section's Week-0/last-week comparison) - the
+          # auto-provided Actions token, same as playoff-odds-snapshot.yml's
+          # write path, no manually-created secret needed. Missing entirely
+          # before 2026-09-16 - the recap silently fell back to the flat
+          # preseason baseline every single time, never a real Week-0 or
+          # last-week comparison, regardless of what data existed in the repo.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python scripts/post_weekly_recap.py

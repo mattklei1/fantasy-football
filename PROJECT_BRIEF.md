@@ -3870,3 +3870,46 @@ strength in week 0 should have been the fantasypros draft rankings
   category as its ROS sibling per this project's established testing
   convention (live/AppTest verification instead). 381/381 tests
   passing.
+
+**Home page: default sort by actual record, "Rank" renamed/clarified as
+"Power Rank" (2026-09-16, same session).** User: "have the default sort
+be by actual record. then clarify what rank is. is this power rank?
+roster strength? projected finish?" `get_standings()`'s own return order
+(sorted by `power_rank`) was left unchanged (other pages don't depend on
+row order, only on it as a lookup table), but Home.py now re-sorts its
+own `display` copy by `actual_win_pct` desc then `points_for` desc -
+this league's real combined matchup+median record with its real ESPN
+tiebreak (same two-key sort `playoff_sim.rank_teams()` uses for
+seeding). Live-verified against the real 2026 league: House of the
+Rising Sun God (2-0) now correctly sorts ABOVE McConkey Kong (1-1)
+despite McConkey Kong's better (lower) Power Rank - proving actual
+record and Power Rank genuinely diverge and the fix does something real,
+not just resorting an already-identical order. Renamed the "Rank" column
+to "Power Rank" and added a tooltip: it's Power-Score-based, explicitly
+NOT the same as this table's own standings order, NOT Roster Strength,
+NOT a projected finish.
+
+**Found and fixed a real gap while answering "did the Week-0-vs-now
+playoff odds fix make it into the actual posted recap?" (2026-09-16,
+same session).** Investigated rather than assuming yes: `.github/
+workflows/weekly-recap.yml`'s env block never included `GITHUB_TOKEN` at
+all (unlike `playoff-odds-snapshot.yml`, which already had it). Since
+`commentary._playoff_odds_summary()` calls `playoff_odds_snapshots.
+load_snapshots()` which requires `config.github_token()`, the ACTUAL
+scheduled GroupMe-posting script has been silently getting `{}` back and
+falling through to the flat "preseason" baseline comparison every single
+time it's ever run - completely independent of whatever real Week-0/
+weekly snapshot data existed in the repo, and unaffected by any of this
+session's other fixes. This explains why my own manually-generated
+recap previews this session correctly showed real Week-0-based deltas
+(this sandbox has its own `GITHUB_TOKEN`) while the real automated post
+never would have. Fixed by adding `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}`
+to the workflow's env block - the same auto-provided Actions token
+`playoff-odds-snapshot.yml` already uses for its write path, so this
+needed no new manually-created secret, just wiring the existing one
+through. Also separately flagged to the user (2026-09-16): the DEPLOYED
+Streamlit app's own `GITHUB_TOKEN` secret (a third, independent
+credential from anything in this dev sandbox or GitHub Actions) showed
+"not configured" on the live Playoff Odds page even after the user
+added one to Streamlit Cloud Secrets - likely just needs the reboot the
+user says they already did; not yet independently reconfirmed live.
