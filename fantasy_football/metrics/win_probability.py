@@ -16,8 +16,19 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-MIN_STDEV = 5.0  # a team with 0-1 games played has no real variance yet;
-                  # flooring it avoids a falsely overconfident probability
+MIN_STDEV = 20.0  # a team with 0-1 games played has no real variance yet;
+                   # flooring it avoids a falsely overconfident probability.
+                   # 20.0 (not the old 5.0) is empirically grounded: this
+                   # league's own real per-team weekly-score stdev across
+                   # 10 completed seasons (2015-2024, teams with >=8 games
+                   # played that season) has a mean of 21.5 and median of
+                   # 20.7 - 5.0 was roughly 4x too tight, which is what let
+                   # a single lucky/unlucky week 1 produce near-certain
+                   # (95%+) playoff/championship odds (user feedback
+                   # 2026-09-15: a team was shown at 97.4% in week 1).
+                   # Matches dashboard_data.LIVE_PROB_FALLBACK_STDEV, which
+                   # was independently calibrated from 2025's real range
+                   # (~14-28, avg ~22) for a different fallback case.
 
 
 def _normal_cdf(x: float) -> float:

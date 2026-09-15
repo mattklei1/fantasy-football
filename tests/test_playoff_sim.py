@@ -10,9 +10,11 @@ import pytest
 
 from fantasy_football.metrics.playoff_sim import (
     DEFAULT_N_SIMS,
+    SHRINKAGE_GAMES,
     SUPPORTED_PLAYOFF_TEAM_COUNT,
     compute_score_stdev,
     rank_teams,
+    shrink_expected_score,
     simulate_bracket_once,
     simulate_season,
 )
@@ -39,6 +41,30 @@ def test_compute_score_stdev_floors_thin_samples():
 def test_compute_score_stdev_empty_input():
     result = compute_score_stdev(pd.DataFrame(columns=["week", "team_pk", "score"]))
     assert result.empty
+
+
+def test_shrink_expected_score_at_zero_games_returns_league_average():
+    # no real games yet - own number carries zero weight, must be
+    # exactly the league average regardless of what the raw number says
+    result = shrink_expected_score(
+        np.array([200.0]), np.array([0.0]), league_avg_ppg=100.0,
+    )
+    assert result[0] == pytest.approx(100.0)
+
+
+def test_shrink_expected_score_converges_toward_raw_as_games_increase():
+    raw = np.array([200.0])
+    league_avg = 100.0
+    early = shrink_expected_score(raw, np.array([1.0]), league_avg)[0]
+    mid = shrink_expected_score(raw, np.array([SHRINKAGE_GAMES]), league_avg)[0]
+    late = shrink_expected_score(raw, np.array([100.0]), league_avg)[0]
+    # monotonically closer to the team's own raw number as more real
+    # games accumulate
+    assert 100.0 < early < mid < late < 200.0
+    # at games_played == shrinkage_games, weight is exactly 0.5
+    assert mid == pytest.approx(150.0)
+    # with a large sample the team's own number should dominate
+    assert late > 190.0
 
 
 def test_rank_teams_breaks_ties_by_points_for():
@@ -147,6 +173,50 @@ def test_simulate_season_empty_team_state_returns_empty():
         median_scoring=True, reg_season_count=14,
     )
     assert result.empty
+
+
+def test_week1_outlier_does_not_produce_near_certain_championship_odds():
+    # Regression test for real user-reported bug (2026-09-15): a team
+    # with a lucky week-1 score used to show ~97% championship odds,
+    # because with 1 real game, season_ppg/last3_ppg both equal that
+    # single score (no regression to the mean) and score_stdev floored
+    # at the old MIN_STDEV=5.0 (way tighter than this league's real
+    # ~20-point week-to-week team stdev) - a modest lead got treated as
+    # a near-deterministic, permanent gap. 12 teams, one huge week-1
+    # score, 13 remaining regular-season weeks (mirrors this league's
+    # real 14-game season) - the shrinkage + realistic stdev floor
+    # should keep the leader's title odds well under the old ~80-97%
+    # even in this maximally-lucky-week-1 scenario.
+    n_teams = 12
+    rows = []
+    for i in range(n_teams):
+        score = 180.0 if i == 0 else 90.0 + i  # team 0: massive week-1 outlier
+        rows.append(
+            {
+                "team_pk": i, "season_ppg": score, "last3_ppg": score,
+                "score_stdev": np.nan, "matchup_wins": 1 if i % 2 == 0 else 0,
+                "matchup_losses": 0 if i % 2 == 0 else 1, "matchup_ties": 0,
+                "median_wins": 1 if score > 100 else 0, "median_losses": 0 if score > 100 else 1,
+                "median_ties": 0, "points_for": score,
+            }
+        )
+    team_state = pd.DataFrame(rows)
+    team_state["score_stdev"] = MIN_STDEV  # single game -> floored, as compute_score_stdev would do
+    remaining_weeks = range(2, 14)
+    remaining = pd.DataFrame(
+        {
+            "week": [w for w in remaining_weeks for _ in range(n_teams // 2)],
+            "home_team_pk": [i for _ in remaining_weeks for i in range(0, n_teams, 2)],
+            "away_team_pk": [i for _ in remaining_weeks for i in range(1, n_teams, 2)],
+        }
+    )
+    result = simulate_season(
+        team_state, remaining, median_scoring=True, reg_season_count=14,
+        n_sims=3000, rng=np.random.default_rng(7),
+    ).set_index("team_pk")
+
+    assert result.loc[0, "championship_pct"] < 0.5
+    assert result.loc[0, "playoff_pct"] < 1.0  # not a mathematical lock off one game
 
 
 def test_simulate_season_probabilities_sum_correctly_with_remaining_games():

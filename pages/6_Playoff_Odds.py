@@ -6,7 +6,7 @@ import streamlit as st
 
 from fantasy_football import dashboard_data as dd
 from fantasy_football import ui_common as ui
-from fantasy_football.metrics.playoff_sim import DEFAULT_N_SIMS
+from fantasy_football.metrics.playoff_sim import DEFAULT_N_SIMS, SHRINKAGE_GAMES
 from fantasy_football.metrics.win_probability import MIN_STDEV
 
 st.set_page_config(page_title="Playoff Odds", page_icon="🎲", layout="wide")
@@ -59,11 +59,15 @@ with st.expander("Methodology"):
 Runs **{DEFAULT_N_SIMS:,} simulated versions** of the rest of the season, each one:
 
 1. **Simulates every remaining regular-season game.** Each team's score in a simulated game is drawn
-   from a Normal distribution centered on `60% x season PPG + 40% x last-3-week PPG` (the same formula,
-   and the same underlying `expected_score()`, as the Matchups page's single-game win probability), using
-   that team's own observed weekly scoring standard deviation (floored at {MIN_STDEV:g} points for a team with
-   0-1 real games - not enough of a sample yet to trust, and an un-floored stdev would make the
-   simulation falsely overconfident).
+   from a Normal distribution centered on a blend of `60% x season PPG + 40% x last-3-week PPG` (the
+   same formula, and the same underlying `expected_score()`, as the Matchups page's single-game win
+   probability) and the league-wide average PPG - weighted toward the team's own number as it plays more
+   real games (`games played / (games played + {SHRINKAGE_GAMES})`), so one huge or terrible early week
+   doesn't get treated as a fully-proven, permanent gap before there's enough of a sample to trust it.
+   Each score also uses that team's own observed weekly scoring standard deviation (floored at
+   {MIN_STDEV:g} points for a team with 0-1 real games - not enough of a sample yet to trust, and an
+   un-floored stdev would make the simulation falsely overconfident). Both the shrinkage weight and the
+   stdev floor are calibrated against this league's own 10 completed real seasons, not guessed.
 2. **Determines final regular-season standings** from the combined real + simulated record (matchup wins,
    plus the top-half/median bonus win in seasons that use it), seeded exactly like this league's real ESPN
    settings: combined win % first, then total points scored as the tiebreaker.

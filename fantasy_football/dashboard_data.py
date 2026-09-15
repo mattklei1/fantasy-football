@@ -426,16 +426,17 @@ def get_projection_snapshots(season: int, week: int) -> dict[int, float]:
 
 
 #: Fallback scoring stdev for a team with no observed games yet this
-#: season (week 1, or a brand-new season). win_probability.MIN_STDEV
-#: (5.0) is NOT reused here on purpose - that floor is shared with the
-#: Playoff Odds Monte Carlo sim (see playoff_sim.py) and calibrated for a
-#: team with 1 real game played, not zero. Using it here produced
-#: near-certain 0%/100% probabilities for week 1 (real full-lineup
-#: projected-score gaps between two random teams are routinely 20-40+
-#: points - checked against this league's real 2025 team-level score
-#: stdevs, which ranged ~14-28 with a ~22 average, confirming 5.0 is far
-#: too tight for a genuine no-data fallback). Deliberately a separate
-#: constant so it can't accidentally affect Playoff Odds' calibration.
+#: season (week 1, or a brand-new season). Originally a separate constant
+#: from win_probability.MIN_STDEV on purpose (that floor was 5.0 at the
+#: time - calibrated, wrongly, for a team with 1 real game played, not
+#: zero - and using it here produced near-certain 0%/100% probabilities;
+#: real full-lineup projected-score gaps between two random teams are
+#: routinely 20-40+ points, checked against this league's real 2025
+#: team-level score stdevs, ~14-28 with a ~22 average). MIN_STDEV has
+#: since been raised to 20.0 for the same reason (2026-09-15, see its own
+#: docstring) - the two constants now happen to agree, kept separate here
+#: since they still answer conceptually different questions (a team with
+#: literally zero games this season, vs. the shared small-sample floor).
 LIVE_PROB_FALLBACK_STDEV = 20.0
 
 #: Never let a live in-progress stdev collapse all the way to 0 while

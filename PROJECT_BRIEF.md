@@ -3113,3 +3113,59 @@ week-slider block, both now fixed:
   test changes needed - matches this project's convention of validating
   widget-level UI behavior via AppTest rather than committing it to the
   pytest suite).
+
+**Playoff Odds: fix week-1 overconfidence (2026-09-15, same session):**
+user feedback - "one team has a 97.4% chance of winning. It's week 1...
+There needs to be more luck and variance involved." Reproduced live
+against this league's real 2026 week-1 data (team scored 135.3 vs. a
+~90-100 range for the field) - confirmed "Lamar Comeback SZN" at 79.8%
+championship odds, with 4 teams pinned at exactly 100% playoff_pct and
+several at exactly 0%, from ONE real game. Root cause, two compounding
+bugs in `metrics/win_probability.py` / `metrics/playoff_sim.py`:
+
+1. **`MIN_STDEV` was 5.0** - a team with only 1 real game has its
+   season_ppg's sample stdev floored there before being used as that
+   team's ENTIRE future scoring variance. 5.0 is wildly unrealistic:
+   this league's own real per-team weekly-score stdev across 10
+   completed seasons (2015-2024, teams with >=8 games that season) has
+   a mean of 21.5, median of 20.7 - confirmed independently by
+   `dashboard_data.LIVE_PROB_FALLBACK_STDEV` (20.0), calibrated
+   separately, in an earlier session, from 2025 alone (~14-28 range,
+   ~22 avg). Raised `MIN_STDEV` to 20.0 to match.
+2. **No regression to the mean.** With 1 game played, `season_ppg ==
+   last3_ppg ==` that single score exactly - a lucky (or unlucky) week 1
+   got projected to repeat, unchanged, for all 13 remaining weeks plus
+   any playoff run. Fixed with a new `shrink_expected_score()` in
+   `playoff_sim.py`: blends each team's raw expected_score toward the
+   LEAGUE-WIDE average PPG, weighted `games_played / (games_played +
+   SHRINKAGE_GAMES)`. `SHRINKAGE_GAMES=8` isn't a guess - swept K from 0
+   to 9999 across this league's 10 real seasons, measuring RMSE between
+   a shrunk projection (using only the first W games) and each team's
+   ACTUAL rest-of-season PPG for every team/season/W combination: K=0
+   (no shrinkage, the old behavior) scored 14.99 RMSE, K=8 scored 11.79
+   (most of the achievable improvement), K=10-15 only marginally better
+   (11.39-11.41) - notably, even "always predict the league average,
+   ignore the team entirely" (K=9999) beat K=0 at 11.89, underscoring
+   how much single-week noise this league's real scoring has.
+- Verified against the SAME real 2026 week-1 data: the leader's
+  championship odds went from 79.8% to 18.8%, playoff odds now form a
+  smooth 83.6%-to-11.9% gradient instead of hard 100%/0% cutoffs - both
+  fixes were needed (the stdev fix alone only got the leader down to
+  41.7%, with playoff_pct still pinned at exactly 1.0 for 5 teams).
+- `pages/6_Playoff_Odds.py`'s Methodology expander updated to describe
+  the shrinkage step and both calibrated constants.
+- 3 new tests in `test_playoff_sim.py`
+  (`shrink_expected_score` at 0 games / convergence as games increase,
+  plus a regression test reproducing the week-1-outlier scenario and
+  asserting championship_pct stays well under the old ~80-97%).
+  329/329 tests passing.
+- Deliberately scoped to `playoff_sim.py` only, not the Matchups page's
+  single-game win probability (`dashboard_data.
+  project_matchup_win_probability`) or `commentary.py`'s closest-game
+  feature - those automatically got the `MIN_STDEV` fix for free (same
+  shared constant), but NOT the expected_score shrinkage (that needs
+  games_played/league_avg_ppg threaded through call sites this session
+  didn't touch, since the user's report was specifically about the
+  playoff simulation). Flagging this as a known follow-up: those two
+  features could show the same "week-1 fluke = certainty" pattern for a
+  single upcoming matchup until they get the same shrinkage treatment.

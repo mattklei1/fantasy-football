@@ -3,16 +3,34 @@ the spec). Pure/DB-free like the rest of metrics/ - dashboard_data.py
 does the DB reads that feed this.
 
 Model: each remaining regular-season game's score is sampled
-Normal(expected_score, team's own weekly stdev), where expected_score =
-60% season PPG + 40% last-3-week PPG - the same formula (and the same
-win_probability.expected_score()/MIN_STDEV) as the Matchups page's
-single-game win probability, so the two features agree with each other.
-A team's expected_score/stdev are FROZEN at their current real values
-for an entire trial - both its remaining regular-season games and, if
-it reaches the playoffs, its playoff games - rather than being
-recomputed mid-trial from that trial's own simulated results. This is a
-simplifying assumption (a real team's form could keep trending within a
-single simulated future), stated here rather than silently baked in.
+Normal(expected_score, team's own weekly stdev), where the RAW
+expected_score = 60% season PPG + 40% last-3-week PPG - the same formula
+(and the same win_probability.expected_score()/MIN_STDEV) as the
+Matchups page's single-game win probability, so the two features agree
+with each other. A team's expected_score/stdev are FROZEN at their
+current real values for an entire trial - both its remaining
+regular-season games and, if it reaches the playoffs, its playoff games
+- rather than being recomputed mid-trial from that trial's own simulated
+results. This is a simplifying assumption (a real team's form could keep
+trending within a single simulated future), stated here rather than
+silently baked in.
+
+Early-season shrinkage: the raw expected_score above is blended toward
+the LEAGUE-WIDE average PPG, weighted by how many real games a team has
+played (games_played / (games_played + SHRINKAGE_GAMES) of weight on the
+team's own number) - see shrink_expected_score(). Without this, a single
+week-1 fluke (one team scores 40+ points more than the field, purely by
+matchup luck) got treated as a fully-earned, permanent skill gap: with
+zero regression to the mean and a too-tight stdev floor (see MIN_STDEV's
+own docstring), that team would show as a near-lock for the championship
+after ONE real game (confirmed live 2026-09-15 - a team sat at 97.4%
+after week 1). SHRINKAGE_GAMES=8 was calibrated, not guessed: swept K
+across this league's 10 real completed seasons (2015-2024), measuring
+RMSE between a shrunk projection (using only the first W games) and each
+team's ACTUAL rest-of-season PPG, for every team/season/W. K=8 sits at
+the RMSE knee (11.79 vs. 14.99 for no shrinkage at all, vs. 11.41-11.39
+for K=10-15 - most of the benefit, without discarding real signal a team
+has already shown).
 
 Seeding: this league is single-division (see PROJECT_BRIEF), so seeding
 is a flat sort by combined win pct (matchup + median-scoring bonus wins
@@ -47,6 +65,7 @@ from .win_probability import MIN_STDEV, expected_score
 
 DEFAULT_N_SIMS = 10_000
 SUPPORTED_PLAYOFF_TEAM_COUNT = 6
+SHRINKAGE_GAMES = 8  # see module docstring's "Early-season shrinkage" - calibrated via RMSE sweep, not guessed
 
 TEAM_STATE_COLUMNS = [
     "team_pk", "season_ppg", "last3_ppg", "score_stdev",
@@ -67,6 +86,20 @@ def compute_score_stdev(scores_df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=["team_pk", "score_stdev"])
     stdev = scores_df.groupby("team_pk")["score"].std(ddof=1).fillna(0.0).clip(lower=MIN_STDEV)
     return stdev.reset_index().rename(columns={"score": "score_stdev"})
+
+
+def shrink_expected_score(
+    raw_expected_score: np.ndarray, games_played: np.ndarray, league_avg_ppg: float,
+    shrinkage_games: float = SHRINKAGE_GAMES,
+) -> np.ndarray:
+    """Blends each team's raw expected_score toward the league-wide
+    average PPG, weighted by games_played/(games_played + shrinkage_games)
+    - a standard small-sample shrinkage estimator (see module docstring's
+    "Early-season shrinkage"). At games_played=0 this returns exactly
+    league_avg_ppg (no real data yet); as games_played grows, it
+    converges toward the team's own raw_expected_score."""
+    weight = games_played / (games_played + shrinkage_games)
+    return weight * raw_expected_score + (1 - weight) * league_avg_ppg
 
 
 def rank_teams(team_ids: list, win_pct: dict, points_for: dict) -> list:
@@ -124,7 +157,12 @@ def simulate_season(
     n_teams = len(team_pks)
     pos = {pk: i for i, pk in enumerate(team_pks)}
 
-    expected = expected_score(team_state["season_ppg"].to_numpy(), team_state["last3_ppg"].to_numpy())
+    raw_expected = expected_score(team_state["season_ppg"].to_numpy(), team_state["last3_ppg"].to_numpy())
+    games_played = (
+        team_state["matchup_wins"] + team_state["matchup_losses"] + team_state["matchup_ties"]
+    ).to_numpy(dtype=float)
+    league_avg_ppg = float(team_state["season_ppg"].mean())
+    expected = shrink_expected_score(raw_expected, games_played, league_avg_ppg)
     stdev = team_state["score_stdev"].to_numpy()
 
     matchup_wins = np.tile(team_state["matchup_wins"].to_numpy(dtype=float)[:, None], n_sims)
