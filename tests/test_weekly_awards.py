@@ -160,6 +160,9 @@ def test_unluckiest_loss_uses_all_play_not_just_raw_score():
     # happen to agree here since team4 is also the top-scoring loser
     assert awards["unluckiest_loss"]["team_pk"] == 4
     assert awards["unluckiest_loss"]["all_play_wins"] == 3
+    # 6 teams -> 5 all-play opponents (n-1, a team never plays itself) -
+    # 3 wins + 2 losses, NOT 3 wins + 3 losses out of the full team count
+    assert awards["unluckiest_loss"]["all_play_losses"] == 2
 
 
 def test_luckiest_win_is_weakest_all_play_record_among_winners():
@@ -169,6 +172,7 @@ def test_luckiest_win_is_weakest_all_play_record_among_winners():
     # winning team that week
     assert awards["luckiest_win"]["team_pk"] == 5
     assert awards["luckiest_win"]["all_play_wins"] == 2
+    assert awards["luckiest_win"]["all_play_losses"] == 3
 
 
 def test_lineup_efficiency_awards_are_none_without_roster_data():

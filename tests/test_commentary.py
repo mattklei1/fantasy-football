@@ -322,7 +322,8 @@ def test_bad_beat_prompt_scopes_to_the_specific_bad_beat_player(conn):
     prompt = commentary._build_claude_prompt(facts)
     assert f"team_pk {bad_beat['team']['team_pk']!r}" in prompt
     assert "'Hurt Star'" in prompt
-    assert "never cite news about a different player" in prompt
+    assert "never a different player's story" in prompt
+    assert "KEEP THIS SECTION TIGHT" in prompt
 
 
 def test_bad_beat_prompt_falls_back_to_team_scoped_instructions_without_player_data():
@@ -332,8 +333,8 @@ def test_bad_beat_prompt_falls_back_to_team_scoped_instructions_without_player_d
         "biggest_fraud": None, "power_rank_movers": [], "next_week_game_to_watch": None, "starting_rosters": [],
     }
     prompt = commentary._build_claude_prompt(facts)
-    assert "never cite a real news story about a player on a DIFFERENT team" in prompt
-    assert "never add an 'honorable mention'" in prompt
+    assert "never a different team's story" in prompt
+    assert "never an 'honorable mention'" in prompt
 
 
 def test_bad_beat_prompt_tells_claude_not_to_invent_one_when_null():

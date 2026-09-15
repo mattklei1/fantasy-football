@@ -3735,3 +3735,47 @@ observation.
   this bug shipped in the first place; the key regression test asserts
   a >0.3 playoff_pct spread, not just that the function runs). 380/380
   tests passing overall.
+
+**BAD BEAT shortened + a real all-play math bug fixed (2026-09-15, same
+session).** Two user reports from reading the live Week 1 recap: (1)
+"Bad beat needs to be a bit shorter" - the BAD BEAT prompt had grown a
+whole extra "elsewhere in the misery ward" paragraph riffing on OTHER
+teams' all-play records, on top of the one-player Darnold/Hazard story
+it was designed for. (2) "Why did Matt Klei go 9-3 on all play? Wouldn't
+all play be 9-2? You can't play yourself" - a real bug, but confined to
+that same tangent: `weekly_awards.py`'s `unluckiest_loss`/`luckiest_win`
+dicts only ever included `all_play_wins`, never `all_play_losses`, so
+when Claude's freeform "misery ward" aside cited a team's all-play
+record it had to INFER the loss count itself - and it inferred wrong,
+subtracting wins from the league's TEAM COUNT (12) instead of from the
+all-play OPPONENT count (n-1=11, since a team never plays itself),
+turning a real 9-2 into a fabricated 9-3.
+
+- Confirmed via a fresh live ingest that `compute_all_play()` itself
+  (and everywhere else in the app that displays it - the Luck page,
+  `metrics_weekly`, `ama.py`) was already exactly correct the whole
+  time (McConkey Kong really is 9-2, every team's win+loss+tie sums to
+  exactly 11) - this was never a site-wide bug, only ever a Claude-
+  prose inference gap confined to one recap section.
+- Fixed both dicts to include `all_play_losses` alongside `all_play_wins`
+  so Claude never has to infer the denominator. Also added a standing
+  instruction to `_build_claude_prompt`'s `other_instructions`: use
+  those two numbers exactly as given, never derive the loss count from
+  the league's team count - defense in depth in case a future section
+  cites an all-play record again.
+- Rewrote both BAD BEAT prompt branches (real-player and the pre-2019
+  team-only fallback) to explicitly forbid folding in other teams'
+  stats/records/"honorable mentions" and added a "KEEP THIS SECTION
+  TIGHT: 3-4 sentences" instruction - this removes the exact tangent
+  that caused the math bug AND directly answers the "shorter" ask in
+  one edit, rather than trimming prose ad hoc.
+- Live-verified against the real production league: the regenerated
+  Week 1 BAD BEAT section is now one tight paragraph, just the Darnold/
+  Hazard story; a real, correctly-computed all-play record now shows up
+  correctly elsewhere in the recap on its own (FRAUD WATCH cited
+  Matthew Katz's real "3-8" record, not a fabricated one).
+- 2 new test assertions in `test_weekly_awards.py` (`all_play_losses`
+  on both `unluckiest_loss`/`luckiest_win`, checked against the
+  fixture's real n-1 opponent count), 2 existing `test_commentary.py`
+  prompt-content tests updated for the trimmed wording. 380/380 tests
+  passing.

@@ -90,6 +90,7 @@ def compute_weekly_awards(
             "team_pk": int(unluckiest["team_pk"]),
             "score": float(unluckiest["score"]),
             "all_play_wins": int(unluckiest["all_play_win"]),
+            "all_play_losses": int(unluckiest["all_play_loss"]),
         }
     else:
         awards["unluckiest_loss"] = None
@@ -100,6 +101,7 @@ def compute_weekly_awards(
             "team_pk": int(luckiest["team_pk"]),
             "score": float(luckiest["score"]),
             "all_play_wins": int(luckiest["all_play_win"]),
+            "all_play_losses": int(luckiest["all_play_loss"]),
         }
     else:
         awards["luckiest_win"] = None
