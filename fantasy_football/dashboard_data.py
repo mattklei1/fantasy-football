@@ -438,11 +438,19 @@ def get_projection_snapshots(season: int, week: int) -> dict[int, float]:
 #: constant so it can't accidentally affect Playoff Odds' calibration.
 LIVE_PROB_FALLBACK_STDEV = 20.0
 
-#: Never let a live in-progress stdev collapse all the way to 0, even for
-#: a team whose entire lineup has finished - real weeks still see stat
-#: corrections/unexpected late adjustments, and a zero-width distribution
-#: would make win probability snap to a hard 0%/100% and the percentile
-#: range collapse to a single point, both overconfident.
+#: Never let a live in-progress stdev collapse all the way to 0 while
+#: there's still SOME real fraction of the lineup left to play - real
+#: weeks still see stat corrections/unexpected late adjustments, and a
+#: near-zero-width distribution for a not-quite-finished team would make
+#: win probability snap to an overconfident near-0%/100%. Deliberately
+#: does NOT apply once a team's week is fully over (fraction_remaining
+#: exactly 0, i.e. score_so_far has caught up to projected because
+#: nobody's left to play) - see _live_remaining_stdev's own early return
+#: for that case, a real zero-uncertainty state, not one that needs
+#: padding (user feedback 2026-09-15: "there are some teams that have
+#: had all their players play, but their range... is different from
+#: their actual score - when their players have all played, the range
+#: should be zero").
 MIN_REMAINING_STDEV_FRACTION = 0.15
 
 
@@ -463,10 +471,21 @@ def _live_remaining_stdev(full_stdev: float, projected: float, score_so_far: flo
     how much total point production is still undecided - approximated
     here as (projected - score_so_far) / projected, the fraction of the
     team's OWN projected total not yet realized; since stdev is
-    sqrt(variance), it scales by the square root of that fraction."""
+    sqrt(variance), it scales by the square root of that fraction.
+
+    Once every rostered player has actually played, ESPN's own live
+    "projected" field (points scored so far + rest-of-lineup projection)
+    converges to EXACTLY score_so_far, since there's no rest-of-lineup
+    projection left to add - fraction_remaining hits exactly 0, and this
+    returns a real 0.0 stdev rather than the MIN_REMAINING_STDEV_FRACTION
+    floor below: a fully-decided week has no remaining uncertainty to pad
+    for, unlike a nearly-but-not-fully-finished one (see that constant's
+    own docstring)."""
     if projected <= 0:
         return full_stdev
     fraction_remaining = max(0.0, (projected - score_so_far) / projected)
+    if fraction_remaining <= 0:
+        return 0.0
     return full_stdev * max(MIN_REMAINING_STDEV_FRACTION, fraction_remaining ** 0.5)
 
 

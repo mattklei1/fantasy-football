@@ -2732,3 +2732,30 @@ of change).
    read the two IMPORTANT callouts in the Luck dashboard and History
    sections above first, they change how "wins" and cross-season
    comparisons must be computed for this league.
+
+**Median Cutline p10/p90 range not collapsing to zero for finished teams
+(2026-09-15):** user feedback - a team whose entire lineup had already
+played still showed a nonzero 10th-90th percentile spread on the
+Matchups page, different from their actual final score. Root cause:
+`_live_remaining_stdev()`'s `MIN_REMAINING_STDEV_FRACTION` floor (0.15,
+added 2026-09-13 so a nearly-finished team's win probability/range
+didn't get overconfidently narrow) was unconditional - it applied even
+when `fraction_remaining` was EXACTLY 0 (score_so_far caught up to
+projected because nobody's left to play), padding a genuinely zero-
+uncertainty state up to 15% of the team's full-game stdev instead of
+letting it go to 0. Fixed with an early return: `fraction_remaining <=
+0` (covers both an exact match AND a late stat correction nudging the
+actual score above the stale projected number) now returns stdev=0.0
+directly, bypassing the floor entirely - the floor still applies as
+before to any team with real, nonzero uncertainty remaining, however
+small. Verified live: every team with proj==score exactly now shows
+p10=p90=that exact score (was previously off by double digits in some
+cases); win_probability() and percentile_range()/simulate_cutline_
+probabilities() both already handle stdev=0 safely with no code changes
+needed there (win_probability applies its own separate MIN_STDEV=5.0
+floor before computing sigma_diff; percentile_range/numpy's rng.normal
+both handle scale=0 as "deterministic at the mean," exactly the desired
+semantics). New `tests/test_dashboard_data.py` (first test file for
+this module - previously untested per the "live-data functions get
+AppTest, pure logic gets pytest" convention, and this function turned
+out to be pure). 263/263 tests passing.
