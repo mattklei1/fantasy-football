@@ -1,0 +1,97 @@
+"""Resolves WHICH league the current Streamlit session is looking at -
+the primary env-configured league for every visitor, or an ADMIN's own
+chosen alternate league (session-scoped only - never affects any other
+visitor's view, and never persists across a page reload on its own,
+only the registered-leagues LIST itself is durable, see
+league_registry.py).
+
+Everything downstream of this module already works per-league for free
+once two things are routed through here instead of being called bare:
+- db.DB_PATH (sync_db_path()) - every dashboard_data.py/war_room_data.py
+  function already goes through db.get_connection(), which reads
+  db.DB_PATH fresh at call time (the exact mechanism the throwaway-
+  temp-DB scheduled scripts already exploit - see PROJECT_BRIEF) - so
+  setting it once per page load, before any data call, is enough.
+- ESPNClient() (get_active_espn_client()) - ESPNClient already accepts
+  an optional `credentials` override (see espn_client.py), so this
+  just builds the right ESPNCredentials for whichever league_id is
+  active instead of always defaulting to the primary one.
+
+Each extra league gets its OWN SQLite file (data/league_{id}.db) -
+deliberately NOT a shared multi-tenant schema (the seasons table's
+season_id is a bare year, not composite with league_id, so two
+leagues' 2026 seasons would collide in one shared file) - this needed
+zero schema changes, just routing which file gets opened.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import streamlit as st
+
+from . import config
+
+SESSION_KEY = "active_league_id"
+
+
+def _primary_credentials() -> config.ESPNCredentials:
+    return config.load_espn_credentials()
+
+
+def get_active_league_id() -> int:
+    """The currently selected league's ESPN id - session-scoped, so it
+    only ever differs from the primary league for an admin who's
+    explicitly picked something else in the sidebar (see
+    ui_common.render_sidebar()'s league selector)."""
+    try:
+        selected = st.session_state.get(SESSION_KEY)
+    except Exception:  # noqa: BLE001 - no active Streamlit session (e.g. a script/test context)
+        selected = None
+    return selected if selected is not None else _primary_credentials().league_id
+
+
+def set_active_league_id(league_id: int | None) -> None:
+    """None (or the primary league's own id) resets to the primary
+    league - callers don't need to special-case "switch back"."""
+    if league_id is None or league_id == _primary_credentials().league_id:
+        st.session_state.pop(SESSION_KEY, None)
+    else:
+        st.session_state[SESSION_KEY] = league_id
+
+
+def get_active_espn_client():
+    """ESPNClient for whichever league is currently active - the
+    primary env-configured credentials unchanged, or the same ESPN_S2/
+    SWID (same account) with league_id swapped for a selected extra
+    league."""
+    from .espn_client import ESPNClient
+
+    primary = _primary_credentials()
+    league_id = get_active_league_id()
+    if league_id == primary.league_id:
+        return ESPNClient(credentials=primary)
+    return ESPNClient(
+        credentials=config.ESPNCredentials(
+            league_id=league_id, espn_s2=primary.espn_s2, swid=primary.swid, current_season=primary.current_season,
+        )
+    )
+
+
+def get_active_db_path() -> Path:
+    """Where this league's own SQLite file lives - the primary league
+    keeps using the original data/league.db (no migration needed for
+    existing deployments), every extra league gets data/league_{id}.db."""
+    primary = _primary_credentials()
+    league_id = get_active_league_id()
+    if league_id == primary.league_id:
+        return config.DB_PATH
+    return config.DB_PATH.parent / f"league_{league_id}.db"
+
+
+def sync_db_path() -> None:
+    """Points db.DB_PATH at the currently active league's own file -
+    call this once per page load, before any db.get_connection() call
+    (see ui_common.render_sidebar(), which every page calls first)."""
+    from . import db
+
+    db.DB_PATH = get_active_db_path()

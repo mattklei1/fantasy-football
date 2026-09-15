@@ -2874,3 +2874,78 @@ Found and fixed one real problem this surfaced, not hypothetical:
 - kaleido (PNG export, not a runtime dependency of the deployed app -
   only used for this ad-hoc visual QA) installed in the venv but
   deliberately NOT added to requirements.txt.
+
+**Multi-league support, Phase 1 (2026-09-15):** the long-deferred item
+("select at the top what league this is for, only when signed in as
+admin") - started per explicit user go-ahead. Real architectural
+finding first: the `seasons` table's `season_id` primary key is a bare
+year, not composite with `league_id` (that column's only informational,
+not part of the key), so two leagues' 2026 seasons would collide in one
+shared DB - a real multi-tenant schema migration would touch nearly
+every foreign key in the app. Went with the cheaper, zero-schema-change
+alternative instead: each extra league gets its OWN SQLite file
+(`data/league_{id}.db`), and `db.get_connection()` already reads
+`db.DB_PATH` fresh at call time (the exact mechanism the throwaway-
+temp-DB scheduled scripts have exploited all session) - so routing the
+whole app to a different league only needed setting that ONE module
+global once per page load, not touching the ~20 functions that call it.
+
+- **`league_context.py`** (new): `get_active_league_id()` (session-
+  scoped - the primary env-configured league for every visitor, or an
+  admin's chosen alternate, never shared across browser sessions),
+  `sync_db_path()` (points `db.DB_PATH` at the active league's own
+  file - called once per page load from `render_sidebar()`, before
+  `ensure_data_bootstrapped()`), `get_active_espn_client()` (an
+  `ESPNClient` with the active league's id but the SAME ESPN_S2/SWID -
+  same account, confirmed `ESPNClient.__init__` already accepted a
+  `credentials` override, so this needed zero changes there).
+- **`league_registry.py`** (new): durable (git-committed, same
+  `GITHUB_TOKEN`/pattern as rank_overrides.py/protected_players.py -
+  no new secret) list of the admin's OTHER leagues (`{league_id:
+  {name, season}}` in `leagues.json` at repo root, not gitignored data/
+  - same reasoning as the other two admin-durable-state files).
+- **`ui_common.render_league_selector()`** (new, called first thing
+  inside `render_sidebar()`): a sidebar dropdown (admin-only - a
+  regular visitor never sees it and always gets the primary league,
+  full stop) plus a "➕ Manage leagues" expander to add a league by
+  raw ESPN league ID (validated live against ESPN before saving - a
+  bad id shows a clear error, never crashes) or remove one.
+- **13 bare `ESPNClient()` call sites routed through `get_active_
+  espn_client()`** across `ui_common.py`/`dashboard_data.py`/
+  `war_room_data.py` - includes the two REAL WRITE endpoints
+  (`submit_waiver_claim`/`submit_lineup_changes`), which previously
+  built their write URL from `load_espn_credentials()` directly (the
+  PRIMARY league's id, unconditionally) - would have silently targeted
+  the wrong league's transactions endpoint had a write ever been
+  attempted while a secondary league was active. Caught and fixed
+  before it could matter (no real secondary-league write has happened
+  yet - only the primary league has ever been live-tested this
+  season).
+- Found and fixed a real bug WHILE building this, unrelated to multi-
+  league itself but on the same UI: `st.success()`/`st.warning()`
+  called right before `st.rerun()` never reached the user (the rerun
+  wipes it first) - this is why an earlier PDF-override upload that
+  failed to commit to git showed no warning at all. Added `ui_common.
+  set_flash()`/`show_flash()` (session_state-backed, survives the
+  rerun) and wired it into every save/clear action that has this
+  pattern, including the new league-registry UI.
+- Verified live: admin sees the selector (non-admin doesn't, confirmed
+  both via AppTest with zero exceptions), an invalid league id shows a
+  clean error instead of crashing, and manually routing `db.DB_PATH` to
+  a fake league id produces a real, independent, empty SQLite file at
+  the correct path - confirming the core mechanism works end-to-end.
+  Not yet tested against a REAL second league (none of the user's other
+  3 leagues' ids are known to this session yet - added via the new
+  self-service "Manage leagues" UI whenever the user has them handy,
+  no code changes needed).
+- **Still pending** (Phase 2, not started): actually adding/verifying
+  the user's 3 other real leagues; confirming a full first-time
+  bootstrap (`ensure_data_bootstrapped()`) against a genuinely
+  different league end-to-end, not just the empty-DB-file mechanics;
+  deciding whether/how the scheduled GitHub Actions scripts (Wednesday/
+  Sunday lineup alerts, Tuesday waiver recs) should extend to the
+  other leagues too, or stay primary-league-only as originally scoped
+  ("the other 3 leagues would only get personal-bot waiver-rec/lineup-
+  optimizer posts" was the original framing, not yet built).
+- 306/306 tests passing (`test_league_context.py`, `test_league_
+  registry.py` new).

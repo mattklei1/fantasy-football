@@ -109,7 +109,7 @@ def test_ensure_data_bootstrapped_triggers_refresh_when_empty(monkeypatch, tmp_p
     monkeypatch.setattr(
         "fantasy_football.metrics.pipeline.compute_and_store_all_seasons", fake_compute_and_store_all_seasons
     )
-    monkeypatch.setattr("fantasy_football.espn_client.ESPNClient", lambda: object())
+    monkeypatch.setattr("fantasy_football.espn_client.ESPNClient", lambda **kwargs: object())
 
     ui_common.ensure_data_bootstrapped()
     assert called == {"refresh": True, "metrics": True}

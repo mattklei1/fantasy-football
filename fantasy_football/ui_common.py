@@ -401,15 +401,15 @@ def ensure_data_bootstrapped() -> None:
     if has_data:
         return
 
-    from .espn_client import ESPNClient
     from .ingest import refresh_all
+    from .league_context import get_active_espn_client
     from .metrics.pipeline import compute_and_store_all_seasons
 
     with st.spinner(
         "First load after a restart - rebuilding league history from ESPN "
         "(a few minutes, only happens once per restart)..."
     ):
-        client = ESPNClient()
+        client = get_active_espn_client()
         refresh_all(client=client)
         compute_and_store_all_seasons(conn)
         dd.clear_all_caches()
@@ -438,14 +438,115 @@ def ensure_daily_data_fresh() -> None:
     if not should_refresh_daily(last_rs_refresh):
         return
 
-    from .espn_client import ESPNClient
     from .ingest import refresh_daily_data_if_due
+    from .league_context import get_active_espn_client
 
     with st.spinner("Refreshing today's team info and Roster Strength rankings..."):
-        client = ESPNClient()
+        client = get_active_espn_client()
         league = client.get_league(season)
         refresh_daily_data_if_due(conn, league, season, log=lambda *a: None)
         dd.clear_all_caches()
+
+
+def set_flash(key: str, level: str, message: str) -> None:
+    """Stashes a status message in session_state to survive the
+    st.rerun() that commonly follows a save/clear action - calling
+    st.success()/st.warning() right before st.rerun() never reaches the
+    user, since the rerun wipes it before it renders (a real bug found
+    live 2026-09-15: a PDF override that failed to commit to git showed
+    no warning at all). show_flash() displays it once on the next run,
+    then clears it so it doesn't linger on later reruns."""
+    st.session_state[f"_flash_{key}"] = (level, message)
+
+
+def show_flash(key: str) -> None:
+    flash = st.session_state.pop(f"_flash_{key}", None)
+    if flash:
+        level, message = flash
+        getattr(st, level)(message)
+
+
+def render_league_selector() -> None:
+    """Admin-only "which league is this" sidebar picker - the ORIGINAL
+    request ("select at the top what league this is for, only when
+    signed in as admin, like me"). Every visitor gets league_context.
+    sync_db_path() called unconditionally first (cheap - just points
+    db.DB_PATH at whichever league is active for THIS session, primary
+    for everyone but an admin who's picked something else), so a
+    regular league member's session is completely unaffected regardless
+    of what the admin is currently browsing in their own session -
+    Streamlit session_state is per-browser-session, never shared."""
+    from . import league_context, league_registry
+
+    league_context.sync_db_path()
+
+    if not is_admin():
+        return
+
+    primary_id = config.load_espn_credentials().league_id
+    registered = league_registry.load_registered_leagues()
+    options = [primary_id] + sorted(registered.keys())
+    labels = {primary_id: "My league (primary)"}
+    for lid, info in registered.items():
+        labels[lid] = info.get("name") or f"League {lid}"
+
+    current = league_context.get_active_league_id()
+    if current not in options:
+        current = primary_id
+    choice = st.sidebar.selectbox(
+        "League (admin)", options, index=options.index(current), format_func=lambda lid: labels.get(lid, str(lid)),
+        key="league_selector",
+    )
+    if choice != current:
+        league_context.set_active_league_id(choice)
+        league_context.sync_db_path()
+        dd.clear_all_caches()
+        st.rerun()
+
+    with st.sidebar.expander("➕ Manage leagues"):
+        show_flash("league_registry")
+        new_id_raw = st.text_input("Add league by ESPN league ID", key="league_registry_add_id")
+        if st.button("Add league", key="league_registry_add_btn") and new_id_raw.strip():
+            try:
+                new_id = int(new_id_raw.strip())
+            except ValueError:
+                st.error("League ID must be numeric.")
+            else:
+                try:
+                    from .espn_client import ESPNClient
+
+                    primary = config.load_espn_credentials()
+                    test_client = ESPNClient(
+                        credentials=config.ESPNCredentials(
+                            league_id=new_id, espn_s2=primary.espn_s2, swid=primary.swid,
+                            current_season=primary.current_season,
+                        )
+                    )
+                    league = test_client.get_league(primary.current_season)
+                    save_result = league_registry.add_league(new_id, league.settings.name, primary.current_season)
+                    level = "success" if save_result["committed"] else "warning"
+                    prefix = f"Added \"{league.settings.name}\" ({new_id})."
+                    set_flash(
+                        "league_registry", level,
+                        prefix if save_result["committed"] else f"{prefix} {save_result['commit_message']}",
+                    )
+                    st.rerun()
+                except Exception as exc:  # noqa: BLE001 - a bad league id/no access should show a clear error, not crash
+                    st.error(f"Couldn't add league {new_id}: {type(exc).__name__}: {exc}")
+
+        if registered:
+            remove_id = st.selectbox(
+                "Remove a league", list(registered.keys()),
+                format_func=lambda lid: labels.get(lid, str(lid)), key="league_registry_remove_id",
+            )
+            if st.button("Remove", key="league_registry_remove_btn"):
+                save_result = league_registry.remove_league(remove_id)
+                if league_context.get_active_league_id() == remove_id:
+                    league_context.set_active_league_id(None)
+                    league_context.sync_db_path()
+                if not save_result["committed"]:
+                    set_flash("league_registry", "warning", save_result["commit_message"])
+                st.rerun()
 
 
 def render_sidebar(support_all_time: bool = False) -> tuple[int | str, int | None]:
@@ -458,6 +559,7 @@ def render_sidebar(support_all_time: bool = False) -> tuple[int | str, int | Non
     reset logic below)."""
     require_password()
     require_login()
+    render_league_selector()
     ensure_data_bootstrapped()
     ensure_daily_data_fresh()
 
@@ -553,11 +655,11 @@ def render_sidebar(support_all_time: bool = False) -> tuple[int | str, int | Non
     refresh_label = "🔄 Refresh ESPN Data" if season != ALL_TIME else "🔄 Refresh ESPN Data (all seasons)"
     if st.sidebar.button(refresh_label, use_container_width=True):
         with st.spinner("Refreshing from ESPN... this can take a few minutes for a full backfill"):
-            from .espn_client import ESPNClient
             from .ingest import refresh_all
+            from .league_context import get_active_espn_client
             from .metrics.pipeline import compute_and_store_all_seasons
 
-            client = ESPNClient()
+            client = get_active_espn_client()
             status = refresh_all(client=client, seasons=None if season == ALL_TIME else [season])
             conn = dd.get_connection()
             compute_and_store_all_seasons(conn)

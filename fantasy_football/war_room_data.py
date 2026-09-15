@@ -127,9 +127,9 @@ def get_current_week(season: int) -> int:
     Optimizer's rank-override upload independently of whatever historical
     week the sidebar's own week picker happens to be set to (lineup
     decisions are always about the CURRENT week, never a past one)."""
-    from .espn_client import ESPNClient
+    from .league_context import get_active_espn_client
 
-    return ESPNClient().get_league(season).current_week
+    return get_active_espn_client().get_league(season).current_week
 
 
 @st.cache_data(ttl=300)
@@ -144,10 +144,10 @@ def get_my_team_pk(season: int) -> int | None:
     get_trade_rosters()/get_waiver_board() key off of, or None if no
     match (degrade gracefully rather than crash - callers should fall
     back to a manual picker)."""
-    from .espn_client import ESPNClient
+    from .league_context import get_active_espn_client
 
     try:
-        client = ESPNClient()
+        client = get_active_espn_client()
         league = client.get_league(season)
         swid = client.credentials.swid
         my_team = next((t for t in league.teams if any(o.get("id") == swid for o in t.owners)), None)
@@ -217,10 +217,10 @@ def get_waiver_board(season: int, pool_size_per_position: int = 25) -> pd.DataFr
     public GroupMe waiver report applies only after the fact to claims
     that already happened, run instead over the live free-agent pool so
     the commissioner can see who's worth a bid before Tuesday's claims lock."""
-    from .espn_client import ESPNClient
+    from .league_context import get_active_espn_client
 
     scarcity = position_scarcity_multipliers(_slot_counts(season))
-    league = ESPNClient().get_league(season)
+    league = get_active_espn_client().get_league(season)
     fp_by_position = get_fp_rankings_by_position(season)
     espn_id_map = get_fp_espn_id_map()
     overall_rank_by_fp_id = get_fp_overall_rank_by_fp_id(season)
@@ -630,14 +630,14 @@ def get_my_waiver_suggestions(season: int, my_team_pk: int, top_n: int = 10) -> 
     if my_roster.empty:
         return []
 
-    from .espn_client import ESPNClient
+    from .league_context import get_active_espn_client
 
     conn = dd.get_connection()
     espn_team_id_row = conn.execute("SELECT espn_team_id FROM teams WHERE id = ?", (my_team_pk,)).fetchone()
     budget_remaining = FAAB_BUDGET_TOTAL
     if espn_team_id_row:
         try:
-            league = ESPNClient().get_league(season)
+            league = get_active_espn_client().get_league(season)
             espn_team = next((t for t in league.teams if t.team_id == espn_team_id_row["espn_team_id"]), None)
             if espn_team is not None:
                 budget_remaining = FAAB_BUDGET_TOTAL - (espn_team.acquisition_budget_spent or 0)
@@ -863,8 +863,7 @@ def submit_waiver_claim(
     raises on an ESPN-side rejection (a clean 409 is an expected, useful
     outcome - see module note) - only a genuine network failure surfaces
     as success=False with the exception text."""
-    from .config import load_espn_credentials
-    from .espn_client import ESPNClient
+    from .league_context import get_active_espn_client
 
     conn = dd.get_connection()
     espn_team_id_row = conn.execute("SELECT espn_team_id FROM teams WHERE id = ?", (team_pk,)).fetchone()
@@ -874,8 +873,9 @@ def submit_waiver_claim(
             "status_code": None, "message": f"Unknown team_pk {team_pk}", "transaction_id": None,
         }
 
-    creds = load_espn_credentials()
-    league = ESPNClient().get_league(season)
+    client = get_active_espn_client()
+    creds = client.credentials
+    league = client.get_league(season)
     scoring_period = league.current_week
 
     payload = _waiver_claim_payload(
@@ -1183,7 +1183,7 @@ def build_ideal_lineup(season: int, team_pk: int) -> dict:
     feedback 2026-09-14: "1 should be positional rank, 1 should be
     overall rank"). rank_used is whichever of override/positional/
     overall actually drove the optimizer's decision for that player."""
-    from .espn_client import ESPNClient
+    from .league_context import get_active_espn_client
     from .metrics.lineup_order import TimedPlayer, order_flex_pool_by_kickoff
 
     conn = dd.get_connection()
@@ -1192,7 +1192,7 @@ def build_ideal_lineup(season: int, team_pk: int) -> dict:
         return _empty_lineup_result(None)
     espn_team_id = espn_team_id_row["espn_team_id"]
 
-    league = ESPNClient().get_league(season)
+    league = get_active_espn_client().get_league(season)
     week = league.current_week
     box_scores = league.box_scores(week)
     lineup = None
@@ -1470,8 +1470,7 @@ def submit_lineup_changes(season: int, team_pk: int, moves: list[tuple], dry_run
     dry_run=True, never sends anything unless a caller explicitly passes
     dry_run=False after a human has reviewed the exact rendered
     payload."""
-    from .config import load_espn_credentials
-    from .espn_client import ESPNClient
+    from .league_context import get_active_espn_client
 
     conn = dd.get_connection()
     espn_team_id_row = conn.execute("SELECT espn_team_id FROM teams WHERE id = ?", (team_pk,)).fetchone()
@@ -1481,8 +1480,9 @@ def submit_lineup_changes(season: int, team_pk: int, moves: list[tuple], dry_run
             "status_code": None, "message": f"Unknown team_pk {team_pk}", "transaction_id": None,
         }
 
-    creds = load_espn_credentials()
-    league = ESPNClient().get_league(season)
+    client = get_active_espn_client()
+    creds = client.credentials
+    league = client.get_league(season)
     scoring_period = league.current_week
 
     payload = _lineup_change_payload(espn_team_id_row["espn_team_id"], moves, scoring_period, creds.swid)

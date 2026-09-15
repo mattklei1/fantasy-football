@@ -19,24 +19,11 @@ from fantasy_football import war_room_data as wr
 st.set_page_config(page_title="War Room", page_icon="🔒", layout="wide")
 ui.inject_css()
 
-
-def _set_flash(key: str, level: str, message: str) -> None:
-    """Stashes a status message in session_state to survive the
-    st.rerun() that follows a save/clear action - a message shown via
-    st.success()/st.warning() right before st.rerun() gets wiped before
-    the user ever sees it (a real bug found live 2026-09-15: a PDF
-    override upload that failed to commit showed no warning at all,
-    just the green "active override" box from the reloaded local
-    state). show_flash() displays it once on the next run, then clears
-    it so it doesn't linger on every later rerun."""
-    st.session_state[f"_flash_{key}"] = (level, message)
-
-
-def _show_flash(key: str) -> None:
-    flash = st.session_state.pop(f"_flash_{key}", None)
-    if flash:
-        level, message = flash
-        getattr(st, level)(message)
+# Flash-message helpers (survive the st.rerun() after a save/clear
+# action - see ui_common.set_flash()'s docstring) now live in
+# ui_common.py, shared with the sidebar's league-registry UI.
+_set_flash = ui.set_flash
+_show_flash = ui.show_flash
 
 season, week = ui.render_sidebar()
 

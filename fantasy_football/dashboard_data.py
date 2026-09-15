@@ -395,9 +395,9 @@ def get_live_box_scores(season: int, week: int) -> pd.DataFrame:
     starter projections before kickoff and ESPN's live-updating total
     once games start (confirmed against the installed espn_api source,
     2026-09-13) - which is exactly why the snapshot table above exists."""
-    from .espn_client import ESPNClient
+    from .league_context import get_active_espn_client
 
-    client = ESPNClient()
+    client = get_active_espn_client()
     league = client.get_league(season)
     conn = get_connection()
     rows = []
