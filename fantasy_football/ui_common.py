@@ -766,13 +766,36 @@ def render_sidebar(support_all_time: bool = False) -> tuple[int | str, int | Non
 
         latest_week = dd.get_latest_metrics_week(season)
         if latest_week:
-            state_key = f"selected_week_{season}"
-            if state_key not in st.session_state:
-                st.session_state[state_key] = latest_week
-            week = st.sidebar.slider(
-                "Week", min_value=1, max_value=latest_week,
-                value=st.session_state[state_key], key=f"week_slider_{season}",
-            )
+            from . import league_context
+
+            # Keyed by (league, season), not season alone - two leagues can
+            # share a season but have different latest computed weeks, and
+            # a keyed widget's OWN stored value overrides `value=` on every
+            # render after the first mount, so a stale value from a
+            # previously active league with a HIGHER latest_week crashes
+            # st.sidebar.slider's min/max check the moment the active
+            # league changes underneath it (hit in production 2026-09-15,
+            # right after multi-league support shipped: switching leagues
+            # left the old, larger week number stored under a key the new
+            # league's smaller max_value couldn't satisfy).
+            active_league_id = league_context.get_active_league_id()
+            state_key = f"selected_week_{active_league_id}_{season}"
+            if latest_week == 1:
+                # st.slider raises StreamlitInvalidMinMaxError when
+                # min_value == max_value - a brand-new league with only
+                # Week 1 computed has nothing to pick between, so just
+                # show it rather than rendering a (broken) slider.
+                week = 1
+                st.sidebar.caption("Week 1 (only week available so far)")
+            else:
+                if state_key not in st.session_state:
+                    st.session_state[state_key] = latest_week
+                else:
+                    st.session_state[state_key] = max(1, min(st.session_state[state_key], latest_week))
+                week = st.sidebar.slider(
+                    "Week", min_value=1, max_value=latest_week,
+                    value=st.session_state[state_key], key=f"week_slider_{active_league_id}_{season}",
+                )
             st.session_state[state_key] = week
 
     last_refresh = dd.get_last_refresh()

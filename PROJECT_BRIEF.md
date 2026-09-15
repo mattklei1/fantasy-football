@@ -3078,3 +3078,38 @@ picture. Consolidated into one new War Room tab, primary-admin-only:
 - 326/326 tests passing (no test changes needed - this was a pure UI
   relocation, all underlying logic in `league_registry.py`/
   `access_control.py`/`config.py` was already tested).
+
+**HOTFIX: Home page crash after multi-league registration (2026-09-15,
+same session):** live production outage reported immediately after the
+above shipped - `StreamlitInvalidMinMaxError` in the sidebar's Week
+slider, every page. Two distinct real bugs, both in `render_sidebar()`'s
+week-slider block, both now fixed:
+
+1. **`min_value == max_value` crash** - the actual trigger. Streamlit's
+   `st.slider()` raises `StreamlitInvalidMinMaxError` if min and max are
+   equal, and a brand-new league (like the 3 just registered this
+   session, all early in the 2026 season) can have
+   `dashboard_data.get_latest_metrics_week()` return exactly `1` - so
+   `min_value=1, max_value=1`. Fixed: when `latest_week == 1` there's
+   nothing to pick between anyway, so show a static caption instead of
+   rendering a slider at all.
+2. **Latent cross-league stale-value bug**, found while fixing #1, not
+   yet observed live but a real landmine: the slider's session-state key
+   was `f"selected_week_{season}"` - scoped by season only. Two leagues
+   sharing a season (all four now do - 2026) but with different
+   `latest_week` values would collide on that key; since a KEYED widget's
+   own stored value overrides `value=` on every render after first mount,
+   switching the active league to one with a SMALLER `latest_week` while
+   a LARGER week number was already stored would hit the same
+   `StreamlitInvalidMinMaxError` (value outside [min, max] this time, not
+   min==max). Fixed: both the state key and the widget's own `key=` are
+   now scoped by `(active_league_id, season)`, plus a defensive clamp
+   (`max(1, min(stored_value, latest_week))`) for belt-and-suspenders.
+- Verified via AppTest reproducing both scenarios directly (a slider
+  render at `latest_week=15` followed by a second render with the active
+  league switched to one at `latest_week=1`, reusing the same session) -
+  confirmed the crash pre-fix, confirmed clean (no exception, correct
+  values) post-fix. 326/326 tests still passing (pure defensive fix, no
+  test changes needed - matches this project's convention of validating
+  widget-level UI behavior via AppTest rather than committing it to the
+  pytest suite).
