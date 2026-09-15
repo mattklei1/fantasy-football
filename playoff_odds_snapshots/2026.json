@@ -1,17 +1,17 @@
 {
   "0": [
-    {"team_pk": 1, "team_name": "McConkey Kong", "championship_pct": 0.0233, "playoff_pct": 0.3028, "bye_pct": 0.0493, "seed1_pct": 0.0199},
-    {"team_pk": 2, "team_name": "Gary Had a Little Lamb", "championship_pct": 0.1001, "playoff_pct": 0.6309, "bye_pct": 0.1877, "seed1_pct": 0.0864},
-    {"team_pk": 3, "team_name": "Robbying Moore TDs", "championship_pct": 0.0257, "playoff_pct": 0.3166, "bye_pct": 0.0459, "seed1_pct": 0.0168},
-    {"team_pk": 4, "team_name": "Derelic My Balls", "championship_pct": 0.1635, "playoff_pct": 0.7772, "bye_pct": 0.3197, "seed1_pct": 0.1648},
-    {"team_pk": 5, "team_name": "Love thy Nabers", "championship_pct": 0.106, "playoff_pct": 0.6709, "bye_pct": 0.2153, "seed1_pct": 0.1038},
-    {"team_pk": 6, "team_name": "Hammer Time", "championship_pct": 0.0009, "playoff_pct": 0.0444, "bye_pct": 0.0033, "seed1_pct": 0.001},
-    {"team_pk": 7, "team_name": "House of the Rising Sun God", "championship_pct": 0.0401, "playoff_pct": 0.4088, "bye_pct": 0.0739, "seed1_pct": 0.0293},
-    {"team_pk": 8, "team_name": "Lamar Comeback SZN", "championship_pct": 0.1997, "playoff_pct": 0.8366, "bye_pct": 0.4061, "seed1_pct": 0.2279},
-    {"team_pk": 9, "team_name": "Doody Guac Boys", "championship_pct": 0.1474, "playoff_pct": 0.7656, "bye_pct": 0.3076, "seed1_pct": 0.1638},
-    {"team_pk": 10, "team_name": "Thankful for Coffeys Team", "championship_pct": 0.002, "playoff_pct": 0.071, "bye_pct": 0.0052, "seed1_pct": 0.0018},
-    {"team_pk": 11, "team_name": "Jerusalem Price Fixers", "championship_pct": 0.0397, "playoff_pct": 0.4035, "bye_pct": 0.0768, "seed1_pct": 0.0279},
-    {"team_pk": 12, "team_name": "Jacob Batters", "championship_pct": 0.1516, "playoff_pct": 0.7717, "bye_pct": 0.3092, "seed1_pct": 0.1566}
+    {"team_pk": 1, "team_name": "McConkey Kong", "championship_pct": 0.0676, "playoff_pct": 0.4539, "bye_pct": 0.1368, "seed1_pct": 0.0661, "roster_strength": 45.17109984784897},
+    {"team_pk": 2, "team_name": "Gary Had a Little Lamb", "championship_pct": 0.0921, "playoff_pct": 0.5466, "bye_pct": 0.1877, "seed1_pct": 0.0911, "roster_strength": 48.778225574669364},
+    {"team_pk": 3, "team_name": "Robbying Moore TDs", "championship_pct": 0.0722, "playoff_pct": 0.4489, "bye_pct": 0.1396, "seed1_pct": 0.068, "roster_strength": 44.69300749457919},
+    {"team_pk": 4, "team_name": "Derelic My Balls", "championship_pct": 0.1092, "playoff_pct": 0.583, "bye_pct": 0.2156, "seed1_pct": 0.1114, "roster_strength": 50.638050200993355},
+    {"team_pk": 5, "team_name": "Love thy Nabers", "championship_pct": 0.0868, "playoff_pct": 0.5415, "bye_pct": 0.1805, "seed1_pct": 0.0869, "roster_strength": 49.1834764408577},
+    {"team_pk": 6, "team_name": "Hammer Time", "championship_pct": 0.0409, "playoff_pct": 0.3467, "bye_pct": 0.0859, "seed1_pct": 0.0366, "roster_strength": 39.49377158202092},
+    {"team_pk": 7, "team_name": "House of the Rising Sun God", "championship_pct": 0.0705, "playoff_pct": 0.4805, "bye_pct": 0.1443, "seed1_pct": 0.0714, "roster_strength": 45.800816164589534},
+    {"team_pk": 8, "team_name": "Lamar Comeback SZN", "championship_pct": 0.1183, "playoff_pct": 0.5983, "bye_pct": 0.23, "seed1_pct": 0.1261, "roster_strength": 51.634154372381026},
+    {"team_pk": 9, "team_name": "Doody Guac Boys", "championship_pct": 0.1038, "playoff_pct": 0.5701, "bye_pct": 0.2112, "seed1_pct": 0.1072, "roster_strength": 50.36088036845542},
+    {"team_pk": 10, "team_name": "Thankful for Coffeys Team", "championship_pct": 0.05, "playoff_pct": 0.3699, "bye_pct": 0.0983, "seed1_pct": 0.0456, "roster_strength": 40.6081757521465},
+    {"team_pk": 11, "team_name": "Jerusalem Price Fixers", "championship_pct": 0.0799, "playoff_pct": 0.486, "bye_pct": 0.1541, "seed1_pct": 0.0741, "roster_strength": 46.24842951349002},
+    {"team_pk": 12, "team_name": "Jacob Batters", "championship_pct": 0.1087, "playoff_pct": 0.5746, "bye_pct": 0.216, "seed1_pct": 0.1155, "roster_strength": 50.294946596717594}
   ],
   "1": [
     {"team_pk": 12, "team_name": "Jacob Batters", "championship_pct": 0.2878, "playoff_pct": 0.9344, "bye_pct": 0.6128, "seed1_pct": 0.3935},
