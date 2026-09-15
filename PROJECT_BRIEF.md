@@ -4372,3 +4372,53 @@ the scheduled collector script's behavior is unchanged. Live-verified:
 `_path(2026)` returns the original unprefixed path for the primary
 league and `playoff_odds_snapshots/1243473/2026.json` when BIR and
 Friends is simulated as active. 395/395 tests passing.
+
+**A granted user's default league now follows their access grant,
+every session - not always the primary league.** User: "make the
+league selection persist across sessions for anyone I add. have it
+default to whatever league they are given access to." Before this, a
+user granted only an extra league (e.g. Grant Cohen -> BIR and Friends)
+landed on the PRIMARY league every single time they logged in - league
+selection was pure `st.session_state`, gone the instant the browser
+session ended, so they had to manually re-pick their own league from
+the sidebar every visit.
+
+`league_context.py`:
+- New `_default_league_id()`: the primary league for the admin and for
+  anyone with no extra grants (unchanged), but the visitor's own FIRST
+  granted extra league (`access_control.get_user_leagues()`, already
+  durable/git-committed - no new storage needed) for anyone who has
+  one. Recomputed fresh on every call rather than cached/stored
+  separately, so a newly granted league takes effect immediately.
+- `get_active_league_id()` now falls back to `_default_league_id()`
+  instead of unconditionally the primary league, once no explicit
+  in-session choice has been made.
+- **Bug caught while wiring this up**: `set_active_league_id()` used to
+  special-case "chosen == primary" as `st.session_state.pop(...)` (a
+  bare reset), which was harmless when the fallback was ALWAYS primary
+  anyway - but now that the fallback can be a different league, popping
+  on an explicit primary choice would have snapped a granted user
+  straight back to their own default league on the very next rerun,
+  making it impossible for them to ever manually stay on the primary
+  league. Fixed: any explicit choice (primary included) is now stored
+  and sticks for the rest of the session; only `None` clears it back to
+  the default.
+- 4 new/updated tests in `test_league_context.py` covering: default
+  stays primary for an ungranted user and for the admin, defaults to
+  the granted extra league for a granted user, and an explicit
+  in-session switch back to primary overrides that default and sticks.
+  399/399 tests passing.
+
+Also answered a related question: "usc pike league is not an option to
+give access to in the manage users section" - checked live against the
+real ESPN league (LEAGUE_ID from this deployment's own credentials):
+the primary league's actual name is "Salted by Quincy" (matches the
+name already hardcoded in `ui_common.render_league_selector()`/`render_
+manage_users_tab()`), not "USC Pike League." The 3 currently registered
+extra leagues are KleHaBe Champions League, BIR and Friends, and The
+Worst League of All Time - "USC Pike League" isn't among them, so it
+was never going to appear in the "Extra leagues" grant multiselect
+(which only lists `league_registry.load_registered_leagues()`). Not a
+bug - it needs to be added via "Registered leagues -> Add league by
+ESPN league ID" first, same as BIR and Friends was. Told the user this
+and asked for that league's ESPN league ID if they want it added.

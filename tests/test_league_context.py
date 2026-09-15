@@ -35,13 +35,17 @@ def test_set_active_league_id_then_get_returns_it(monkeypatch):
     assert league_context.get_active_league_id() == 999999
 
 
-def test_set_active_league_id_to_primary_clears_session_override(monkeypatch):
+def test_set_active_league_id_to_primary_sticks_explicitly(monkeypatch):
+    """An explicit switch back to the primary league must stick for the
+    rest of the session, not silently pop back to the session key and
+    let a granted user's own default (see _default_league_id) snap them
+    right back to their extra league on the next rerun."""
     session = _use_fake_session(monkeypatch)
     _use_primary(monkeypatch, league_id=1025842)
     league_context.set_active_league_id(999999)
     league_context.set_active_league_id(1025842)
     assert league_context.get_active_league_id() == 1025842
-    assert league_context.SESSION_KEY not in session
+    assert session[league_context.SESSION_KEY] == 1025842
 
 
 def test_set_active_league_id_none_resets_to_primary(monkeypatch):
@@ -49,6 +53,61 @@ def test_set_active_league_id_none_resets_to_primary(monkeypatch):
     _use_primary(monkeypatch, league_id=1025842)
     league_context.set_active_league_id(999999)
     league_context.set_active_league_id(None)
+    assert league_context.get_active_league_id() == 1025842
+
+
+def _use_signed_in(monkeypatch, email):
+    monkeypatch.setattr(league_context, "_current_user_email", lambda: email)
+
+
+def test_default_league_id_is_primary_for_ungranted_user(monkeypatch):
+    _use_fake_session(monkeypatch)
+    _use_primary(monkeypatch, league_id=1025842)
+    _use_signed_in(monkeypatch, "randomvisitor@example.com")
+    monkeypatch.setattr(league_context.config, "admin_email", lambda: "admin@example.com")
+    monkeypatch.setattr(
+        "fantasy_football.access_control.get_user_leagues", lambda email, primary_id: [primary_id]
+    )
+    assert league_context.get_active_league_id() == 1025842
+
+
+def test_default_league_id_is_the_users_own_granted_extra_league(monkeypatch):
+    """user, 2026-09-16: "have it default to whatever league they are
+    given access to" - a granted user should land on THEIR league, not
+    the primary one, every session, with no manual re-pick needed."""
+    _use_fake_session(monkeypatch)
+    _use_primary(monkeypatch, league_id=1025842)
+    _use_signed_in(monkeypatch, "grantcohen7@example.com")
+    monkeypatch.setattr(league_context.config, "admin_email", lambda: "admin@example.com")
+    monkeypatch.setattr(
+        "fantasy_football.access_control.get_user_leagues", lambda email, primary_id: [primary_id, 1243473]
+    )
+    assert league_context.get_active_league_id() == 1243473
+
+
+def test_default_league_id_is_still_primary_for_the_admin(monkeypatch):
+    """The admin implicitly sees every league (access_control.get_user_
+    leagues returns "all" for them) - they still default to their OWN
+    primary/home league, not an arbitrary extra one."""
+    _use_fake_session(monkeypatch)
+    _use_primary(monkeypatch, league_id=1025842)
+    _use_signed_in(monkeypatch, "admin@example.com")
+    monkeypatch.setattr(league_context.config, "admin_email", lambda: "admin@example.com")
+    monkeypatch.setattr(
+        "fantasy_football.access_control.get_user_leagues", lambda email, primary_id: "all"
+    )
+    assert league_context.get_active_league_id() == 1025842
+
+
+def test_explicit_session_choice_overrides_the_granted_default(monkeypatch):
+    _use_fake_session(monkeypatch)
+    _use_primary(monkeypatch, league_id=1025842)
+    _use_signed_in(monkeypatch, "grantcohen7@example.com")
+    monkeypatch.setattr(league_context.config, "admin_email", lambda: "admin@example.com")
+    monkeypatch.setattr(
+        "fantasy_football.access_control.get_user_leagues", lambda email, primary_id: [primary_id, 1243473]
+    )
+    league_context.set_active_league_id(1025842)
     assert league_context.get_active_league_id() == 1025842
 
 

@@ -47,22 +47,59 @@ def _current_user_email() -> str | None:
     return (st.user.email or "").strip().lower() or None
 
 
+def _default_league_id() -> int:
+    """Which league a visitor lands on when they haven't explicitly
+    picked one THIS session - the primary league for the admin and for
+    anyone with no extra grants (unchanged, original behavior), but
+    their own first GRANTED extra league for anyone access_control.py
+    has explicitly given one to (user, 2026-09-16: "have it default to
+    whatever league they are given access to" - before this, a
+    single-extra-league user like an overlap manager landed on the
+    PRIMARY league every time and had to manually re-pick their own
+    league every single session, since league selection was purely
+    st.session_state - gone the moment the browser session ended).
+    Recomputed from the durable, git-committed league_access.json on
+    every call rather than a separately stored "last picked league" -
+    it's already durable and free to read, and it means a NEWLY granted
+    league takes effect immediately without a separate migration."""
+    primary_id = _primary_credentials().league_id
+    email = _current_user_email()
+    if not email or email == (config.admin_email() or ""):
+        return primary_id
+
+    from . import access_control
+
+    granted = access_control.get_user_leagues(email, primary_id)
+    if isinstance(granted, list):
+        extras = [lid for lid in granted if lid != primary_id]
+        if extras:
+            return extras[0]
+    return primary_id
+
+
 def get_active_league_id() -> int:
-    """The currently selected league's ESPN id - session-scoped, so it
-    only ever differs from the primary league for an admin who's
-    explicitly picked something else in the sidebar (see
-    ui_common.render_sidebar()'s league selector)."""
+    """The currently selected league's ESPN id. Session-scoped once
+    someone has explicitly picked one THIS session (see
+    set_active_league_id) - before that, or in a brand new session,
+    falls back to _default_league_id() (see its docstring), not always
+    the bare primary league."""
     try:
         selected = st.session_state.get(SESSION_KEY)
     except Exception:  # noqa: BLE001 - no active Streamlit session (e.g. a script/test context)
         selected = None
-    return selected if selected is not None else _primary_credentials().league_id
+    return selected if selected is not None else _default_league_id()
 
 
 def set_active_league_id(league_id: int | None) -> None:
-    """None (or the primary league's own id) resets to the primary
-    league - callers don't need to special-case "switch back"."""
-    if league_id is None or league_id == _primary_credentials().league_id:
+    """Records an EXPLICIT choice for this session, primary league
+    included - a granted user who manually switches back to the
+    primary league needs that to stick for the rest of the session, not
+    silently snap back to their own default league on the next rerun
+    (which naively popping the session key on `== primary_id`, the old
+    behavior, would cause now that the fallback isn't always primary
+    - see _default_league_id). None clears any explicit choice,
+    reverting to the default."""
+    if league_id is None:
         st.session_state.pop(SESSION_KEY, None)
     else:
         st.session_state[SESSION_KEY] = league_id
