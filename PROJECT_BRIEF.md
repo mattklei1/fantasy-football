@@ -4159,3 +4159,67 @@ anything to compare against.
   gracefully ignoring an older-format Week-0 snapshot missing the new
   `roster_strength` field, and the empty/no-data case. 395/395 tests
   passing overall.
+
+**Week 1 recap posted to the real GroupMe chat, same session.** User:
+"send out the weekly recap in groupme." Regenerated the recap fresh
+first (`force_regenerate=True`) so it reflected every fix landed
+earlier this session (corrected Week-0/Roster-Strength baseline, the
+new two-tier POWER RANKING MOVERS section), then posted it with
+`groupme_client.send_long_message()` in the exact format the scheduled
+`scripts/post_weekly_recap.py` job uses (`f"WEEK {week} RECAP\n\n" +
+result["commentary"]"`).
+
+**Weekly Recap page (`pages/7_Weekly_Recap.py`): added a week picker,
+removed the Regenerate button.** User: "make sure it has the updated
+version. give me a dropdown selector to pick the week you want to see.
+also remove option to regenerate weekly recap. i dont want to use
+claude credits that way." Changes:
+- Added an on-page `st.selectbox` ("Week", newest-first, defaulting to
+  the latest computed week) independent of the sidebar's own week
+  slider - lets a visitor browse any past completed week's recap
+  without touching the global sidebar state other pages share.
+- Removed the "🔄 Regenerate" button entirely (and its `force_
+  regenerate=True` call) - `get_or_generate_weekly_recap()` is
+  DB-cache-first by design (see commentary.py's own docstring: "repeat
+  page views never re-trigger a Claude call"), so the page still
+  generates a recap on a genuine first-ever view of a newly-completed
+  week (unavoidable - there's nothing to display otherwise), but has NO
+  UI path left that can trigger a second, paid Claude call for a week
+  that's already been generated once. This was an explicit cost-control
+  ask, not a bug fix - preserve going forward: this page must never
+  expose a control that can force-regenerate a cached recap.
+- The page's underlying recap-generation logic (`commentary.py`) was
+  already current - no separate fix needed there, only the page-level
+  UI changes above.
+
+**Multi-league scope check, same session.** User asked whether this
+session's Roster-Strength/playoff-odds changes apply to every
+registered league, and separately confirmed the automated weekly recap
+should only ever run for the primary league (USC Pike League) - not the
+3 other registered leagues (KleHaBe Champions League, BIR and Friends,
+The Worst League of All Time). Verified rather than changed:
+- `weekly-recap.yml` and `playoff-odds-snapshot.yml` both instantiate
+  `ESPNClient()` with no league override, i.e. only the primary
+  env-configured `LEAGUE_ID` secret - neither workflow has ever looped
+  over `league_registry.load_registered_leagues()`. Weekly recap
+  generation/posting and the Week-0 snapshot were already scoped to the
+  primary league only, unchanged by anything this session.
+- `median_scoring` (seasons table) is ingested per-league from that
+  league's own real ESPN settings, not hardcoded - so a league without
+  ESPN median scoring enabled correctly never shows a median W/L split;
+  nothing to fix here either.
+- The ongoing playoff simulation's Roster-Strength `shrinkage_prior`
+  (`loaders.load_roster_strength_shrinkage_prior()`) reads live,
+  current-week roster/projection/FantasyPros-ROS data straight from
+  whichever league's DB is active (`league_context.sync_db_path()`) -
+  no dependency on the Week-0 snapshot at all, so it already works
+  automatically for every league's own Playoff Odds page.
+- The Week-0-specific features (Home page "Since Wk0" baseline, Playoff
+  Odds' "Week 0" point-in-time option, POWER RANKING MOVERS'
+  season-long tier) all read `playoff_odds_snapshots.load_snapshots(
+  season).get("0")` and gracefully degrade to their pre-existing
+  fallback logic when absent - so for the 3 extra registered leagues
+  (which have no Week-0 snapshot, by the scoping above), these features
+  correctly fall back rather than break; only the primary league gets
+  the full Week-0-aware experience, which matches "just usc pike
+  league" being the only league this infra was ever meant to cover.

@@ -13,7 +13,7 @@ from fantasy_football.league_context import get_active_espn_client
 st.set_page_config(page_title="Weekly Recap", page_icon="📰", layout="wide")
 ui.inject_css()
 
-season, week = ui.render_sidebar()
+season, sidebar_week = ui.render_sidebar()
 
 st.title("Weekly Recap")
 st.caption(
@@ -23,6 +23,18 @@ st.caption(
 )
 
 conn = dd.get_connection()
+
+# Recap-specific week picker, independent of the sidebar's week slider -
+# lets you browse back through every completed week's ALREADY-generated
+# recap (get_or_generate_weekly_recap reads from the DB cache; it only
+# ever calls Claude on a genuine cache miss, which never happens for a
+# past week once its recap has been generated once - see below, no
+# regenerate control is exposed here on purpose so this page can never
+# trigger a fresh paid Claude call, only display cached results).
+latest_week = dd.get_latest_metrics_week(season) or sidebar_week or 1
+week_options = list(range(latest_week, 0, -1))
+week = st.selectbox("Week", week_options, index=0, format_func=lambda w: f"Week {w}", key="weekly_recap_week")
+
 # The live `league` object only actually gets used on a cache MISS (see
 # get_or_generate_weekly_recap's docstring) - NEXT WEEK'S GAME TO WATCH's
 # free-agent-fallback projection (see commentary._game_to_watch) needs
@@ -38,13 +50,7 @@ source_label = {
     "claude": "🤖 Claude-generated",
     "placeholder": "📋 Placeholder (no ANTHROPIC_API_KEY configured, or the Claude call failed/declined)",
 }.get(result["source"], result["source"])
-col1, col2 = st.columns([3, 1])
-with col1:
-    st.caption(f"{source_label} · generated {result['generated_at']} UTC")
-with col2:
-    if st.button("🔄 Regenerate"):
-        commentary.get_or_generate_weekly_recap(conn, season, week, force_regenerate=True, league=league)
-        st.rerun()
+st.caption(f"{source_label} · generated {result['generated_at']} UTC")
 
 for block in result["commentary"].split("\n\n"):
     st.markdown(block)
