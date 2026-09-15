@@ -21,9 +21,9 @@ st.title("Roster Strength")
 
 fp_last_refreshed = dd.get_fantasypros_last_refreshed(season)
 if fp_last_refreshed:
-    st.caption(f"**As of {fp_last_refreshed} UTC** (last FantasyPros rest-of-season rankings pull)")
+    st.caption(f"**As of {fp_last_refreshed} UTC** (last expert rankings pull)")
 else:
-    st.caption("**As of:** FantasyPros rest-of-season rankings haven't been pulled yet this season.")
+    st.caption("**As of:** expert rankings haven't been pulled yet this season.")
 
 st.caption(
     "Forward-looking roster quality (NOT past performance - see Power Score on Home for that). "

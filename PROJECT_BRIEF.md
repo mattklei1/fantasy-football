@@ -4450,3 +4450,43 @@ the whole widget disappear instead of showing that week's real result.
   (matches this project's existing convention of NOT unit-testing pure
   HTML-string builders like the sibling `cutline_table_html`, which
   also has none - live-verification only). 399/399 tests passing.
+
+**Scrubbed "FantasyPros" from every page a non-War-Room member can
+see.** User: "on the roster strength tab - dont say its the last
+fantasypros refresh. just say its the last expert ranings refresh.
+also do a scan through the site that is available to non war room
+members. scrub mentions of fantasypros. dont want them knowing." Fixed
+`pages/3_Roster_Strength.py`'s "As of" caption (`"last FantasyPros
+rest-of-season rankings pull"` -> `"last expert rankings pull"`).
+Grepped the whole codebase (case-insensitive) for every remaining
+"FantasyPros"/"fantasypros" occurrence and checked each one's actual
+visibility rather than assuming:
+- Everything else on `pages/3_Roster_Strength.py` (the Methodology
+  expander, the second caption) already said "third-party rest-of-
+  season expert consensus" - already generic, not touched by an
+  earlier session.
+- `pages/8_Ask_Me_Anything.py`'s one mention is a module docstring
+  ("FantasyPros rankings are structurally unreachable here") - the AMA
+  feature already can't surface FantasyPros data at all (see
+  `ama_query.py`'s security boundary), nothing to fix.
+- `pages/9_War_Room.py`'s many mentions are correctly left alone - War
+  Room is explicitly out of scope per the user's own framing (only
+  non-War-Room members shouldn't know).
+- Every other hit (`dashboard_data.py`, `ui_common.py`,
+  `playoff_odds_snapshots.py`, `metrics/roster_strength.py`, `config.py`,
+  `schedule_guard.py`, `db.py`, `ingest.py`, `fantasypros_client.py`,
+  `ama.py`) is a docstring, comment, or internal variable/function name
+  - never rendered to a user.
+- `waiver_report.py`'s `build_message()` (the text actually posted to
+  the SHARED, everyone-visible GroupMe bot for the waiver recap)
+  already only ever says "our own suggested value" - no FantasyPros
+  mention to begin with.
+- `lineup_alert_report.py` DOES say "FantasyPros' weekly consensus" in
+  its message text, but checked its actual delivery path
+  (`scripts/post_lineup_alert.py`/`post_lineup_suggestions.py` ->
+  `config.groupme_personal_bot_id()`) - that bot's own docstring: "a
+  private group containing only the commissioner." Commissioner-only
+  delivery is the GroupMe equivalent of War Room access, so left as-is
+  - not a leak to a non-War-Room member.
+399/399 tests passing (no test asserted the exact caption text
+changed).
