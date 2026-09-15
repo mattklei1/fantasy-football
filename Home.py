@@ -91,7 +91,7 @@ display["Record"] = display.apply(
 
 MEDALS = {1: "🥇 ", 2: "🥈 ", 3: "🥉 "}
 display["Power Rank"] = display["power_rank"].apply(lambda r: f"{MEDALS.get(r, '')}{r}")
-display["Since Wk1"] = display["rank_change"].apply(ui.trend_arrow)
+display["Since Wk0"] = display["rank_change"].apply(ui.trend_arrow)
 display["PPG"] = display["ppg"].round(0).astype(int)
 display["All-Play %"] = (display["all_play_win_pct"] * 100).round(1)
 display["Power Score"] = display["power_score"].round(1)
@@ -105,10 +105,10 @@ display["Power Score"] = display["power_score"].round(1)
 display = display.sort_values(["actual_win_pct", "points_for"], ascending=[False, False]).reset_index(drop=True)
 
 table = display[
-    ["Power Rank", "Since Wk1", "team_name", "manager_name", "Record", "PPG", "All-Play %", "Power Score"]
+    ["Power Rank", "Since Wk0", "team_name", "manager_name", "Record", "PPG", "All-Play %", "Power Score"]
 ].rename(columns={"team_name": "Team", "manager_name": "Manager"})
 
-styled = table.style.map(ui.trend_color, subset=["Since Wk1"])
+styled = table.style.map(ui.trend_color, subset=["Since Wk0"])
 
 st.dataframe(
     styled,
@@ -123,10 +123,13 @@ st.dataframe(
             "the Roster Strength tab), and NOT a projected final standing. It's a "
             "results-plus-underlying-quality blend of THIS SEASON so far.",
         ),
-        "Since Wk1": st.column_config.TextColumn(
-            "Since Wk1",
-            help="Power Rank movement since Week 1 of THIS season - our own Power Score "
-            "methodology (not ESPN's), so e.g. ▲6 means risen 6 spots since week 1.",
+        "Since Wk0": st.column_config.TextColumn(
+            "Since Wk0",
+            help="Power Rank movement since Week 0 - real draft-time Roster Strength rank "
+            "(not this season's own results) vs. current Power Rank, so e.g. ▲6 means "
+            "you're outperforming your preseason roster grade by 6 spots. Falls back to "
+            "movement since week 1's Power Rank if no real Week-0 Roster Strength snapshot "
+            "exists yet for this season.",
         ),
         "All-Play %": st.column_config.ProgressColumn(
             "All-Play %",

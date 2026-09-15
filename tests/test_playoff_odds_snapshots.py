@@ -291,6 +291,11 @@ def test_compute_week0_snapshot_rows_differentiates_teams_by_roster_quality(week
     assert spread > 0.3  # a real, meaningful spread - not clustered near 50%
     # team 8 (150 projected) should clearly outrank team 1 (80 projected)
     assert by_pk[8]["playoff_pct"] > by_pk[1]["playoff_pct"]
+    # raw 0-100 Roster Strength is carried through too (used by
+    # dashboard_data.get_standings()'s "movement since Week 0" baseline,
+    # which has no other durable way to see real Week-0 data)
+    assert all(0 <= r["roster_strength"] <= 100 for r in rows)
+    assert by_pk[8]["roster_strength"] > by_pk[1]["roster_strength"]
 
 
 def test_compute_week0_snapshot_rows_none_for_unsupported_playoff_team_count(week0_conn):

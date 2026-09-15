@@ -175,6 +175,14 @@ def compute_week0_team_state(conn: sqlite3.Connection, season: int, position_slo
             "team_pk": pk, "season_ppg": float(expected[pk]), "last3_ppg": float(expected[pk]),
             "score_stdev": MIN_STDEV, "matchup_wins": 0, "matchup_losses": 0, "matchup_ties": 0,
             "median_wins": 0, "median_losses": 0, "median_ties": 0, "points_for": 0.0,
+            # not part of playoff_sim.TEAM_STATE_COLUMNS (simulate_season()
+            # ignores extra columns) - carried through so callers that want
+            # the raw 0-100 Roster Strength itself (not the point-remapped
+            # season_ppg/last3_ppg) don't have to recompute it. See
+            # compute_week0_snapshot_rows(), which surfaces it in the
+            # stored snapshot for dashboard_data.get_standings()'s
+            # "movement since Week 0" baseline.
+            "roster_strength": float(strength[pk]),
         }
         for pk in team_pks
     ]
@@ -231,11 +239,19 @@ def compute_week0_snapshot_rows(conn: sqlite3.Connection, season: int, n_sims: i
     )
     name_rows = conn.execute("SELECT id, team_name FROM teams WHERE season_id = ?", (season,)).fetchall()
     name_by_pk = {r[0]: r[1] for r in name_rows}
+    roster_strength_by_pk = team_state.set_index("team_pk")["roster_strength"]
     return [
         {
             "team_pk": int(row.team_pk), "team_name": name_by_pk.get(int(row.team_pk), "Unknown"),
             "championship_pct": float(row.championship_pct), "playoff_pct": float(row.playoff_pct),
             "bye_pct": float(row.bye_pct), "seed1_pct": float(row.seed1_pct),
+            # the raw 0-100 Roster Strength (not the point-remapped season_ppg
+            # the simulation itself used) - see dashboard_data.get_standings()'s
+            # "movement since Week 0" baseline, which needs this and would
+            # otherwise have no durable way to see real Week-0 draft-time
+            # Roster Strength on the deployed app (the FantasyPros ADP
+            # ingest that computes it only ever runs in a throwaway temp DB).
+            "roster_strength": float(roster_strength_by_pk[int(row.team_pk)]),
         }
         for row in result.itertuples()
     ]

@@ -225,6 +225,53 @@ def test_shrinkage_games_played_override_preserves_signal_at_zero_real_games():
     assert with_override.loc[7, "playoff_pct"] > with_override.loc[0, "playoff_pct"]
 
 
+def test_shrinkage_games_played_override_does_not_corrupt_the_running_average():
+    # Regression test for a real bug shipped and caught the same day
+    # (2026-09-16): the running-average fix above (`sim_avg_games_played`
+    # evolving week by week) initially divided simulated points_for by
+    # the OVERRIDDEN games_played (e.g. WEEK0_TRUST_GAMES=45) instead of
+    # the REAL actual game count (0 at Week 0) - since real points_for
+    # starts at 0.0 while the override pretends 45 games' worth of trust
+    # already exists, dividing one simulated week's score by ~46 produced
+    # a near-zero "running average" for every team from the second
+    # remaining week onward, silently re-collapsing the real Roster-
+    # Strength spread right back to ~flat odds (caught live: real Week-0
+    # playoff odds went from a real 4.7%-93.4% spread back down to a
+    # suspicious 32%-68% band the moment this shipped). Uses the exact
+    # shape of the real bug: a real 0-0-0 record, real points_for=0.0,
+    # a large trust override (45, matching WEEK0_TRUST_GAMES), a wide
+    # real prior spread, and enough remaining weeks (13, a real season's
+    # worth) for the bug to compound.
+    n_teams = 12
+    rows = [
+        {
+            "team_pk": i, "season_ppg": 130.0, "last3_ppg": 130.0, "score_stdev": MIN_STDEV,
+            "matchup_wins": 0, "matchup_losses": 0, "matchup_ties": 0,
+            "median_wins": 0, "median_losses": 0, "median_ties": 0, "points_for": 0.0,
+        }
+        for i in range(n_teams)
+    ]
+    team_state = pd.DataFrame(rows)
+    remaining = pd.DataFrame(
+        {
+            "week": [w for w in range(1, 14) for _ in range(6)],
+            "home_team_pk": list(range(0, 12, 2)) * 13,
+            "away_team_pk": list(range(1, 12, 2)) * 13,
+        }
+    )
+    prior = np.array([80.0 + i * 7.0 for i in range(n_teams)])  # a real, wide spread
+
+    result = simulate_season(
+        team_state, remaining, median_scoring=True, reg_season_count=13,
+        n_sims=5000, rng=np.random.default_rng(1),
+        shrinkage_games_played=np.full(n_teams, 45.0), shrinkage_prior=prior,
+    ).set_index("team_pk")
+
+    spread = result["playoff_pct"].max() - result["playoff_pct"].min()
+    assert spread > 0.3  # a real, wide spread - not collapsed back to a tight band
+    assert result.loc[11, "playoff_pct"] > result.loc[0, "playoff_pct"]  # highest prior clearly beats the lowest
+
+
 def test_shrinkage_prior_override_lets_a_team_specific_prior_drive_future_weeks():
     # 8 teams, ALL with IDENTICAL real Week-1 performance (same 1-0
     # record, same observed score) - isolates shrinkage_prior's effect

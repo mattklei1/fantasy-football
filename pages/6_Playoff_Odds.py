@@ -2,6 +2,7 @@
 See fantasy_football/metrics/playoff_sim.py for the full methodology."""
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 
 from fantasy_football import config
@@ -41,9 +42,47 @@ if df.empty:
     st.stop()
 
 df = df.reset_index(drop=True)
-df.insert(0, "Rank", df.index + 1)
 
-display = df.copy()
+# Point-in-time selector (user, 2026-09-16: "let people select various
+# points in time (pre draft, week 0, week 1, etc)") - defaults to the
+# live simulation; every other option reads back a real, previously-
+# computed snapshot (or the synthetic Pre-draft fair-share baseline)
+# rather than recomputing anything, so switching is instant.
+team_names_map = dict(zip(df["team_pk"], df["team_name"]))
+manager_names_map = dict(zip(df["team_pk"], df["manager_name"]))
+snapshots = playoff_odds_snapshots.load_snapshots(season)
+
+time_options = ["Pre-draft"]
+if "0" in snapshots:
+    time_options.append("Week 0")
+real_weeks = sorted(int(w) for w in snapshots if w not in ("0",) and w.lstrip("-").isdigit())
+time_options += [f"Post Wk{w}" for w in real_weeks]
+time_options.append("Current")
+
+point_in_time = st.selectbox(
+    "Point in time", time_options, index=len(time_options) - 1, key="playoff_odds_point_in_time",
+)
+
+if point_in_time == "Current":
+    view_rows = df[["team_pk", "championship_pct", "playoff_pct", "bye_pct", "seed1_pct"]].to_dict("records")
+    view_caption = "Live simulation - reflects every real result through today, including the in-progress current week."
+elif point_in_time == "Pre-draft":
+    view_rows = playoff_odds_snapshots.preseason_baseline_rows(team_names_map, playoff_team_count=6)
+    view_caption = "Before the draft - every team equally likely (a pure fair-share constant, not real collected data)."
+elif point_in_time == "Week 0":
+    view_rows = snapshots["0"]
+    view_caption = "Real odds computed from Roster Strength right after the draft, before any games were played."
+else:
+    view_rows = snapshots[point_in_time.replace("Post Wk", "")]
+    view_caption = f"Real odds as computed at the end of {point_in_time.replace('Post ', '')}."
+
+view_df = pd.DataFrame(view_rows)
+view_df["manager_name"] = view_df["team_pk"].map(manager_names_map)
+view_df["team_name"] = view_df["team_pk"].map(team_names_map)  # always the CURRENT real team name, even for old snapshots
+view_df = view_df.sort_values("championship_pct", ascending=False).reset_index(drop=True)
+view_df.insert(0, "Rank", view_df.index + 1)
+
+display = view_df.copy()
 display["Championship %"] = (display["championship_pct"] * 100).round(1)
 display["Playoff %"] = (display["playoff_pct"] * 100).round(1)
 display["Bye %"] = (display["bye_pct"] * 100).round(1)
@@ -53,6 +92,7 @@ table = display[
     ["Rank", "team_name", "manager_name", "Championship %", "Playoff %", "Bye %", "#1 Seed %"]
 ].rename(columns={"team_name": "Team", "manager_name": "Manager"})
 
+st.caption(view_caption)
 st.markdown(table.to_html(escape=False, index=False, classes="ff-table"), unsafe_allow_html=True)
 
 # Playoff-odds-over-time chart: a snapshot of this exact table is
@@ -61,8 +101,8 @@ st.markdown(table.to_html(escape=False, index=False, classes="ff-table"), unsafe
 # non-deploying-branch trick matchup_snapshots.py needs for its
 # 10-minute cadence - see playoff_odds_snapshots.py's module docstring).
 # Degrades to a plain explanatory caption, never a crash, if no token is
-# configured or nothing's been collected yet.
-snapshots = playoff_odds_snapshots.load_snapshots(season)
+# configured or nothing's been collected yet. Reuses `snapshots` loaded
+# above for the point-in-time selector - no second GitHub read.
 with st.container(border=True):
     st.markdown("#### Playoff Odds Over Time")
     if not snapshots:

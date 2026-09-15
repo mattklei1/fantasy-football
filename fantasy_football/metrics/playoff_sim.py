@@ -204,12 +204,13 @@ def simulate_season(
     pos = {pk: i for i, pk in enumerate(team_pks)}
 
     raw_expected = expected_score(team_state["season_ppg"].to_numpy(), team_state["last3_ppg"].to_numpy())
+    real_games_played = (
+        team_state["matchup_wins"] + team_state["matchup_losses"] + team_state["matchup_ties"]
+    ).to_numpy(dtype=float)
     if shrinkage_games_played is not None:
         games_played = np.asarray(shrinkage_games_played, dtype=float)
     else:
-        games_played = (
-            team_state["matchup_wins"] + team_state["matchup_losses"] + team_state["matchup_ties"]
-        ).to_numpy(dtype=float)
+        games_played = real_games_played
     if shrinkage_prior is not None:
         # reshaped to (n_teams, 1) so it broadcasts against the (n_teams,
         # n_sims) arrays the per-week shrinkage below now uses
@@ -248,7 +249,24 @@ def simulate_season(
     # last3_ppg blend is used for the nearest remaining week only (still
     # the most real-recent-form-sensitive one); the running season-to-
     # date average takes over from the second remaining week onward.
+    #
+    # sim_games_played (the shrinkage WEIGHT's games_played) and
+    # sim_avg_games_played (the running-average DENOMINATOR) are tracked
+    # separately and can diverge: shrinkage_games_played lets a caller
+    # override the trust level itself (e.g. playoff_odds_snapshots'
+    # Week-0 snapshot treats a real 0-0-0 record as if it were
+    # WEEK0_TRUST_GAMES=45 games of evidence, to stop early-season
+    # shrinkage discarding real Roster-Strength signal) - but points_for
+    # at that point is genuinely real-games_played=0's worth of real
+    # points (0.0), not 45's worth, so dividing simulated points_for by
+    # the OVERRIDDEN games_played would silently produce a near-zero
+    # "running average" (a real bug, caught immediately after shipping:
+    # a synthetic 45-game trust level applied as a real per-game-count
+    # denominator collapsed Week 0's carefully-computed Roster-Strength
+    # spread right back to ~flat odds). sim_avg_games_played always
+    # starts at the REAL actual game count, regardless of any override.
     sim_games_played = np.tile(games_played[:, None], n_sims).astype(float)
+    sim_avg_games_played = np.tile(real_games_played[:, None], n_sims).astype(float)
     sim_points_for = np.tile(team_state["points_for"].to_numpy(dtype=float)[:, None], n_sims)
     # (n_teams, n_sims) throughout, even before any remaining-week loop
     # iteration runs, so it's always a valid, correctly-shaped "current
@@ -261,7 +279,7 @@ def simulate_season(
 
     for week in sorted(remaining_matchups["week"].unique()):
         if not first_remaining_week:
-            running_season_ppg = sim_points_for / sim_games_played
+            running_season_ppg = sim_points_for / sim_avg_games_played
             week_expected = shrink_expected_score(running_season_ppg, sim_games_played, prior)
         first_remaining_week = False
 
@@ -270,6 +288,7 @@ def simulate_season(
         points_for += week_scores
         sim_points_for += week_scores
         sim_games_played += 1
+        sim_avg_games_played += 1
 
         if median_scoring:
             week_median = np.median(week_scores, axis=0)

@@ -4053,3 +4053,78 @@ masking the effect).
   snapshots/2026.json` again to match (same direct-MCP-write path as
   every prior correction this session).
 - 1 new test in `test_playoff_sim.py`. 389/389 tests passing overall.
+
+**Playoff Odds point-in-time selector; Home page movement baseline
+switched to Week 0; a critical same-day bug caught before it ever
+shipped (2026-09-16, same session).** Three related asks: "playoff odds
+tab - let people select various points in time (pre draft, week 0, week
+1, etc)"; "on home tab, show movement since week 0, not week 1"; and
+(after seeing the recap) "for future recaps, highlight the biggest
+risers and fallers from the past week and season long" for POWER
+RANKING MOVERS specifically.
+
+- `pages/6_Playoff_Odds.py`: new "Point in time" selectbox above the
+  standings table - Pre-draft / Week 0 / Post Wk1 / .../ Current, built
+  from whatever `playoff_odds_snapshots.load_snapshots()` actually has
+  plus the always-available synthetic Pre-draft baseline and the live
+  "Current" simulation. Selecting an older point just re-renders
+  already-computed data (no recomputation) - instant. The chart below
+  is unaffected (it already shows every point at once).
+- New `roster_strength` field added to `compute_week0_snapshot_rows()`'s
+  stored rows (the raw 0-100 score, not the point-remapped season_ppg
+  the simulation itself used) - `compute_week0_team_state()` now
+  returns it as an extra team_state column too. Needed because the
+  FantasyPros ADP ingest that computes real Week-0 Roster Strength only
+  ever runs inside a throwaway temp DB (the scheduled snapshot script) -
+  the deployed app's own persistent DB never has it, so anything on the
+  live app that wants real Week-0 Roster Strength (like the Home page
+  baseline below) has no source for it except reading it back out of
+  the already-durable, GitHub-committed snapshot JSON.
+- `dashboard_data.get_standings()`'s `rank_change` (Home page's "Since
+  Wk..." column) now ranks by that real Week-0 Roster Strength snapshot
+  instead of Week-1's Power Rank when one exists - "are you over/under-
+  performing your PRESEASON draft grade," a real signal from the very
+  first week onward, not "have you moved since an arbitrary in-season
+  week" (which used to skip week 1 entirely since comparing it to
+  itself is meaningless). Falls back to the old week-1-Power-Rank
+  baseline - only shown once week 2+ exists - when no real Week-0
+  snapshot is available yet, or an older-format one (pre-2026-09-16,
+  missing the new field) is all that's stored. Home.py's column
+  relabeled "Since Wk0" with an updated tooltip.
+- **Caught and fixed a real bug the SAME DAY, before it was ever
+  pushed live**: while live-verifying the Home page change, Week-0
+  playoff odds came back nearly flat again (a ~32%-68% band, eerily
+  like the original 2026-09-15 bug). Root cause: the earlier "evolving
+  shrinkage" fix (same day, see above) divides simulated points_for by
+  an evolving games-played denominator to compute each week's running
+  average - correct for the normal in-season case, where real
+  games_played and real points_for both start from the SAME real game
+  count. But Week 0's `shrinkage_games_played` override deliberately
+  sets games_played to a SYNTHETIC 45 (WEEK0_TRUST_GAMES) while real
+  points_for genuinely starts at 0.0 (no games played) - dividing one
+  simulated week's score by ~46 collapsed the running average to near
+  zero for every team from the second remaining week onward, silently
+  re-erasing the whole Roster-Strength rebuild's differentiation.
+  Fixed by tracking `sim_avg_games_played` (the running-average
+  denominator, always starts at the REAL actual game count) separately
+  from `sim_games_played` (the shrinkage weight's games_played, which
+  CAN be overridden) - they're numerically identical for every normal
+  in-season call (no override given), so this only changes behavior for
+  calls that pass an override, i.e. only the Week-0 snapshot path.
+- 1 new regression test reproducing the exact real-world shape of the
+  bug (12 teams, real 0-0-0 record, real points_for=0.0, a 45-games
+  trust override, 13 remaining weeks, a wide real prior spread) -
+  asserts the spread stays real (>0.3) instead of collapsing back to a
+  tight band. 390/390 tests passing.
+- Live-verified end to end: the currently-live GitHub snapshot data was
+  NEVER corrupted by this bug (the ongoing/non-Week-0 path never uses
+  an override, so it was unaffected the whole time; the buggy Week-0
+  computation was only ever run locally, never pushed) - pushed a
+  freshly recomputed, now-correct Week-0 snapshot including the new
+  `roster_strength` field once the fix landed.
+- POWER RANKING MOVERS request scoped for a follow-up, not built this
+  turn: user wants it restructured to match PLAYOFF ODDS' own pattern -
+  a weekly riser/faller (vs. last week) AND a season-long riser/faller
+  (vs. Week 0), instead of today's single "since week 1" comparison -
+  explicitly said this week's recap (Week 1, no real "last week" to
+  diff against yet) doesn't need it fixed, only "future recaps."

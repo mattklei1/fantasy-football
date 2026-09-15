@@ -112,14 +112,33 @@ def get_standings(season: int, through_week: int | None = None) -> pd.DataFrame:
 
     df["power_rank"] = df["power_score"].rank(ascending=False, method="min").astype(int)
 
-    # rank_change is movement SINCE WEEK 1 (season-long trajectory: "rose
-    # from 8th to 2nd"), not week-over-week - a deliberate choice (2026-09-
-    # 13) so the Home page's Δ tells a season-arc story rather than just
-    # noisy single-week wobble. Week-over-week movement still exists
-    # separately for the Weekly Recap narrative (see commentary.py, which
-    # intentionally keeps its own week-over-week comparison - that's about
-    # "what happened this week," a different question from this one).
-    if through_week > 1:
+    # rank_change is movement SINCE WEEK 0 (season-long trajectory vs.
+    # PRESEASON expectation: "drafted 8th-best on paper, now sitting
+    # 2nd" - are you over/under-performing your draft, not just "have
+    # you moved since some in-season week"), not week-over-week - a
+    # deliberate choice (2026-09-13, updated 2026-09-16 per user: "on
+    # home tab, show movement since week 0, not week 1") so the Home
+    # page's Δ tells a real story from the very first week onward.
+    # Week-over-week movement still exists separately for the Weekly
+    # Recap narrative (see commentary.py, which intentionally keeps its
+    # own week-over-week comparison - "what happened this week," a
+    # different question from this one). Ranks by the real Week-0
+    # Roster Strength snapshot (playoff_odds_snapshots - draft-time
+    # ADP + ESPN weekly projection, the same signal Playoff Odds' Week-0
+    # point uses) when one exists; falls back to the OLD week-1-power-
+    # rank baseline (only shown once week 2+ exists, since comparing
+    # week 1 to itself is meaningless) when no Week-0 snapshot is
+    # available yet - e.g. no GITHUB_TOKEN configured on this
+    # deployment, or an older season with no FantasyPros ADP data.
+    from . import playoff_odds_snapshots
+
+    week0_rows = playoff_odds_snapshots.load_snapshots(season).get("0")
+    if week0_rows and "roster_strength" in week0_rows[0]:  # older-format snapshots (pre-2026-09-16) lack this field
+        week0 = pd.DataFrame(week0_rows)[["team_pk", "roster_strength"]]
+        week0["week0_rank"] = week0["roster_strength"].rank(ascending=False, method="min").astype(int)
+        df = df.merge(week0[["team_pk", "week0_rank"]], on="team_pk", how="left")
+        df["rank_change"] = df["week0_rank"] - df["power_rank"]
+    elif through_week > 1:
         week1 = pd.read_sql_query(
             "SELECT team_pk, power_score FROM metrics_weekly WHERE season_id = ? AND week = 1",
             conn, params=(season,),
