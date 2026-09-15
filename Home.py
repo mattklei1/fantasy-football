@@ -57,10 +57,25 @@ with c3:
         accent="#4f46e5",
     )
 with c4:
-    ui.stat_card(
-        "Projected Champion", "Coming soon", "Playoff simulation not built yet (Phase 7)",
-        icon="🔮", accent="#9aa2b1",
-    )
+    playoff_sim = dd.get_playoff_simulation(season)
+    if len(playoff_sim) >= 3:
+        top3 = playoff_sim.head(3)
+        podium_lines = "<br>".join(
+            f'{medal} {row.team_name} '
+            f'<span style="color:var(--text-muted); font-weight:400;">{row.championship_pct * 100:.0f}%</span>'
+            for medal, row in zip(["🥇", "🥈", "🥉"], top3.itertuples())
+        )
+        podium_html = f'<div style="font-size:1.05rem; line-height:1.7;">{podium_lines}</div>'
+        ui.stat_card(
+            "Championship Odds", podium_html, "Monte Carlo playoff simulation - see Playoff Odds tab",
+            icon="🏆", accent="#c9a227",
+        )
+    else:
+        ui.stat_card(
+            "Championship Odds", "Not enough data yet",
+            "Needs at least 1 completed regular-season week",
+            icon="🏆", accent="#9aa2b1",
+        )
 
 st.markdown("### Standings & Power Rankings")
 
@@ -120,6 +135,5 @@ st.dataframe(
 
 st.caption(
     "Record = matchup result + median (top-half) bonus combined, matching ESPN's official "
-    "standings for seasons using that format. Hover the ⓘ on a column header for what it "
-    "means. Playoff Probability and per-team commentary are not built yet (Phases 7-8)."
+    "standings for seasons using that format. Hover the ⓘ on a column header for what it means."
 )
