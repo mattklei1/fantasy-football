@@ -21,7 +21,7 @@ from espn_api.football.team import Team as ESPNTeam
 
 from . import config, db
 from .espn_client import ESPNClient
-from .schedule_guard import should_refresh_daily
+from .schedule_guard import is_within_live_window, should_refresh_daily
 
 BENCH_SLOTS = {"BE", "IR"}
 
@@ -507,6 +507,7 @@ def ingest_fantasypros_rankings(conn, season: int, week: int, api_key: str, log=
             )
         matched_total += len(id_map)
     log(f"[info] season {season} week {week}: matched {matched_total} FantasyPros ROS rankings to rostered players")
+    db.record_fantasypros_refresh(conn, season)
 
 
 def ingest_season(conn, client: ESPNClient, season: int, log=print) -> None:
@@ -574,7 +575,17 @@ def refresh_daily_data_if_due(conn, league, season: int, log=print) -> bool:
     restart-triggered rebuild, or a manual "Refresh ESPN Data" click),
     so a roster strength view between those could be running on a stale
     projection days old even though the rank-based signals refreshed
-    daily (user feedback: "That should always be updating")."""
+    daily (user feedback: "That should always be updating"). That step
+    is itself skipped while is_within_live_window() is true (same real
+    NFL broadcast windows the matchup-snapshot collector uses) - ESPN's
+    box_scores() projection for a player who's already kicked off
+    reflects LIVE, in-progress production, not the pregame number Roster
+    Strength is meant to show (user feedback, same day: "we shouldn't be
+    using live projections, just pregame projections"). Skipping it for
+    the day is an accepted tradeoff over a same-day retry: live windows
+    are a small slice of the week, and the projection simply stays at
+    whatever it was until the next daily boundary rather than briefly
+    showing a live-contaminated number."""
     last_rs_refresh = db.get_roster_strength_last_refreshed(conn, season)
     if not should_refresh_daily(last_rs_refresh):
         log(f"[skip] season {season} daily data (roster strength + team info): already refreshed today")
@@ -592,11 +603,13 @@ def refresh_daily_data_if_due(conn, league, season: int, log=print) -> bool:
     except Exception as exc:  # noqa: BLE001
         log(f"[warn] season {season} player rankings: {exc}")
 
-    if team_pk_by_espn_id:
+    if team_pk_by_espn_id and not is_within_live_window():
         try:
             ingest_week_boxscores(conn, league, season, last_week, team_pk_by_espn_id, completed=False)
         except Exception as exc:  # noqa: BLE001
             log(f"[warn] season {season} week {last_week} projections: {exc}")
+    elif team_pk_by_espn_id:
+        log(f"[skip] season {season} week {last_week} projections: within a live game window, pregame only")
 
     fp_api_key = config.fantasypros_api_key()
     if fp_api_key:

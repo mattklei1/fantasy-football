@@ -17,11 +17,19 @@ season, _ = ui.render_sidebar()
 meta = dd.get_season_meta(season)
 
 st.title("Roster Strength")
+
+fp_last_refreshed = dd.get_fantasypros_last_refreshed(season)
+if fp_last_refreshed:
+    st.caption(f"**As of {fp_last_refreshed} UTC** (last FantasyPros rest-of-season rankings pull)")
+else:
+    st.caption("**As of:** FantasyPros rest-of-season rankings haven't been pulled yet this season.")
+
 st.caption(
     "Forward-looking roster quality (NOT past performance - see Power Score on Home for that). "
     "Blends this week's ESPN projection, ESPN's season-long positional rank, and a third-party "
-    "rest-of-season expert consensus rank. Updates once a week (Tuesday evening) rather than on "
-    "every refresh, so it stays a stable snapshot for the week instead of shifting daily."
+    "rest-of-season expert consensus rank. Refreshes automatically once a day - the projection "
+    "component is always a PREGAME number, never mid-game: that refresh is skipped entirely "
+    "during live NFL broadcast windows, so it can't pick up a player's live, in-progress score."
 )
 
 df = dd.get_roster_strength(season)

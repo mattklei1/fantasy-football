@@ -302,6 +302,17 @@ def get_roster_strength(season: int) -> pd.DataFrame:
     return pd.read_sql_query(query, conn, params=(season,))
 
 
+@st.cache_data(ttl=60)
+def get_fantasypros_last_refreshed(season: int) -> str | None:
+    """UTC timestamp string (SQLite datetime('now') format) of the last
+    SUCCESSFUL FantasyPros ROS ingestion for this season - see
+    db.record_fantasypros_refresh(). Deliberately separate from the
+    broader roster-strength refresh timestamp: the Roster Strength page's
+    "As of" date is anchored specifically to this, its single largest
+    (40/75 weight) and only genuinely forward-looking signal."""
+    return db.get_fantasypros_last_refreshed(get_connection(), season)
+
+
 @st.cache_data(ttl=300)
 def get_playoff_simulation(season: int) -> pd.DataFrame:
     """Monte Carlo playoff odds (see metrics/playoff_sim.py) - one row

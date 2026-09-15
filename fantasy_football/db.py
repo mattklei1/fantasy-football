@@ -104,13 +104,30 @@ CREATE TABLE IF NOT EXISTS matchup_projection_snapshots (
 );
 
 -- One row, updated in place, tracking the last time Roster Strength's
--- inputs (ESPN player rankings + FantasyPros ROS rankings) were actually
--- refreshed - see schedule_guard.should_refresh_weekly(). Deliberately
--- separate from refresh_log: refresh_log tracks the general ESPN data
--- refresh, which can and should happen anytime (scores, standings);
--- Roster Strength is gated to once a week (Tuesday evening, after
--- FantasyPros' own weekly snapshot) so it doesn't drift mid-week.
+-- inputs (ESPN weekly projection + ESPN player rankings + FantasyPros ROS
+-- rankings) were actually refreshed - see schedule_guard.
+-- should_refresh_daily(). Deliberately separate from refresh_log:
+-- refresh_log tracks the general ESPN data refresh, which can and should
+-- happen anytime (scores, standings); Roster Strength is gated to once a
+-- day (see should_refresh_daily's own docstring for why this used to be
+-- weekly and no longer is) so it doesn't redo the FantasyPros/ESPN rank
+-- pull on every page load.
 CREATE TABLE IF NOT EXISTS roster_strength_refresh_log (
+    season_id INTEGER PRIMARY KEY REFERENCES seasons(season_id),
+    refreshed_at TEXT
+);
+
+-- Separate from roster_strength_refresh_log above: THIS tracks only the
+-- FantasyPros ROS ingestion step specifically, updated only on a
+-- genuinely successful fetch+match (not on a skipped/failed attempt),
+-- since the Roster Strength page's "As of" date is deliberately anchored
+-- to the FantasyPros signal alone (user feedback 2026-09-15: "I want the
+-- as of date to really be when the fantasypros rest of season rankings
+-- are updated last") - not the shared roster_strength_refresh_log above,
+-- which covers the whole daily batch (team info + ESPN rank + ESPN
+-- projection too) and could tick forward even if the FantasyPros step
+-- itself failed (e.g. no API key configured, or their API erroring).
+CREATE TABLE IF NOT EXISTS fantasypros_refresh_log (
     season_id INTEGER PRIMARY KEY REFERENCES seasons(season_id),
     refreshed_at TEXT
 );
@@ -558,6 +575,22 @@ def get_roster_strength_last_refreshed(conn: sqlite3.Connection, season_id: int)
 def record_roster_strength_refresh(conn: sqlite3.Connection, season_id: int) -> None:
     conn.execute(
         "INSERT INTO roster_strength_refresh_log (season_id, refreshed_at) VALUES (?, datetime('now')) "
+        "ON CONFLICT(season_id) DO UPDATE SET refreshed_at = excluded.refreshed_at",
+        (season_id,),
+    )
+    conn.commit()
+
+
+def get_fantasypros_last_refreshed(conn: sqlite3.Connection, season_id: int) -> Optional[str]:
+    row = conn.execute(
+        "SELECT refreshed_at FROM fantasypros_refresh_log WHERE season_id = ?", (season_id,)
+    ).fetchone()
+    return row[0] if row else None
+
+
+def record_fantasypros_refresh(conn: sqlite3.Connection, season_id: int) -> None:
+    conn.execute(
+        "INSERT INTO fantasypros_refresh_log (season_id, refreshed_at) VALUES (?, datetime('now')) "
         "ON CONFLICT(season_id) DO UPDATE SET refreshed_at = excluded.refreshed_at",
         (season_id,),
     )

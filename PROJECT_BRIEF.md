@@ -3221,3 +3221,55 @@ week 2's matchup rows were created cleanly with `completed=0` as
 expected for not-yet-played games. Scratch DB deleted after verification;
 real local `data/` was never touched. 329/329 tests passing (no
 regressions - existing tests don't exercise this function directly).
+
+**Roster Strength: "As of" date + never-live-projections guard
+(2026-09-15, same session):** two related follow-ups to the above.
+User: "I want you to indicate at the top an as of date... I want the as
+of date to really be when the fantasypros rest of season rankings are
+updated last", plus a correctness concern about the projection refresh
+just added: "It's not being updated mid-games (we shouldn't be using
+live projections, just pregame projections)."
+
+1. **New `fantasypros_refresh_log` table** (`db.py`), deliberately
+   separate from the existing shared `roster_strength_refresh_log`
+   (which covers the whole daily batch - team info + ESPN rank + ESPN
+   projection too, and could tick forward even if the FantasyPros step
+   itself failed). `ingest_fantasypros_rankings()` now calls
+   `db.record_fantasypros_refresh()` right after a successful
+   fetch+match (not on a skip/failure). New `dashboard_data.
+   get_fantasypros_last_refreshed(season)` wraps it for pages.
+   `pages/3_Roster_Strength.py` shows `**As of {timestamp} UTC**` at the
+   top (same raw-UTC-string convention the sidebar's "Last refresh"
+   caption already uses - no new formatting logic), with a distinct
+   message when FantasyPros hasn't been pulled yet this season. Also
+   fixed the page's stale "Updates once a week (Tuesday evening)"
+   caption - the cadence moved to daily two sessions ago and that text
+   was never updated.
+2. **Live-window guard on the projection refresh**: last session's new
+   `ingest_week_boxscores()` call inside `refresh_daily_data_if_due()`
+   is now skipped entirely while `schedule_guard.is_within_live_window()`
+   is true (the same real Thu/Sun/Mon NFL broadcast windows the
+   matchup-snapshot collector already gates on) - ESPN's box_scores()
+   projection for a player who's already kicked off reflects LIVE,
+   in-progress production, not the pregame number Roster Strength is
+   supposed to show. Skipped, not retried same-day: an accepted
+   tradeoff, since live windows are a small slice of the week and the
+   alternative (briefly showing a live-contaminated number) is worse.
+   The FantasyPros step is NOT gated by this - confirmed live (see
+   below) it keeps refreshing independently even during a simulated
+   live window.
+
+Verified live against the real production league (scratch DB copy, same
+pattern as the projection-refresh work above): ran a normal refresh
+first (so `weekly_rosters` for the current week was populated exactly
+like real production always has it by the time a live window could ever
+hit - week rollover is Tuesday, first possible live window is Thursday
+evening, so this ordering is never actually a problem in practice), then
+a second refresh with `is_within_live_window` patched True - confirmed
+`projected_points` stayed byte-for-byte unchanged (box-score step
+correctly skipped) while the FantasyPros timestamp still advanced
+normally. AppTest confirmed the page's "As of" caption renders correctly
+both with a real timestamp and in the "never refreshed yet" state, no
+exceptions. 329/329 tests passing (no new unit tests - `db.py` has no
+test file in this project by established convention, same as the
+functions this mirrors).
