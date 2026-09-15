@@ -4547,3 +4547,47 @@ already clearly captioned).
   literally contains every `REAL_PLAYOFF_MATCHUP_TYPES` value and never
   `LOSERS_CONSOLATION_LADDER` - locks the two definitions together so
   they can't silently diverge again. 400/400 tests passing.
+
+**Reverted the same day: "Playoff Record" narrowed back to
+championship-bracket games only, everywhere.** User, immediately after
+the above: "Playoff record across all should only be including games
+that mattered, not consolation games." This flips the direction of the
+fix two entries above - `REAL_PLAYOFF_MATCHUP_TYPES` originally
+included `WINNERS_CONSOLATION_LADDER` on the reasoning that a team
+which qualified but lost early is "still a real playoff participant";
+the user's call is that only the true championship path ("games that
+mattered") should count toward Playoff Record/playoff_appearances/
+playoff Lineup Efficiency anywhere in the app - a real product
+decision, not a bug fix.
+- `metrics/history.REAL_PLAYOFF_MATCHUP_TYPES` changed from
+  `("WINNERS_BRACKET", "WINNERS_CONSOLATION_LADDER")` to just
+  `("WINNERS_BRACKET",)`. Every playoff qualifier still appears at
+  least once under WINNERS_BRACKET alone (round 1 for a non-bye seed,
+  round 2/semifinal for a bye seed), so `playoff_appearances` still
+  correctly counts every playoff-qualifying season - only the GAME
+  count (and any manager whose only playoff games were deep-bracket
+  consolation/placement ones) actually changes.
+- Because `metrics/loaders._scope_matchup_type_filter()` was JUST
+  refactored (the entry above) to import this constant rather than
+  hardcode its own copy, Lineup Efficiency's Playoffs/All scope
+  followed this reversion for free - no second code change needed
+  there, only doc/caption text.
+- Updated every place that had just been reworded to describe the
+  wider definition back to the narrower one: `pages/5_History.py`'s
+  Hall of Fame caption and Playoff Record column help text,
+  `pages/4_Lineup_Efficiency.py`'s module docstring context, both scope
+  captions, and its Methodology bullet; `metrics/loaders.py`'s
+  `_scope_matchup_type_filter` docstring; `db.py`'s `playoff_byes`
+  table comment (byes only ever occur in the real championship bracket
+  in practice, so this was cosmetic, not a behavior change).
+  `fantasy_football/ama.py`'s schema-description comment already told
+  the LLM to treat `WINNERS_CONSOLATION_LADDER` as non-championship for
+  "who won" questions - already correct, no change needed.
+- `test_lineup_efficiency_playoffs_scope_matches_history_playoff_
+  definition` (added the same day, same entry above) already asserted
+  against the live `REAL_PLAYOFF_MATCHUP_TYPES` value rather than a
+  hardcoded list, so it kept passing unmodified except for two added
+  assertions explicitly confirming `WINNERS_CONSOLATION_LADDER` is now
+  excluded too (previously only `LOSERS_CONSOLATION_LADDER` was
+  checked, since at the time `WINNERS_CONSOLATION_LADDER` was expected
+  to be present). 400/400 tests passing.

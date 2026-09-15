@@ -10,24 +10,24 @@ import pandas as pd
 def _scope_matchup_type_filter(scope: str) -> str:
     """'regular' = matchup_type NONE only (the metrics/ package default
     everywhere else). 'playoffs' = REAL_PLAYOFF_MATCHUP_TYPES
-    (WINNERS_BRACKET + WINNERS_CONSOLATION_LADDER - every team that
-    actually qualified for the playoffs, championship path AND the
-    placement bracket for a qualified team that lost early) - the SAME
-    definition history.py's Playoff Record already uses, so a manager's
-    playoff appearance/game count here matches the History page instead
-    of silently disagreeing with it (user, 2026-09-16: "the seasons and
-    records aren't aligning with the historical playoff records for
-    these teams. Different number of games and seasons in the
-    playoffs" - this page used to count WINNERS_BRACKET only, a
-    narrower "championship path only" definition nothing else in this
-    project uses). Still excludes LOSERS_CONSOLATION_LADDER (the
-    separate bracket for teams that MISSED the playoffs entirely) and
-    any bye week (no matchup row exists for one - a team with no
-    matchup row that week is simply absent from the join, not
-    zero-filled). 'all' = regular season + those same real playoff
-    weeks - a team with fewer playoff appearances naturally contributes
-    fewer weeks to its own numerator/denominator under 'all', which is
-    correct, not a bug to normalize away."""
+    (WINNERS_BRACKET only - games that actually mattered, a real shot
+    at the championship) - the SAME definition history.py's Playoff
+    Record uses, so a manager's playoff appearance/game count here
+    matches the History page instead of silently disagreeing with it.
+    Briefly widened to also include WINNERS_CONSOLATION_LADDER
+    (2026-09-16), then reverted the same day (user: "Playoff record
+    across all should only be including games that mattered, not
+    consolation games") - importing the shared constant rather than
+    hardcoding it here means this scope followed that reversion for
+    free. Excludes both LOSERS_CONSOLATION_LADDER (teams that MISSED
+    the playoffs entirely) and WINNERS_CONSOLATION_LADDER (teams that
+    qualified but lost early - no title on the line either) and any bye
+    week (no matchup row exists for one - a team with no matchup row
+    that week is simply absent from the join, not zero-filled). 'all' =
+    regular season + those same real playoff weeks - a team with fewer
+    playoff appearances naturally contributes fewer weeks to its own
+    numerator/denominator under 'all', which is correct, not a bug to
+    normalize away."""
     from .history import REAL_PLAYOFF_MATCHUP_TYPES
 
     if scope == "regular":

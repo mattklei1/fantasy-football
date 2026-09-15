@@ -73,8 +73,8 @@ CREATE TABLE IF NOT EXISTS matchups (
     UNIQUE(season_id, week, home_team_pk, away_team_pk)
 );
 
--- A real playoff-bracket bye (WINNERS_BRACKET/WINNERS_CONSOLATION_LADDER
--- week with only one side scheduled - ESPN's box_scores() returns the
+-- A real playoff-bracket bye (a REAL_PLAYOFF_MATCHUP_TYPES week - see
+-- metrics/history.py - with only one side scheduled) - ESPN's box_scores() returns the
 -- other side as None rather than a real matchup, so byes are otherwise
 -- invisible: ingest_week_boxscores used to just `continue` past them,
 -- meaning nothing in the DB ever recorded who got one. Added 2026-09-16

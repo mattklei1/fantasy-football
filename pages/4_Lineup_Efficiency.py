@@ -27,17 +27,17 @@ scope = scope_label_to_value[scope_label]
 
 if scope == "playoffs":
     st.caption(
-        "Every real playoff-bracket week (championship path AND the placement games among "
-        "teams that qualified) - same definition as History's Playoff Record. Excludes the "
-        "separate consolation ladder for teams that MISSED the playoffs, and playoff bye weeks "
-        "(no matchup row exists for one)."
+        "Championship-bracket weeks only - same definition as History's Playoff Record. "
+        "Excludes both of ESPN's placement/consolation ladders (one for teams that missed the "
+        "playoffs, one for teams that qualified but lost early - neither had a title on the "
+        "line) and playoff bye weeks (no matchup row exists for one)."
     )
 elif scope == "all":
     st.caption(
-        "Regular season + every real playoff-bracket week combined (see Playoffs scope above "
-        "for exactly what counts). Teams with fewer playoff appearances naturally contribute "
-        "fewer weeks to their own numerator/denominator here - that's correct, not a bug: "
-        "fewer shots at it."
+        "Regular season + championship-bracket weeks combined (see Playoffs scope above for "
+        "exactly what counts). Teams with fewer playoff appearances naturally contribute fewer "
+        "weeks to their own numerator/denominator here - that's correct, not a bug: fewer shots "
+        "at it."
     )
 
 df = hd.get_all_time_lineup_efficiency(scope) if all_time else dd.get_lineup_efficiency_by_scope(season, scope)
@@ -111,11 +111,12 @@ an exact maximum-weight assignment of rostered players to starting slots, respec
 player's real slot eligibility and the league's real roster settings pulled from ESPN
 (`league.settings.position_slot_counts` - never hardcoded).
 
-- **Scope**: Regular Season (weeks with `matchup_type = NONE`), Playoffs (every real
-  playoff-bracket week - `WINNERS_BRACKET` + `WINNERS_CONSOLATION_LADDER`, same definition as
-  the History page's Playoff Record), or All (both combined). The separate consolation ladder
-  for teams that MISSED the playoffs, and playoff bye weeks, are excluded from every scope - a
-  bye week has no matchup row to draw a lineup eligibility snapshot from in the first place.
+- **Scope**: Regular Season (weeks with `matchup_type = NONE`), Playoffs (`WINNERS_BRACKET`
+  only - the real championship bracket, same definition as the History page's Playoff Record),
+  or All (both combined). Both of ESPN's placement/consolation ladders (one for teams that
+  missed the playoffs, one for teams that qualified but lost early) and playoff bye weeks are
+  excluded from every scope - a bye week has no matchup row to draw a lineup eligibility
+  snapshot from in the first place, and neither consolation ladder had a title on the line.
 - **Lineup Efficiency** = Actual Starter Points ÷ Optimal Starter Points, summed over the
   selected scope's weeks
 - **Decision Accuracy** = a points-BLIND companion metric: compares the SET of players you

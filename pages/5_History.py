@@ -24,9 +24,10 @@ tab_hof, tab_records, tab_h2h = st.tabs(["Hall of Fame", "League Records", "Head
 with tab_hof:
     st.caption(
         "Championships/finals/playoff appearances and both records are exact facts. Playoff "
-        "appearances/record count only the real playoff bracket (including placement games "
-        "among teams that qualified) - NOT the separate consolation bracket ESPN runs for "
-        "teams that missed the playoffs, even though ESPN tags both as \"playoff\" weeks. "
+        "appearances/record count only games that actually mattered - the real championship "
+        "bracket - NOT either of ESPN's two placement/consolation ladders (one for teams that "
+        "missed the playoffs, one for teams that qualified but lost early), even though ESPN "
+        "tags all of them as \"playoff\" weeks. "
         "Best/Worst Season and Normalized Points use season-relative percentile, NOT raw "
         "points - this league's scoring rules have changed over time (PPR value, roster/flex "
         "slots), so raw point totals from different eras aren't a fair comparison; percentile "
@@ -89,9 +90,9 @@ with tab_hof:
             column_config={
                 "🏆": st.column_config.TextColumn(help="Championship count, with the winning year(s) in parentheses."),
                 "Playoff Record": st.column_config.TextColumn(
-                    help="Real playoff bracket games only (including placement games among "
-                    "teams that qualified) - excludes the consolation bracket. A bye (top seed "
-                    "advancing without playing) is noted in parentheses but NOT counted as a win.",
+                    help="Real championship-bracket games only - excludes both of ESPN's "
+                    "placement/consolation ladders. A bye (top seed advancing without playing) "
+                    "is noted in parentheses but NOT counted as a win.",
                 ),
                 "Career Points For": st.column_config.NumberColumn(format="localized"),
                 "Career Points Against": st.column_config.NumberColumn(format="localized"),

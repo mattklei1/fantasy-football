@@ -15,16 +15,23 @@ from __future__ import annotations
 
 import pandas as pd
 
-#: The ONLY matchup_type values that represent a real playoff berth. ESPN
-#: flags every post-regular-season game as is_playoff=1, including
-#: LOSERS_CONSOLATION_LADDER - the placement bracket for teams that did NOT
-#: make the playoffs (the "toilet bowl"). WINNERS_BRACKET is the real
-#: championship bracket; WINNERS_CONSOLATION_LADDER is the placement
-#: bracket for teams that DID qualify but lost early - still real playoff
-#: participants. Verified against every season's real playoff_team_count
-#: (2026-09-13): the distinct-team count under these two values matches
-#: playoff_team_count exactly for every completed season in this league.
-REAL_PLAYOFF_MATCHUP_TYPES = ("WINNERS_BRACKET", "WINNERS_CONSOLATION_LADDER")
+#: The ONLY matchup_type value that represents a game that actually
+#: mattered - a real shot at the championship. ESPN flags every
+#: post-regular-season game as is_playoff=1, including two separate
+#: placement brackets neither of which has a title on the line:
+#: LOSERS_CONSOLATION_LADDER (teams that did NOT make the playoffs at
+#: all - the "toilet bowl") and WINNERS_CONSOLATION_LADDER (teams that
+#: DID qualify but lost early, playing out 3rd/4th/5th/6th-place games).
+#: Originally included WINNERS_CONSOLATION_LADDER too ("still real
+#: playoff participants") - reverted (user, 2026-09-16: "Playoff record
+#: across all should only be including games that mattered, not
+#: consolation games") to championship-bracket-only. Every playoff
+#: qualifier still appears at least once under WINNERS_BRACKET alone
+#: (round 1 for a non-bye seed, round 2/semifinal for a bye seed), so
+#: the distinct-team count under this ONE value still matches each
+#: season's real playoff_team_count exactly (re-verified 2026-09-16
+#: against every completed season in this league).
+REAL_PLAYOFF_MATCHUP_TYPES = ("WINNERS_BRACKET",)
 
 
 def compute_streaks(results: pd.Series) -> dict:

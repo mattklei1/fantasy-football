@@ -597,15 +597,17 @@ def test_compute_season_metrics_empty_input_returns_empty():
 
 
 def test_lineup_efficiency_playoffs_scope_matches_history_playoff_definition():
-    """Lineup Efficiency's "Playoffs"/"All" scope used to count
-    WINNERS_BRACKET only - a narrower "championship path" definition
-    that disagreed with the History page's own Playoff Record
-    (REAL_PLAYOFF_MATCHUP_TYPES = WINNERS_BRACKET + WINNERS_CONSOLATION_
-    LADDER), causing a real per-manager games/seasons mismatch between
-    the two pages (user, 2026-09-16). Both scopes must include
-    WINNERS_CONSOLATION_LADDER now, and neither may include
-    LOSERS_CONSOLATION_LADDER (the separate bracket for teams that
-    MISSED the playoffs)."""
+    """Lineup Efficiency's "Playoffs"/"All" scope shares metrics/history.
+    REAL_PLAYOFF_MATCHUP_TYPES with the History page's own Playoff
+    Record (a real per-manager games/seasons mismatch between the two
+    pages otherwise - fixed 2026-09-16), so this test just needs to
+    confirm the shared constant is what actually drives the SQL filter,
+    whatever its current value - and that NEITHER of ESPN's two
+    placement/consolation ladders (LOSERS_CONSOLATION_LADDER for teams
+    that missed the playoffs, WINNERS_CONSOLATION_LADDER for teams that
+    qualified but lost early - reverted back OUT the same day, user:
+    "should only be including games that mattered, not consolation
+    games") ever counts as a real playoff game."""
     from fantasy_football.metrics.history import REAL_PLAYOFF_MATCHUP_TYPES
     from fantasy_football.metrics.loaders import _scope_matchup_type_filter
 
@@ -613,9 +615,11 @@ def test_lineup_efficiency_playoffs_scope_matches_history_playoff_definition():
     for matchup_type in REAL_PLAYOFF_MATCHUP_TYPES:
         assert f"'{matchup_type}'" in playoffs_filter
     assert "LOSERS_CONSOLATION_LADDER" not in playoffs_filter
+    assert "WINNERS_CONSOLATION_LADDER" not in playoffs_filter
 
     all_filter = _scope_matchup_type_filter("all")
     assert "'NONE'" in all_filter
     for matchup_type in REAL_PLAYOFF_MATCHUP_TYPES:
         assert f"'{matchup_type}'" in all_filter
     assert "LOSERS_CONSOLATION_LADDER" not in all_filter
+    assert "WINNERS_CONSOLATION_LADDER" not in all_filter
