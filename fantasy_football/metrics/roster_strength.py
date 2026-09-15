@@ -133,3 +133,30 @@ def compute_team_roster_strength(roster_df: pd.DataFrame, week: int, reg_season_
             }
         )
     return pd.DataFrame(rows, columns=["team_pk", "starter_value", "bench_value", "starter_weight", "bench_weight", "roster_strength"])
+
+
+def roster_strength_to_points(roster_strength: pd.Series, scale_reference: pd.Series) -> pd.Series:
+    """Remaps a 0-100 Roster Strength score onto real point units via a
+    z-score transplant onto `scale_reference`'s own distribution (mean/
+    stdev) - typically that week's real optimal-lineup ESPN point
+    projections. Roster Strength drives the ranking and spread
+    ENTIRELY; the reference distribution only lends its real point
+    scale, with zero influence on team ordering. Used anywhere Roster
+    Strength needs to feed a points-based model (playoff_sim.py's
+    Monte Carlo simulation, both the Week-0 snapshot and the ongoing
+    in-season shrinkage prior - see playoff_odds_snapshots.
+    compute_week0_team_state() and dashboard_data.get_playoff_
+    simulation() respectively) - there's no historical Roster Strength
+    data to RMSE-calibrate a direct conversion formula against
+    (FantasyPros/roster_strength_weekly only exist for the current
+    season), so this borrows a real distribution's shape rather than
+    inventing an arbitrary constant. Both Series must share the same
+    index (team_pk); a Roster Strength with zero spread (every team
+    graded identically - no real basis to differentiate) returns the
+    reference distribution's flat mean for every team."""
+    strength_mean, strength_std = roster_strength.mean(), roster_strength.std(ddof=0)
+    scale_mean, scale_std = scale_reference.mean(), scale_reference.std(ddof=0)
+    if strength_std > 0:
+        z = (roster_strength - strength_mean) / strength_std
+        return scale_mean + z * scale_std
+    return pd.Series(scale_mean, index=roster_strength.index)

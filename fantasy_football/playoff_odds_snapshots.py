@@ -147,36 +147,12 @@ def compute_week0_team_state(conn: sqlite3.Connection, season: int, position_slo
     compute one from). Empty DataFrame if Week-1 roster/projection data
     isn't available."""
     from .metrics import loaders as metric_loaders
-    from .metrics.lineup_optimizer import RosterPlayer, optimal_lineup
-    from .metrics.roster_strength import compute_player_values, compute_team_roster_strength
+    from .metrics.roster_strength import compute_player_values, compute_team_roster_strength, roster_strength_to_points
     from .metrics.win_probability import MIN_STDEV
 
-    rows = pd.read_sql_query(
-        """
-        SELECT wr.team_pk, wr.player_id, wr.eligible_slots, pws.projected_points
-        FROM weekly_rosters wr
-        LEFT JOIN player_week_scores pws
-            ON pws.season_id = wr.season_id AND pws.week = wr.week AND pws.player_id = wr.player_id
-        WHERE wr.season_id = ? AND wr.week = 1 AND wr.eligible_slots IS NOT NULL
-        """,
-        conn, params=(season,),
-    )
-    if rows.empty:
+    optimal_points = metric_loaders.load_optimal_lineup_points(conn, season, 1, position_slot_counts)
+    if optimal_points.empty:
         return pd.DataFrame()
-    rows["eligible_slots"] = rows["eligible_slots"].apply(lambda s: frozenset(json.loads(s)))
-    rows["projected_points"] = rows["projected_points"].fillna(0.0)
-
-    # Scale anchor: each team's real optimal-Week-1-lineup ESPN point
-    # total - same computation this function used to return directly,
-    # now used only to give roster strength's ranking real point units.
-    optimal_points_by_team: dict[int, float] = {}
-    for team_pk, g in rows.groupby("team_pk"):
-        players = [
-            RosterPlayer(int(r.player_id), float(r.projected_points), r.eligible_slots)
-            for r in g.itertuples()
-        ]
-        optimal_points, _ = optimal_lineup(players, position_slot_counts)
-        optimal_points_by_team[int(team_pk)] = optimal_points
 
     reg_season_count_row = conn.execute(
         "SELECT reg_season_count FROM seasons WHERE season_id = ?", (season,)
@@ -189,17 +165,10 @@ def compute_week0_team_state(conn: sqlite3.Connection, season: int, position_slo
         "roster_strength"
     ]
 
-    team_pks = sorted(optimal_points_by_team)
-    optimal_points = pd.Series({pk: optimal_points_by_team[pk] for pk in team_pks})
+    team_pks = sorted(optimal_points.index)
+    optimal_points = optimal_points.reindex(team_pks)
     strength = strength.reindex(team_pks)
-
-    scale_mean, scale_std = optimal_points.mean(), optimal_points.std(ddof=0)
-    strength_mean, strength_std = strength.mean(), strength.std(ddof=0)
-    if strength_std > 0:
-        z = (strength - strength_mean) / strength_std
-        expected = scale_mean + z * scale_std
-    else:
-        expected = pd.Series(scale_mean, index=team_pks)  # every team graded identically - no basis to differentiate
+    expected = roster_strength_to_points(strength, optimal_points)
 
     team_rows = [
         {

@@ -312,3 +312,46 @@ def test_compute_week0_snapshot_rows_none_without_week1_roster_data():
     )
     c.commit()
     assert compute_week0_snapshot_rows(c, 2099) is None
+
+
+# --- load_roster_strength_shrinkage_prior (ongoing-week Roster Strength prior) ---
+
+def test_load_roster_strength_shrinkage_prior_ranks_by_roster_strength_not_raw_points(week0_conn):
+    # Same disagreement setup as compute_week0_team_state's regression
+    # test, but for the GENERAL (any-week) loader that feeds
+    # simulate_season()'s ongoing shrinkage_prior: give team 1 (lowest
+    # raw Week-1 point projection, 80) the BEST FantasyPros rank and
+    # team 8 (highest raw projection, 150) the WORST - the resulting
+    # prior should follow Roster Strength, not raw points.
+    week0_conn.execute(
+        "INSERT INTO fantasypros_rankings (season_id, week, player_id, position, rank_ecr, pos_rank) "
+        "VALUES (2099, 1, 1, 'QB', 1, 1)"
+    )
+    week0_conn.execute(
+        "INSERT INTO fantasypros_rankings (season_id, week, player_id, position, rank_ecr, pos_rank) "
+        "VALUES (2099, 1, 8, 'QB', 100, 100)"
+    )
+    week0_conn.commit()
+
+    from fantasy_football.metrics.loaders import load_roster_strength_shrinkage_prior
+
+    prior = load_roster_strength_shrinkage_prior(week0_conn, 2099, 1, {"QB": 1}, reg_season_count=7)
+    assert prior[1] > prior[8]
+
+
+def test_load_roster_strength_shrinkage_prior_empty_without_roster_data():
+    from fantasy_football.metrics.loaders import load_roster_strength_shrinkage_prior
+
+    c = sqlite3.connect(":memory:")
+    db.init_db(c)
+    prior = load_roster_strength_shrinkage_prior(c, 2099, 1, {"QB": 1}, reg_season_count=14)
+    assert prior.empty
+
+
+def test_load_optimal_lineup_points_matches_each_teams_single_starter(week0_conn):
+    from fantasy_football.metrics.loaders import load_optimal_lineup_points
+
+    points = load_optimal_lineup_points(week0_conn, 2099, 1, {"QB": 1})
+    assert len(points) == 8
+    for i in range(1, 9):
+        assert points[i] == pytest.approx(70.0 + i * 10.0)
