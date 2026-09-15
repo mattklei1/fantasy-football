@@ -3913,3 +3913,73 @@ credential from anything in this dev sandbox or GitHub Actions) showed
 "not configured" on the live Playoff Odds page even after the user
 added one to Streamlit Cloud Secrets - likely just needs the reboot the
 user says they already did; not yet independently reconfirmed live.
+
+**Roster Strength now feeds the ONGOING (post-Week-0) playoff simulation
+too, not just the Week-0 snapshot (2026-09-16, same session).** Follow-
+up to a real observation while reviewing "Week 0 vs. now" data for Ian
+Forrest/Max Coffey: Ian's roster strength was decent (47.3, mid-pack)
+but his playoff odds were the league's worst (15.9%); Max's roster
+strength was near the league's floor (41.2) but his playoff odds looked
+strong (54.4%). Investigation traced this to a real record + a single
+observed score explaining both cases correctly (Ian: real 0-2 combined
+record, the league's lowest actual score; Max: a 1-1 split record with
+an above-average score) - not a bug, just two genuinely independent
+signals (real short-term results vs. forward-looking roster quality)
+that hadn't been reconciled at all for anything past Week 0. User: "Playoff
+odds should be using roster strength in its simulation for future weeks
+though. A higher roster strength for future matchups would indicate a
+higher % chance of winning that matchup."
+
+- `playoff_sim.simulate_season()` gained a `shrinkage_prior` override
+  (alongside the existing `shrinkage_games_played` one) - when given, a
+  PER-TEAM array replaces the flat `league_avg_ppg` that early-season
+  expected-score shrinkage regresses toward. `shrink_expected_score()`'s
+  `league_avg_ppg` param renamed to `prior_score` to reflect that it's
+  no longer always literally a league average (updated its one direct
+  test's keyword arg to match).
+- New shared `roster_strength.roster_strength_to_points()` - the same
+  z-score-onto-real-point-distribution remap `compute_week0_team_state()`
+  invented for the Week-0 rebuild, now extracted so both call sites
+  reuse one implementation instead of two copies. `compute_week0_team_
+  state()` refactored to call it (behavior unchanged, confirmed by its
+  existing tests passing unmodified) alongside a new shared `loaders.
+  load_optimal_lineup_points()` (the "real point-scale anchor" computation,
+  also extracted out of `compute_week0_team_state()`).
+- New `loaders.load_roster_strength_shrinkage_prior(conn, season, week,
+  position_slot_counts, reg_season_count)` - the general (any-week)
+  version: real CURRENT roster + that week's real ESPN projection + LIVE
+  FantasyPros ROS rank (not the Week-0 ADP snapshot - deliberately the
+  same live signal the Roster Strength page itself shows), remapped to
+  points the same way. `dashboard_data.get_playoff_simulation()` calls
+  it for the season's CURRENT week (not the latest COMPLETED week
+  `team_state` itself uses - the freshest roster available, reflecting
+  any trade/waiver move immediately) and passes the result as
+  `shrinkage_prior`, degrading to the old flat-average behavior
+  (`shrinkage_prior=None`) whenever current-week roster/projection data
+  isn't available yet or doesn't cover every team in `team_state`.
+- Deliberately reused the EXISTING, already-calibrated `SHRINKAGE_GAMES=8`
+  weighting schedule unchanged - only WHAT the shrinkage regresses
+  toward changed (a team-specific, roster-quality-aware prior instead
+  of a flat average), not HOW MUCH weight real observed performance
+  gets as games accumulate.
+- Live-verified against the real 2026 production league: Hammer Time's
+  "now" playoff odds dropped from 54.4% to 18.7% once his genuinely weak
+  Roster Strength (41.2, near the league floor) started pulling down his
+  future-week outlook instead of only his one decent-but-lucky real
+  score; Doody Guac Boys ticked UP slightly (15.9% -> 18.8%) as his
+  mid-pack Roster Strength (47.3) partially offset his real 0-2 start -
+  both moves in exactly the direction the user's report implied they
+  should. Recomputed and corrected the already-live "1" (Post-Wk1) entry
+  in `playoff_odds_snapshots/2026.json` to match the new methodology, so
+  the chart's historical point and the current live number agree (same
+  direct-MCP-write path as prior corrections).
+- 7 new tests: `roster_strength_to_points()` (ranking-preserved,
+  raw-scale-inversion-when-roster-strength-disagrees, and flat-mean-at-
+  zero-spread cases, in `test_metrics.py`), a `simulate_season()`
+  regression test proving `shrinkage_prior` differentiates otherwise-
+  identical teams' future odds (`test_playoff_sim.py`), and 3 DB-backed
+  tests for the new loader functions reusing the existing `week0_conn`
+  fixture (`test_playoff_odds_snapshots.py`). No new test for
+  `get_playoff_simulation()` itself - no prior test coverage existed for
+  it either (live/AppTest verification only, established convention for
+  `dashboard_data.py`). 388/388 tests passing.

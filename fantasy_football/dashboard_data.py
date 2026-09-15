@@ -331,15 +331,36 @@ def get_playoff_simulation(season: int) -> pd.DataFrame:
     if not meta or meta.get("playoff_team_count") != 6:
         return pd.DataFrame()
 
-    team_state, remaining_matchups = metric_loaders.load_playoff_sim_state(get_connection(), season)
+    conn = get_connection()
+    team_state, remaining_matchups = metric_loaders.load_playoff_sim_state(conn, season)
     if team_state.empty:
         return pd.DataFrame()
+
+    # Roster Strength as the shrinkage prior for future weeks (user,
+    # 2026-09-16: "Playoff odds should be using roster strength in its
+    # simulation for future weeks... A higher roster strength for future
+    # matchups would indicate a higher % chance of winning that
+    # matchup") - falls back to simulate_season()'s default flat league
+    # average when current-week roster/projection data isn't available
+    # yet (e.g. very early in a new week before rosters are captured).
+    shrinkage_prior = None
+    current_week = meta.get("current_week")
+    position_slot_counts_json = meta.get("position_slot_counts")
+    if current_week and position_slot_counts_json:
+        prior_series = metric_loaders.load_roster_strength_shrinkage_prior(
+            conn, season, current_week, json.loads(position_slot_counts_json), meta["reg_season_count"]
+        )
+        if not prior_series.empty:
+            reindexed = prior_series.reindex(team_state["team_pk"])
+            if not reindexed.isna().any():
+                shrinkage_prior = reindexed.to_numpy()
 
     result = simulate_season(
         team_state,
         remaining_matchups,
         median_scoring=bool(meta.get("median_scoring")),
         reg_season_count=meta["reg_season_count"],
+        shrinkage_prior=shrinkage_prior,
     )
 
     teams_query = f"""

@@ -47,7 +47,7 @@ def test_shrink_expected_score_at_zero_games_returns_league_average():
     # no real games yet - own number carries zero weight, must be
     # exactly the league average regardless of what the raw number says
     result = shrink_expected_score(
-        np.array([200.0]), np.array([0.0]), league_avg_ppg=100.0,
+        np.array([200.0]), np.array([0.0]), prior_score=100.0,
     )
     assert result[0] == pytest.approx(100.0)
 
@@ -223,6 +223,49 @@ def test_shrinkage_games_played_override_preserves_signal_at_zero_real_games():
     # number (team 7, season_ppg=150) should clearly outrank the worst
     # (team 0, season_ppg=80)
     assert with_override.loc[7, "playoff_pct"] > with_override.loc[0, "playoff_pct"]
+
+
+def test_shrinkage_prior_override_lets_a_team_specific_prior_drive_future_weeks():
+    # 8 teams, ALL with IDENTICAL real Week-1 performance (same 1-0
+    # record, same observed score) - isolates shrinkage_prior's effect
+    # from everything else real. A wide prior spread (e.g. from Roster
+    # Strength) should differentiate their FUTURE-week expected scores,
+    # and so their playoff odds, even though nothing about their real
+    # performance so far differs at all. Regression test for the actual
+    # feature (2026-09-16, user: "Playoff odds should be using roster
+    # strength in its simulation for future weeks... A higher roster
+    # strength for future matchups would indicate a higher % chance of
+    # winning that matchup").
+    n_teams = 8
+    rows = [
+        {
+            "team_pk": i, "season_ppg": 120.0, "last3_ppg": 120.0,
+            "score_stdev": MIN_STDEV, "matchup_wins": 1, "matchup_losses": 0, "matchup_ties": 0,
+            "median_wins": 0, "median_losses": 0, "median_ties": 0, "points_for": 120.0,
+        }
+        for i in range(n_teams)
+    ]
+    team_state = pd.DataFrame(rows)
+    remaining = _round_robin_schedule(n_teams)
+
+    no_prior = simulate_season(
+        team_state, remaining, median_scoring=False, reg_season_count=n_teams - 1,
+        n_sims=3000, rng=np.random.default_rng(0),
+    ).set_index("team_pk")
+    spread_no_prior = no_prior["playoff_pct"].max() - no_prior["playoff_pct"].min()
+
+    prior = np.array([80.0 + i * 15.0 for i in range(n_teams)])  # a real, wide spread
+    with_prior = simulate_season(
+        team_state, remaining, median_scoring=False, reg_season_count=n_teams - 1,
+        n_sims=3000, rng=np.random.default_rng(0),
+        shrinkage_prior=prior,
+    ).set_index("team_pk")
+    spread_with_prior = with_prior["playoff_pct"].max() - with_prior["playoff_pct"].min()
+
+    assert spread_no_prior < 0.15  # identical real performance -> near-identical odds
+    assert spread_with_prior > spread_no_prior
+    # team 7's much higher prior should win out over team 0's much lower one
+    assert with_prior.loc[7, "playoff_pct"] > with_prior.loc[0, "playoff_pct"]
 
 
 def test_simulate_season_empty_team_state_returns_empty():

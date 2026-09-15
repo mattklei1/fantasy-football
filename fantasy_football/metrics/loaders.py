@@ -243,6 +243,81 @@ def load_roster_for_week(conn: sqlite3.Connection, season: int, week: int) -> pd
     return pd.read_sql_query(query, conn, params=(season, week))
 
 
+def load_optimal_lineup_points(
+    conn: sqlite3.Connection, season: int, week: int, position_slot_counts: dict
+) -> pd.Series:
+    """team_pk -> that week's OPTIMAL (eligible-slots-respecting) lineup
+    total using ESPN's real point projections for that week - the real
+    point-scale "what would a perfect lineup from this roster be
+    projected for" anchor used by roster_strength.roster_strength_to_
+    points() to give a 0-100 Roster Strength score real point units
+    (see playoff_odds_snapshots.compute_week0_team_state() and
+    dashboard_data.get_playoff_simulation()). Empty Series if that
+    week's roster/projection data isn't available."""
+    from .lineup_optimizer import RosterPlayer, optimal_lineup
+
+    rows = pd.read_sql_query(
+        """
+        SELECT wr.team_pk, wr.player_id, wr.eligible_slots, pws.projected_points
+        FROM weekly_rosters wr
+        LEFT JOIN player_week_scores pws
+            ON pws.season_id = wr.season_id AND pws.week = wr.week AND pws.player_id = wr.player_id
+        WHERE wr.season_id = ? AND wr.week = ? AND wr.eligible_slots IS NOT NULL
+        """,
+        conn, params=(season, week),
+    )
+    if rows.empty:
+        return pd.Series(dtype=float)
+    rows["eligible_slots"] = rows["eligible_slots"].apply(lambda s: frozenset(json.loads(s)))
+    rows["projected_points"] = rows["projected_points"].fillna(0.0)
+
+    points_by_team: dict[int, float] = {}
+    for team_pk, g in rows.groupby("team_pk"):
+        players = [
+            RosterPlayer(int(r.player_id), float(r.projected_points), r.eligible_slots)
+            for r in g.itertuples()
+        ]
+        optimal_points, _ = optimal_lineup(players, position_slot_counts)
+        points_by_team[int(team_pk)] = optimal_points
+    return pd.Series(points_by_team)
+
+
+def load_roster_strength_shrinkage_prior(
+    conn: sqlite3.Connection, season: int, week: int, position_slot_counts: dict, reg_season_count: int
+) -> pd.Series:
+    """team_pk -> that week's Roster Strength (the SAME live signal the
+    Roster Strength page shows - real current roster, this week's ESPN
+    projection, live FantasyPros ROS rank) remapped to real point units
+    via roster_strength.roster_strength_to_points(). Used as playoff_
+    sim.simulate_season()'s shrinkage_prior (see dashboard_data.
+    get_playoff_simulation()) - a team-specific, more informative prior
+    than a flat league average for early-season expected-score shrinkage,
+    so a trade/injury/waiver move shows up in the playoff simulation the
+    moment it shows up in Roster Strength, not only once enough real
+    games accumulate to outweigh a generic average (user, 2026-09-16:
+    "Playoff odds should be using roster strength in its simulation for
+    future weeks... A higher roster strength for future matchups would
+    indicate a higher % chance of winning that matchup"). Empty Series
+    if that week's roster/projection data isn't available yet (degrades
+    to simulate_season()'s default flat-average prior)."""
+    from .roster_strength import compute_player_values, compute_team_roster_strength, roster_strength_to_points
+
+    optimal_points = load_optimal_lineup_points(conn, season, week, position_slot_counts)
+    if optimal_points.empty:
+        return pd.Series(dtype=float)
+
+    roster_df = load_roster_for_week(conn, season, week)
+    valued = compute_player_values(roster_df)
+    strength = compute_team_roster_strength(valued, week=week, reg_season_count=reg_season_count).set_index(
+        "team_pk"
+    )["roster_strength"]
+
+    team_pks = sorted(optimal_points.index)
+    optimal_points = optimal_points.reindex(team_pks)
+    strength = strength.reindex(team_pks)
+    return roster_strength_to_points(strength, optimal_points)
+
+
 def load_week0_roster_for_strength(conn: sqlite3.Connection, season: int) -> pd.DataFrame:
     """Like load_roster_for_week(season, 1), but fp_pos_rank comes from
     the week=0 FantasyPros ADP snapshot (ingest.ingest_fantasypros_adp_

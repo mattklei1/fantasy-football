@@ -20,6 +20,7 @@ from fantasy_football.metrics.roster_strength import (
     compute_player_values,
     compute_team_roster_strength,
     rank_to_score,
+    roster_strength_to_points,
 )
 
 
@@ -279,6 +280,36 @@ def test_team_roster_strength_excludes_ir_and_splits_starter_bench():
     assert row["bench_value"] == valued[valued["player_id"] == 2]["player_value"].iloc[0]
     assert row["bench_weight"] == pytest.approx(0.35)
     assert 0 <= row["roster_strength"] <= 100
+
+
+def test_roster_strength_to_points_preserves_ranking_and_real_scale():
+    strength = pd.Series({1: 30.0, 2: 50.0, 3: 70.0})
+    scale_reference = pd.Series({1: 100.0, 2: 120.0, 3: 140.0})
+    result = roster_strength_to_points(strength, scale_reference)
+    # strictly increasing, same order as roster strength
+    assert result[1] < result[2] < result[3]
+    # lands on the real distribution's mean/stdev, not roster strength's own scale
+    assert result.mean() == pytest.approx(scale_reference.mean())
+    assert result.std(ddof=0) == pytest.approx(scale_reference.std(ddof=0))
+
+
+def test_roster_strength_to_points_inverts_raw_scale_ranking_when_strength_disagrees():
+    # team 1 has the LOWEST raw scale value but the HIGHEST roster
+    # strength - the remap must follow roster strength, not the raw scale
+    strength = pd.Series({1: 90.0, 2: 10.0})
+    scale_reference = pd.Series({1: 50.0, 2: 200.0})
+    result = roster_strength_to_points(strength, scale_reference)
+    assert result[1] > result[2]
+
+
+def test_roster_strength_to_points_returns_flat_mean_when_strength_has_no_spread():
+    # every team graded identically - no real basis to differentiate them,
+    # so everyone gets the reference distribution's flat mean
+    strength = pd.Series({1: 50.0, 2: 50.0, 3: 50.0})
+    scale_reference = pd.Series({1: 100.0, 2: 120.0, 3: 140.0})
+    result = roster_strength_to_points(strength, scale_reference)
+    for value in result:
+        assert value == pytest.approx(scale_reference.mean())
 
 
 def test_starting_slots_excludes_bench_and_ir():

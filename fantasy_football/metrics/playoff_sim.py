@@ -89,17 +89,22 @@ def compute_score_stdev(scores_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def shrink_expected_score(
-    raw_expected_score: np.ndarray, games_played: np.ndarray, league_avg_ppg: float,
+    raw_expected_score: np.ndarray, games_played: np.ndarray, prior_score: float | np.ndarray,
     shrinkage_games: float = SHRINKAGE_GAMES,
 ) -> np.ndarray:
-    """Blends each team's raw expected_score toward the league-wide
-    average PPG, weighted by games_played/(games_played + shrinkage_games)
-    - a standard small-sample shrinkage estimator (see module docstring's
+    """Blends each team's raw expected_score toward `prior_score`,
+    weighted by games_played/(games_played + shrinkage_games) - a
+    standard small-sample shrinkage estimator (see module docstring's
     "Early-season shrinkage"). At games_played=0 this returns exactly
-    league_avg_ppg (no real data yet); as games_played grows, it
-    converges toward the team's own raw_expected_score."""
+    prior_score (no real data yet); as games_played grows, it converges
+    toward the team's own raw_expected_score. prior_score is usually the
+    flat league-wide average season_ppg (a single float, broadcast to
+    every team), but simulate_season()'s shrinkage_prior lets a caller
+    pass a per-team array instead - e.g. each team's current Roster
+    Strength remapped to real points, a more informative prior than a
+    flat average (see simulate_season()'s own docstring)."""
     weight = games_played / (games_played + shrinkage_games)
-    return weight * raw_expected_score + (1 - weight) * league_avg_ppg
+    return weight * raw_expected_score + (1 - weight) * prior_score
 
 
 def rank_teams(team_ids: list, win_pct: dict, points_for: dict) -> list:
@@ -131,6 +136,7 @@ def simulate_season(
     n_sims: int = DEFAULT_N_SIMS,
     rng: np.random.Generator | None = None,
     shrinkage_games_played: np.ndarray | None = None,
+    shrinkage_prior: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """team_state columns: see TEAM_STATE_COLUMNS - one row per team, all
     REAL cumulative values as of right now (season_ppg/last3_ppg/points_for/
@@ -154,6 +160,23 @@ def simulate_season(
     shrinkage rule would otherwise completely discard - see that
     function's own docstring for the RMSE calibration behind the value
     it passes here.
+
+    shrinkage_prior: optional per-team override for what
+    shrink_expected_score() regresses toward - defaults to the flat
+    league-wide average season_ppg when not given (every normal in-
+    season call before 2026-09-16). Exists so a team's CURRENT Roster
+    Strength (dashboard_data.get_playoff_simulation()) can serve as a
+    team-specific, more informative prior than a flat league average -
+    a team with 1-2 real games played still gets shrunk mostly toward
+    a prior, so that prior being roster-quality-aware (not just "the
+    average team") means the model reflects real roster changes
+    (trades, injuries, waiver moves) immediately, not only once enough
+    games accumulate to outweigh a generic average. User, 2026-09-16:
+    "Playoff odds should be using roster strength in its simulation for
+    future weeks though. A higher roster strength for future matchups
+    would indicate a higher % chance of winning that matchup." Must be
+    the same shape as shrinkage_games_played/team_state (one value per
+    team_pk, in team_state's row order) if given.
 
     Returns team_pk, playoff_pct, bye_pct, seed1_pct, championship_pct.
     """
@@ -179,8 +202,11 @@ def simulate_season(
         games_played = (
             team_state["matchup_wins"] + team_state["matchup_losses"] + team_state["matchup_ties"]
         ).to_numpy(dtype=float)
-    league_avg_ppg = float(team_state["season_ppg"].mean())
-    expected = shrink_expected_score(raw_expected, games_played, league_avg_ppg)
+    if shrinkage_prior is not None:
+        prior = np.asarray(shrinkage_prior, dtype=float)
+    else:
+        prior = float(team_state["season_ppg"].mean())
+    expected = shrink_expected_score(raw_expected, games_played, prior)
     stdev = team_state["score_stdev"].to_numpy()
 
     matchup_wins = np.tile(team_state["matchup_wins"].to_numpy(dtype=float)[:, None], n_sims)
