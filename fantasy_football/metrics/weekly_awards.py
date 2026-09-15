@@ -1,10 +1,17 @@
 """Weekly awards: single-week (NOT cumulative) highlights, computed
-automatically for every completed week - Manager of the Week, Highest/
-Lowest Score, Biggest Blowout, Closest Game, Bad Beat, Luckiest Win,
-Unluckiest Loss, Coaching Disaster, and Best/Worst Lineup Efficiency.
-Pure/DB-free like the rest of metrics/ - fantasy_football/commentary.py
-does the DB reads and team_pk -> name mapping, and feeds these into the
+automatically for every completed week - Highest/Lowest Score, Biggest
+Blowout, Closest Game, Bad Beat, Luckiest Win, Unluckiest Loss, Coaching
+Disaster, Best/Worst Lineup Efficiency, and Smart Lineup Call. Pure/
+DB-free like the rest of metrics/ - fantasy_football/commentary.py does
+the DB reads and team_pk -> name mapping, and feeds these into the
 weekly recap's structured facts.
+
+No separate "Manager of the Week" award (dropped 2026-09-13/15 - see
+git history): the recap's MANAGER OF THE WEEK section is sourced from
+best_lineup_efficiency instead - per user feedback, "the biggest
+blowout" (which a highest-score-among-winners stat tends to just
+restate) isn't as interesting as who actually managed their roster
+best that week.
 
 "Luckiest Win"/"Unluckiest Loss" use that week's ALL-PLAY record (how
 many of the other teams that score would have beaten) rather than just
@@ -95,15 +102,8 @@ def compute_weekly_awards(
             "score": float(luckiest["score"]),
             "all_play_wins": int(luckiest["all_play_win"]),
         }
-        # Manager of the Week: among teams that WON their matchup, the
-        # highest score - a decisive "best week" (won AND outscored the
-        # rest of the winners), not just the single highest score
-        # league-wide (that's the separate Highest Score award above).
-        mow = winners.loc[winners["score"].idxmax()]
-        awards["manager_of_the_week"] = {"team_pk": int(mow["team_pk"]), "score": float(mow["score"])}
     else:
         awards["luckiest_win"] = None
-        awards["manager_of_the_week"] = None
 
     if roster_df is not None and not roster_df.empty and position_slot_counts:
         weekly_lineup = compute_weekly_lineup_values(roster_df, position_slot_counts)
@@ -134,21 +134,90 @@ def compute_weekly_awards(
         # bench among those. Falls back to the single biggest points-left-
         # on-bench of the week (regardless of outcome) if no lineup
         # mistake actually flipped a result this week - still a real,
-        # documented stat, not a fabricated "disaster."
+        # documented stat, not a fabricated "disaster." points_left_on_bench
+        # itself is already a LEGAL (position-eligible) optimal lineup, via
+        # lineup_optimizer.optimal_lineup()'s eligible_slots-respecting
+        # assignment - never a naive "sum of the highest bench scores"
+        # that could illegally swap in, say, a QB for a bench WR slot.
         lost = weekly_lineup[weekly_lineup["matchup_loss"] == 1].copy()
         flipped = lost[
             (lost["points_left_on_bench"] > 0) & (lost["optimal_starter_points"] > lost["points_against"])
         ]
         pool = flipped if not flipped.empty else weekly_lineup
         disaster = pool.loc[pool["points_left_on_bench"].idxmax()]
+
+        # Would the optimal (still fully legal) lineup have ALSO earned
+        # the median (top-half) bonus win this league's real scoring
+        # uses? Recomputes that week's median with ONLY this one team's
+        # score swapped for their optimal total - every other team's
+        # real score is unchanged, since only this team's roster is
+        # hypothetical here.
+        other_scores = scores_df.loc[scores_df["team_pk"] != disaster["team_pk"], "score"]
+        counterfactual_median = pd.concat(
+            [other_scores, pd.Series([disaster["optimal_starter_points"]])]
+        ).median()
+
         awards["coaching_disaster"] = {
             "team_pk": int(disaster["team_pk"]),
             "points_left_on_bench": float(disaster["points_left_on_bench"]),
             "flipped_result": bool(not flipped.empty),
+            "optimal_beats_median": bool(disaster["optimal_starter_points"] > counterfactual_median),
         }
+
+        awards["smart_lineup_call"] = _smart_lineup_call(roster_df)
     else:
         awards["best_lineup_efficiency"] = None
         awards["worst_lineup_efficiency"] = None
         awards["coaching_disaster"] = None
+        awards["smart_lineup_call"] = None
 
     return awards
+
+
+def _smart_lineup_call(roster_df: pd.DataFrame) -> dict | None:
+    """The week's single biggest "trusted the gut over the projection,
+    and it paid off" call: a manager started a player who was PROJECTED
+    lower than a bench alternative eligible for that exact same slot
+    (a real like-for-like choice - e.g. WR over WR, or a flex-eligible
+    swap, never an illegal position swap, since eligibility is checked
+    against the started player's actual slot_position), and the started
+    player actually OUTSCORED that higher-projected bench alternative.
+    Ranked by the real points swing the correct call was worth. None if
+    no such call happened this week (most start/sit decisions go the
+    "obvious", projection-following way) or projected_points isn't
+    available in roster_df (older data/callers)."""
+    if roster_df.empty or "projected_points" not in roster_df.columns:
+        return None
+    df = roster_df.copy()
+    df["projected_points"] = df["projected_points"].fillna(0.0)
+
+    best = None
+    for team_pk, g in df.groupby("team_pk"):
+        starters = g[g["is_starter"] == 1]
+        bench = g[g["is_starter"] == 0]
+        if starters.empty or bench.empty:
+            continue
+        for s in starters.itertuples():
+            eligible_alts = bench[bench["eligible_slots"].apply(lambda es: s.slot_position in es)]
+            outprojected_by = eligible_alts[eligible_alts["projected_points"] > s.projected_points]
+            if outprojected_by.empty:
+                continue
+            # the highest-projected bench alternative - the "obvious" call the manager passed on
+            alt = outprojected_by.loc[outprojected_by["projected_points"].idxmax()]
+            actual_swing = float(s.points) - float(alt["points"])
+            if actual_swing <= 0:
+                continue  # the "obvious" pick would have scored the same or more - not a call that paid off
+            if best is None or actual_swing > best["actual_swing"]:
+                best = {
+                    "team_pk": int(team_pk),
+                    "started": {
+                        "player_name": s.player_name, "position": s.position,
+                        "points": round(float(s.points), 1), "projected_points": round(float(s.projected_points), 1),
+                    },
+                    "benched": {
+                        "player_name": alt["player_name"], "position": alt["position"],
+                        "points": round(float(alt["points"]), 1), "projected_points": round(float(alt["projected_points"]), 1),
+                    },
+                    "actual_swing": round(actual_swing, 1),
+                }
+    return best

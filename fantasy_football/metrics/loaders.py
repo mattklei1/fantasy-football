@@ -115,6 +115,34 @@ def load_roster_with_points(conn: sqlite3.Connection, season: int) -> pd.DataFra
     return df
 
 
+def load_roster_with_projections(conn: sqlite3.Connection, season: int) -> pd.DataFrame:
+    """Like load_roster_with_points, but also carries player_name,
+    position, slot_position (the actual ESPN slot a player occupied
+    that week - distinct from eligible_slots, the set they COULD have
+    filled) and projected_points - for the weekly recap's "smart lineup
+    call" award (metrics/weekly_awards.py), which needs to compare a
+    started player's actual production against a BENCHED, slot-eligible
+    alternative's higher pregame projection. Same completed-regular-
+    season-only scope and eligible_slots-required filter as
+    load_roster_with_points."""
+    query = """
+        SELECT wr.week, wr.team_pk, wr.player_id, p.player_name, p.default_position AS position,
+               wr.slot_position, wr.is_starter, wr.eligible_slots,
+               COALESCE(pws.points, 0) AS points, pws.projected_points
+        FROM weekly_rosters wr
+        JOIN players p ON p.player_id = wr.player_id
+        JOIN weekly_team_scores wts ON wts.season_id = wr.season_id AND wts.week = wr.week AND wts.team_pk = wr.team_pk
+        LEFT JOIN player_week_scores pws
+            ON pws.season_id = wr.season_id AND pws.week = wr.week AND pws.player_id = wr.player_id
+        WHERE wr.season_id = ? AND wts.completed = 1 AND wts.is_playoff = 0
+              AND wr.eligible_slots IS NOT NULL
+    """
+    df = pd.read_sql_query(query, conn, params=(season,))
+    if not df.empty:
+        df["eligible_slots"] = df["eligible_slots"].apply(lambda s: frozenset(json.loads(s)))
+    return df
+
+
 def load_roster_with_points_by_scope(conn: sqlite3.Connection, season: int, scope: str = "regular") -> pd.DataFrame:
     """Like load_roster_with_points, but selectable by scope. weekly_rosters
     doesn't carry matchup_type directly, so this joins through matchups

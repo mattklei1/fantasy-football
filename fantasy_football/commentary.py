@@ -34,9 +34,17 @@ import sqlite3
 import pandas as pd
 
 from . import config, db
-from .metrics.loaders import load_matchups, load_roster_with_points, load_weekly_scores
+from .metrics.lineup_optimizer import RosterPlayer, optimal_lineup
+from .metrics.loaders import load_matchups, load_roster_with_projections, load_weekly_scores
 from .metrics.weekly_awards import compute_weekly_awards
-from .metrics.win_probability import MIN_STDEV, TeamProjection, expected_score, win_probability
+from .metrics.win_probability import MIN_STDEV, TeamProjection, win_probability
+
+#: Standard ESPN roster positions to check for a free-agent fallback in
+#: _game_to_watch - a small local duplicate of war_room_data.
+#: ESPN_POSITIONS rather than importing that module, which pulls in
+#: Streamlit at import time (see this module's own "Streamlit-free"
+#: design goal in its docstring).
+NEXT_WEEK_POSITIONS = ["QB", "RB", "WR", "TE", "K", "D/ST"]
 
 CLAUDE_MODEL = "claude-opus-5"
 MAX_TOKENS = 4096
@@ -96,36 +104,137 @@ def _power_rank_movers(conn: sqlite3.Connection, season: int, week: int, names: 
     return movers
 
 
-def _game_to_watch(conn: sqlite3.Connection, season: int, week: int, names: dict) -> dict | None:
-    """Next week's projected closest game, using the same expected_score/
-    win_probability model as the Matchups page (metrics/win_probability.py),
-    projected from stats as of the week just completed."""
+def _free_agent_avg_projection_by_position(league, next_week: int, pool_size: int = 25) -> dict[str, float]:
+    """Average next-week ESPN projection among currently available free
+    agents at each standard position - a stand-in for "the manager would
+    stream a replacement" when a rostered player's own next-week
+    projection is 0 (see _team_next_week_optimal_projection). One live
+    league.free_agents() call per position, computed ONCE per
+    build_weekly_facts() call and reused across every team's projection
+    - not refetched per team. Empty dict (not an error) if `league` is
+    unavailable or a position's lookup fails; callers degrade to a plain
+    0 contribution in that case rather than fabricating a number."""
+    result: dict[str, float] = {}
+    for position in NEXT_WEEK_POSITIONS:
+        try:
+            agents = league.free_agents(size=pool_size, position=position)
+        except Exception:  # noqa: BLE001 - one bad position shouldn't blank the whole lookup
+            continue
+        projections = [(a.stats.get(next_week) or {}).get("projected_points") or 0.0 for a in agents]
+        projections = [p for p in projections if p > 0]
+        if projections:
+            result[position] = sum(projections) / len(projections)
+    return result
+
+
+def _team_next_week_optimal_projection(
+    conn: sqlite3.Connection, season: int, roster_week: int, next_week: int, team_pk: int,
+    position_slot_counts: dict, free_agent_avg_by_position: dict[str, float],
+) -> float:
+    """This team's projected score for `next_week`, ASSUMING they set an
+    optimal lineup from their CURRENT roster (as of `roster_week`, the
+    week just completed) using ESPN's own next-week pregame projections
+    - not a current-lineup or season-average based number, since nobody
+    has actually set next week's lineup yet (user feedback 2026-09-15:
+    "don't show me win probability as of now because people haven't set
+    their lineups... assume that people sub in people with the highest
+    ESPN projections"). Reuses the same eligible_slots-respecting
+    optimal_lineup() solver as lineup efficiency - a real, legal lineup,
+    never an illegal position swap. Any slot whose assigned rostered
+    player still projects to 0 (bye, unprojected, etc.) falls back to
+    the average free-agent projection at that player's position - "if
+    anyone still has a zero after these substitutions, assume they pick
+    someone up off of the waiver wire" (same user feedback)."""
+    rows = pd.read_sql_query(
+        """
+        SELECT wr.player_id, p.default_position AS position, wr.eligible_slots,
+               pws_next.projected_points
+        FROM weekly_rosters wr
+        JOIN players p ON p.player_id = wr.player_id
+        LEFT JOIN player_week_scores pws_next
+            ON pws_next.season_id = wr.season_id AND pws_next.week = ? AND pws_next.player_id = wr.player_id
+        WHERE wr.season_id = ? AND wr.week = ? AND wr.team_pk = ? AND wr.eligible_slots IS NOT NULL
+        """,
+        conn, params=(next_week, season, roster_week, team_pk),
+    )
+    if rows.empty:
+        return 0.0
+    rows["eligible_slots"] = rows["eligible_slots"].apply(lambda s: frozenset(json.loads(s)))
+    # A player who simply hasn't had a next-week projection ingested yet
+    # (a common, real state - not an error) comes back from the LEFT
+    # JOIN as NaN, not None or 0 - `x or 0.0` does NOT catch this (NaN is
+    # truthy in Python, so `nan or 0.0` evaluates to nan, not 0.0),
+    # silently poisoning the cost matrix below with an invalid entry.
+    # fillna() up front instead of relying on `or` at each use site.
+    rows["projected_points"] = rows["projected_points"].fillna(0.0)
+    players = [
+        RosterPlayer(int(r.player_id), float(r.projected_points), r.eligible_slots)
+        for r in rows.itertuples()
+    ]
+    _, assignment = optimal_lineup(players, position_slot_counts)
+    position_by_player = dict(zip(rows["player_id"], rows["position"]))
+    projected_by_player = dict(zip(rows["player_id"], rows["projected_points"]))
+
+    total = 0.0
+    for player_id in assignment.values():
+        proj = projected_by_player.get(player_id, 0.0)
+        if proj <= 0:
+            proj = free_agent_avg_by_position.get(position_by_player.get(player_id), 0.0)
+        total += proj
+    return total
+
+
+def _game_to_watch(
+    conn: sqlite3.Connection, season: int, week: int, names: dict,
+    position_slot_counts: dict | None, league=None,
+) -> dict | None:
+    """Next week's projected closest game. Each team's projected score
+    assumes OPTIMAL lineup management from their current roster using
+    next week's ESPN projections (see _team_next_week_optimal_projection)
+    rather than a season-PPG blend - deliberately different from the
+    Matchups page's in-season win probability, since nobody's actually
+    set next week's lineup yet. `league` (a live espn_api League, only
+    needed for the free-agent-fallback step) is optional - without it,
+    any zero-projection slot just contributes 0 rather than a live-
+    ESPN-call-dependent estimate; still a real number, just less
+    complete. None if position_slot_counts is unavailable (can't build a
+    legal lineup without it) or no matchups are scheduled next week."""
+    if not position_slot_counts:
+        return None
+    next_week = week + 1
     next_week_matchups = pd.read_sql_query(
         "SELECT home_team_pk, away_team_pk FROM matchups "
         "WHERE season_id = ? AND week = ? AND matchup_type = 'NONE'",
-        conn, params=(season, week + 1),
+        conn, params=(season, next_week),
     )
     if next_week_matchups.empty:
         return None
-    stats = pd.read_sql_query(
-        "SELECT team_pk, ppg, last3_ppg FROM metrics_weekly WHERE season_id = ? AND week = ?",
-        conn, params=(season, week),
-    ).set_index("team_pk")
+
     scores = load_weekly_scores(conn, season)
     stdevs = scores.groupby("team_pk")["score"].std(ddof=1).fillna(0.0) if not scores.empty else pd.Series(dtype=float)
 
+    free_agent_avg_by_position = (
+        _free_agent_avg_projection_by_position(league, next_week) if league is not None else {}
+    )
+
+    team_pks = pd.unique(next_week_matchups[["home_team_pk", "away_team_pk"]].to_numpy().ravel())
+    projected_by_team = {
+        int(tp): _team_next_week_optimal_projection(
+            conn, season, week, next_week, int(tp), position_slot_counts, free_agent_avg_by_position
+        )
+        for tp in team_pks
+    }
+
     best = None
     for r in next_week_matchups.itertuples():
-        if r.home_team_pk not in stats.index or r.away_team_pk not in stats.index:
+        if r.home_team_pk not in projected_by_team or r.away_team_pk not in projected_by_team:
             continue
         home = TeamProjection(
-            team_pk=r.home_team_pk,
-            expected_score=expected_score(stats.loc[r.home_team_pk, "ppg"], stats.loc[r.home_team_pk, "last3_ppg"]),
+            team_pk=r.home_team_pk, expected_score=projected_by_team[r.home_team_pk],
             stdev=max(stdevs.get(r.home_team_pk, 0.0), MIN_STDEV),
         )
         away = TeamProjection(
-            team_pk=r.away_team_pk,
-            expected_score=expected_score(stats.loc[r.away_team_pk, "ppg"], stats.loc[r.away_team_pk, "last3_ppg"]),
+            team_pk=r.away_team_pk, expected_score=projected_by_team[r.away_team_pk],
             stdev=max(stdevs.get(r.away_team_pk, 0.0), MIN_STDEV),
         )
         prob = win_probability(home, away)
@@ -134,6 +243,8 @@ def _game_to_watch(conn: sqlite3.Connection, season: int, week: int, names: dict
             best = {
                 "home": _label(names, r.home_team_pk),
                 "away": _label(names, r.away_team_pk),
+                "home_projected_score": round(projected_by_team[r.home_team_pk], 1),
+                "away_projected_score": round(projected_by_team[r.away_team_pk], 1),
                 "home_win_probability": round(prob, 3),
                 "closeness": closeness,
             }
@@ -175,10 +286,13 @@ def _starting_rosters(conn: sqlite3.Connection, season: int, week: int, names: d
     return rosters
 
 
-def build_weekly_facts(conn: sqlite3.Connection, season: int, week: int) -> dict | None:
+def build_weekly_facts(conn: sqlite3.Connection, season: int, week: int, league=None) -> dict | None:
     """Structured facts for one completed regular-season week. Returns
     None if that week hasn't completed yet (nothing to recap) - never
-    fabricates a recap from partial data."""
+    fabricates a recap from partial data. `league` (a live espn_api
+    League, optional) only feeds next_week_game_to_watch's free-agent
+    fallback (see _game_to_watch) - every other fact here is computed
+    from already-ingested DB data, no live ESPN call needed."""
     completed = conn.execute(
         "SELECT COUNT(*) FROM weekly_team_scores WHERE season_id = ? AND week = ? AND completed = 1 AND is_playoff = 0",
         (season, week),
@@ -198,7 +312,7 @@ def build_weekly_facts(conn: sqlite3.Connection, season: int, week: int) -> dict
     ).fetchone()
     position_slot_counts = json.loads(season_row[0]) if season_row and season_row[0] else None
 
-    roster_df = load_roster_with_points(conn, season)
+    roster_df = load_roster_with_projections(conn, season)
     roster_week = roster_df[roster_df["week"] == week] if not roster_df.empty else roster_df
 
     raw_awards = compute_weekly_awards(scores_week, matchups_week, roster_week, position_slot_counts)
@@ -231,7 +345,7 @@ def build_weekly_facts(conn: sqlite3.Connection, season: int, week: int) -> dict
         "awards": awards,
         "biggest_fraud": biggest_fraud,
         "power_rank_movers": _power_rank_movers(conn, season, week, names),
-        "next_week_game_to_watch": _game_to_watch(conn, season, week, names),
+        "next_week_game_to_watch": _game_to_watch(conn, season, week, names, position_slot_counts, league=league),
         "starting_rosters": _starting_rosters(conn, season, week, names),
     }
 
@@ -284,16 +398,38 @@ def generate_placeholder_commentary(facts: dict) -> str:
         f"{_fmt_team(bb['team'])} scored {bb['score']:.1f} and still lost." if bb else "No qualifying bad beat this week.",
     )
 
-    mow = a.get("manager_of_the_week")
-    section(
-        "MANAGER OF THE WEEK",
-        f"{_fmt_team(mow['team'])} won with {mow['score']:.1f} points, tops among winners." if mow else "No winner to crown this week.",
-    )
+    mow = a.get("best_lineup_efficiency")
+    mow_lines = [
+        f"{_fmt_team(mow['team'])} set the best lineup this week - "
+        f"{mow['lineup_efficiency'] * 100:.1f}% of their optimal possible starter points."
+        if mow else "No lineup data available this week."
+    ]
+    slc = a.get("smart_lineup_call")
+    if slc:
+        mow_lines.append(
+            f"Smart call: {_fmt_team(slc['team'])} started {slc['started']['player_name']} "
+            f"({slc['started']['points']:.1f} pts) over the higher-projected {slc['benched']['player_name']} "
+            f"({slc['benched']['points']:.1f} pts actual) - a {slc['actual_swing']:.1f}-point save."
+        )
+    section("MANAGER OF THE WEEK", *mow_lines)
 
     cd = a.get("coaching_disaster")
     if cd:
-        verb = "cost them the win" if cd["flipped_result"] else "didn't change the result, but still stung"
-        cd_text = f"{_fmt_team(cd['team'])} left {cd['points_left_on_bench']:.1f} points on the bench - {verb}."
+        consequences = []
+        if cd["flipped_result"]:
+            consequences.append("would have won the matchup")
+        if cd["optimal_beats_median"]:
+            consequences.append("would have cleared the median")
+        if consequences:
+            cd_text = (
+                f"{_fmt_team(cd['team'])} left {cd['points_left_on_bench']:.1f} points on the bench - "
+                f"the optimal (fully legal) lineup {' and '.join(consequences)}."
+            )
+        else:
+            cd_text = (
+                f"{_fmt_team(cd['team'])} left {cd['points_left_on_bench']:.1f} points on the bench - "
+                "didn't change the result either way."
+            )
     else:
         cd_text = "No lineup data available this week."
     section("COACHING DISASTER", cd_text)
@@ -318,7 +454,8 @@ def generate_placeholder_commentary(facts: dict) -> str:
     gtw = facts.get("next_week_game_to_watch")
     section(
         "NEXT WEEK'S GAME TO WATCH",
-        f"{_fmt_team(gtw['home'])} vs {_fmt_team(gtw['away'])} "
+        f"{_fmt_team(gtw['home'])} ({gtw['home_projected_score']:.1f} proj) vs {_fmt_team(gtw['away'])} "
+        f"({gtw['away_projected_score']:.1f} proj), assuming each team sets an optimal lineup "
         f"(home win probability: {gtw['home_win_probability']:.0%})" if gtw else "Schedule not available yet.",
     )
 
@@ -327,18 +464,45 @@ def generate_placeholder_commentary(facts: dict) -> str:
 
 def _build_claude_prompt(facts: dict) -> str:
     season, week = facts["season"], facts["week"]
+    bad_beat_team_pk = ((facts["awards"].get("bad_beat") or {}).get("team") or {}).get("team_pk")
     bad_beat_instructions = (
         "For the BAD BEAT section specifically, you have a `web_search` tool - use it to look up REAL NFL "
         f"news from the actual {season} NFL season, Week {week} (in-game injuries, overturned/reviewed "
         "plays, garbage-time or kneel-down finishes, officiating controversies, or any other real 'bad "
-        "beat' storyline from that week's real games). Then check `starting_rosters` below: if a player "
-        "named in a real search result is ALSO a player some team here actually STARTED that week, name "
-        "them, describe only what your search results actually support (never embellish beyond them), and "
-        "connect it to that team/manager's real result that week. Only make this connection when a "
-        "rostered player's name is an unambiguous match to what you found via search - if nothing search-"
-        "worthy correlates to a rostered player this week, fall back to `awards.bad_beat` (highest score "
-        "among that week's losing teams) instead of forcing a connection that isn't real. Do not narrate "
-        "your search process (no \"I'll search for...\") - output only the final recap text below."
+        "beat' storyline from that week's real games). This section is ABOUT ONE SPECIFIC TEAM: "
+        f"`awards.bad_beat.team` (team_pk {bad_beat_team_pk!r} - the highest scorer among that week's real "
+        "losing teams, i.e. a team that scored well but still lost). Search only for news connecting to "
+        "PLAYERS ON THAT TEAM'S OWN ROSTER (look them up in `starting_rosters` for that team_pk) - never "
+        "cite a real news story about a player on a DIFFERENT team, even if it's a great story, and never "
+        "add an 'honorable mention' about an unrelated team/player. The story must plausibly explain why "
+        "this specific team's week went badly (an injury, a bad break, bad luck) - not just any player on "
+        "their roster who happens to be in the news. Describe only what your search results actually "
+        "support (never embellish beyond them). If nothing search-worthy connects to THIS team's own "
+        "roster, skip the news angle and just report the plain fact from `awards.bad_beat` (they scored "
+        "X and still lost) instead of forcing a connection that isn't real, or reaching for a different "
+        "team's story. Do not narrate your search process (no \"I'll search for...\") - output only the "
+        "final recap text below."
+    )
+    other_instructions = (
+        "For MANAGER OF THE WEEK: this is about roster MANAGEMENT, not who scored the most or won by the "
+        "most (that's BEATDOWN OF THE WEEK) - base it on `awards.best_lineup_efficiency` (how close to "
+        "their own optimal possible lineup they actually got). If `awards.smart_lineup_call` is present, "
+        "also mention it as a second highlight in this same section: a manager who started a player "
+        "projected LOWER than a bench alternative eligible for that exact slot, and it paid off - a good "
+        "read/gut call, not a fluke (the alternative really could have started there; this isn't an "
+        "illegal position swap).\n\n"
+        "For COACHING DISASTER: `awards.coaching_disaster.points_left_on_bench` already comes from a "
+        "FULLY LEGAL optimal lineup (every swap respects real position eligibility - e.g. it would never "
+        "sub a QB into a bench WR's slot), so don't hedge or caveat that it might be an illegal or "
+        "impossible swap. Report both `flipped_result` (would the optimal lineup have won the real "
+        "matchup) and `optimal_beats_median` (would it have also cleared that week's median/top-half "
+        "bonus, if this league uses one) plainly, whichever combination applies.\n\n"
+        "For NEXT WEEK'S GAME TO WATCH: `next_week_game_to_watch.home_projected_score`/"
+        "`away_projected_score` already assume each team sets an OPTIMAL lineup from their current roster "
+        "using next week's real ESPN projections (with a free-agent-average stand-in for any empty slot) "
+        "- NOT each team's actual current lineup, since nobody has set next week's lineup yet. Present it "
+        "that way (e.g. 'if both sides set their best lineup') - don't claim this IS either team's live "
+        "current projection or win probability as of right now."
     )
     return (
         "You are writing a fantasy football weekly recap for a private league. Tone: ESPN/The Athletic "
@@ -351,6 +515,7 @@ def _build_claude_prompt(facts: dict) -> str:
         "on their own line (e.g. \"**HEADLINE**\"), followed by a blank line before that section's text:\n"
         + "\n".join(SECTION_ORDER)
         + "\n\n" + bad_beat_instructions
+        + "\n\n" + other_instructions
         + "\n\nFACTS (JSON):\n"
         + json.dumps(facts, indent=2)
     )
@@ -395,12 +560,13 @@ def generate_claude_commentary(facts: dict, api_key: str) -> str:
 
 
 def get_or_generate_weekly_recap(
-    conn: sqlite3.Connection, season: int, week: int, force_regenerate: bool = False, log=print
+    conn: sqlite3.Connection, season: int, week: int, force_regenerate: bool = False, log=print, league=None
 ) -> dict | None:
     """Returns {"facts": dict, "commentary": str, "source": str,
     "generated_at": str} or None if the week hasn't completed yet.
     Checks weekly_recaps first (unless force_regenerate) so repeat page
-    views never re-trigger a Claude call."""
+    views never re-trigger a Claude call - `league` (see build_weekly_
+    facts) only matters on that first, cached-afterward generation."""
     if not force_regenerate:
         row = conn.execute(
             "SELECT facts_json, commentary_text, source, generated_at FROM weekly_recaps "
@@ -416,7 +582,7 @@ def get_or_generate_weekly_recap(
                 "generated_at": generated_at,
             }
 
-    facts = build_weekly_facts(conn, season, week)
+    facts = build_weekly_facts(conn, season, week, league=league)
     if facts is None:
         return None
 

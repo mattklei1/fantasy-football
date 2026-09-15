@@ -71,7 +71,8 @@ def main() -> int:
             print("No completed regular-season week yet - skipping post.")
             return 0
 
-        result = commentary.get_or_generate_weekly_recap(conn, season, week, log=print)
+        league = client.get_league(season)
+        result = commentary.get_or_generate_weekly_recap(conn, season, week, log=print, league=league)
 
     if result is None:
         print(f"No recap available for week {week} - skipping post.")

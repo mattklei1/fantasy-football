@@ -3,7 +3,7 @@ data only, no live ESPN calls (per PROJECT_BRIEF testing requirements)."""
 import pandas as pd
 import pytest
 
-from fantasy_football.metrics.weekly_awards import compute_weekly_awards
+from fantasy_football.metrics.weekly_awards import _smart_lineup_call, compute_weekly_awards
 
 # A 6-team single week engineered so every award has an unambiguous winner:
 # team 1 (150, winner) vs team 2 (40, loser)   -> biggest blowout candidate, team1=highest score
@@ -76,16 +76,12 @@ def test_luckiest_win_is_weakest_all_play_record_among_winners():
     assert awards["luckiest_win"]["all_play_wins"] == 2
 
 
-def test_manager_of_the_week_is_highest_score_among_winners():
-    awards = compute_weekly_awards(SCORES, MATCHUPS)
-    assert awards["manager_of_the_week"]["team_pk"] == 1
-
-
 def test_lineup_efficiency_awards_are_none_without_roster_data():
     awards = compute_weekly_awards(SCORES, MATCHUPS)
     assert awards["best_lineup_efficiency"] is None
     assert awards["worst_lineup_efficiency"] is None
     assert awards["coaching_disaster"] is None
+    assert awards["smart_lineup_call"] is None
 
 
 def test_coaching_disaster_detects_a_flipped_loss():
@@ -110,6 +106,15 @@ def test_coaching_disaster_detects_a_flipped_loss():
     # the result. Confirm the module falls back to "biggest points left
     # on bench" rather than fabricating a flip that didn't happen.
     assert awards["coaching_disaster"]["flipped_result"] is False
+    # no flip this week, so the fallback picks the single biggest points-
+    # left-on-bench across ALL rostered teams - team3 (a single-player
+    # roster here, points_left_on_bench=0) beats team4's negative value
+    # (40-95=-55, since its "optimal" bench swap was actually worse), so
+    # team3 is "disaster" here. Its optimal (100, same as its real score)
+    # vs. the counterfactual median ([150,40,95,90,20] + 100 -> sorted
+    # [20,40,90,95,100,150] -> median 92.5): 100 > 92.5.
+    assert awards["coaching_disaster"]["team_pk"] == 3
+    assert awards["coaching_disaster"]["optimal_beats_median"] is True
 
 
 def test_coaching_disaster_flips_when_bench_beats_the_optimal_call():
@@ -130,9 +135,91 @@ def test_coaching_disaster_flips_when_bench_beats_the_optimal_call():
     assert awards["coaching_disaster"]["team_pk"] == 4
     assert awards["coaching_disaster"]["flipped_result"] is True
     assert awards["coaching_disaster"]["points_left_on_bench"] == pytest.approx(25.0)
+    # team4's optimal (120) beats the counterfactual median
+    # ([150,40,100,90,20] + 120 -> sorted [20,40,90,100,120,150] -> median 95)
+    assert awards["coaching_disaster"]["optimal_beats_median"] is True
 
 
 def test_empty_inputs_return_empty_dict():
     empty = pd.DataFrame(columns=["week", "team_pk", "score"])
     assert compute_weekly_awards(empty, MATCHUPS) == {}
     assert compute_weekly_awards(SCORES, pd.DataFrame(columns=["week", "home_team_pk", "away_team_pk", "home_score", "away_score"])) == {}
+
+
+# --- smart_lineup_call -------------------------------------------------
+
+def _slc_row(team_pk, player_id, name, position, slot_position, is_starter, points, projected, eligible):
+    return {
+        "team_pk": team_pk, "player_id": player_id, "player_name": name, "position": position,
+        "slot_position": slot_position, "is_starter": is_starter, "points": points,
+        "projected_points": projected, "eligible_slots": frozenset(eligible),
+    }
+
+
+def test_smart_lineup_call_finds_a_started_underdog_that_outscored_a_higher_projected_bench_option():
+    roster = pd.DataFrame(
+        [
+            # started WR, projected LOW (8), actually scored 20
+            _slc_row(1, 1, "Started WR", "WR", "WR", 1, 20.0, 8.0, {"WR", "FLEX", "BE"}),
+            # benched WR, projected HIGHER (15), actually scored only 5 - the "obvious" call that flopped
+            _slc_row(1, 2, "Benched WR", "WR", "BE", 0, 5.0, 15.0, {"WR", "FLEX", "BE"}),
+        ]
+    )
+    result = _smart_lineup_call(roster)
+    assert result is not None
+    assert result["team_pk"] == 1
+    assert result["started"]["player_name"] == "Started WR"
+    assert result["benched"]["player_name"] == "Benched WR"
+    assert result["actual_swing"] == pytest.approx(15.0)
+
+
+def test_smart_lineup_call_ignores_a_position_ineligible_bench_player():
+    roster = pd.DataFrame(
+        [
+            _slc_row(1, 1, "Started WR", "WR", "WR", 1, 20.0, 8.0, {"WR", "FLEX", "BE"}),
+            # a QB can't fill a WR slot - not a real alternative, even though projected higher
+            _slc_row(1, 2, "Benched QB", "QB", "BE", 0, 5.0, 30.0, {"QB", "BE"}),
+        ]
+    )
+    assert _smart_lineup_call(roster) is None
+
+
+def test_smart_lineup_call_ignores_when_the_obvious_pick_would_have_scored_more():
+    roster = pd.DataFrame(
+        [
+            # started WR outprojected by bench WR, but bench WR ALSO outscored them for real -
+            # the "obvious" call would have been right, nothing to celebrate
+            _slc_row(1, 1, "Started WR", "WR", "WR", 1, 10.0, 8.0, {"WR", "FLEX", "BE"}),
+            _slc_row(1, 2, "Benched WR", "WR", "BE", 0, 25.0, 15.0, {"WR", "FLEX", "BE"}),
+        ]
+    )
+    assert _smart_lineup_call(roster) is None
+
+
+def test_smart_lineup_call_picks_the_biggest_swing_across_teams():
+    roster = pd.DataFrame(
+        [
+            _slc_row(1, 1, "Small Swing Starter", "WR", "WR", 1, 12.0, 8.0, {"WR", "FLEX", "BE"}),
+            _slc_row(1, 2, "Small Swing Bench", "WR", "BE", 0, 5.0, 15.0, {"WR", "FLEX", "BE"}),
+            _slc_row(2, 3, "Big Swing Starter", "RB", "FLEX", 1, 30.0, 9.0, {"RB", "FLEX", "BE"}),
+            _slc_row(2, 4, "Big Swing Bench", "RB", "BE", 0, 2.0, 20.0, {"RB", "FLEX", "BE"}),
+        ]
+    )
+    result = _smart_lineup_call(roster)
+    assert result["team_pk"] == 2
+    assert result["started"]["player_name"] == "Big Swing Starter"
+
+
+def test_smart_lineup_call_none_without_projected_points_column():
+    roster = pd.DataFrame(
+        {
+            "team_pk": [1, 1], "player_id": [1, 2], "player_name": ["A", "B"], "position": ["WR", "WR"],
+            "slot_position": ["WR", "BE"], "is_starter": [1, 0], "points": [20.0, 5.0],
+            "eligible_slots": [frozenset({"WR", "BE"}), frozenset({"WR", "BE"})],
+        }
+    )
+    assert _smart_lineup_call(roster) is None
+
+
+def test_smart_lineup_call_none_on_empty_input():
+    assert _smart_lineup_call(pd.DataFrame()) is None

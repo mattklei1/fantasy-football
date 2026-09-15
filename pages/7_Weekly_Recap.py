@@ -8,6 +8,7 @@ import streamlit as st
 from fantasy_football import commentary
 from fantasy_football import dashboard_data as dd
 from fantasy_football import ui_common as ui
+from fantasy_football.league_context import get_active_espn_client
 
 st.set_page_config(page_title="Weekly Recap", page_icon="📰", layout="wide")
 ui.inject_css()
@@ -22,7 +23,12 @@ st.caption(
 )
 
 conn = dd.get_connection()
-result = commentary.get_or_generate_weekly_recap(conn, season, week)
+# The live `league` object only actually gets used on a cache MISS (see
+# get_or_generate_weekly_recap's docstring) - NEXT WEEK'S GAME TO WATCH's
+# free-agent-fallback projection (see commentary._game_to_watch) needs
+# it, everything else here comes from already-ingested DB data.
+league = get_active_espn_client().get_league(season)
+result = commentary.get_or_generate_weekly_recap(conn, season, week, league=league)
 
 if result is None:
     st.info(f"Week {week} of {season} hasn't completed yet - nothing to recap.")
@@ -37,7 +43,7 @@ with col1:
     st.caption(f"{source_label} · generated {result['generated_at']} UTC")
 with col2:
     if st.button("🔄 Regenerate"):
-        commentary.get_or_generate_weekly_recap(conn, season, week, force_regenerate=True)
+        commentary.get_or_generate_weekly_recap(conn, season, week, force_regenerate=True, league=league)
         st.rerun()
 
 for block in result["commentary"].split("\n\n"):

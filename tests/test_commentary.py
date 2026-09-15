@@ -170,6 +170,154 @@ def test_get_or_generate_recap_uses_claude_when_available(conn, monkeypatch):
     assert result["commentary"] == "HEADLINE\nFake AI recap"
 
 
+def test_next_week_game_to_watch_uses_optimal_lineup_projection_not_ppg(conn):
+    # give team1 a real week-2 projection for its one real slot-eligible
+    # player (QB) - should flow straight into home_projected_score,
+    # NOT a season-ppg-blend number (team1's week-1 ppg was 150.0,
+    # nowhere close to this)
+    conn.execute(
+        "INSERT INTO player_week_scores (season_id, week, player_id, projected_points) VALUES (2099, 2, 1, 27.5)"
+    )
+    conn.commit()
+    total = commentary._team_next_week_optimal_projection(
+        conn, 2099, roster_week=1, next_week=2, team_pk=1,
+        position_slot_counts={"QB": 1, "BE": 5}, free_agent_avg_by_position={},
+    )
+    assert total == pytest.approx(27.5)
+
+
+def test_game_to_watch_picks_the_matchup_closest_to_50_50_by_new_projections(conn):
+    # team1 vs team3 (week-2 matchup): give them a lopsided gap (27.5 vs
+    # 0) - a blowout, not close. team2 vs team4: leave both at 0 (tied)
+    # - the genuinely closest possible matchup, and the one that should
+    # be picked even though team1's real number is much bigger.
+    conn.execute(
+        "INSERT INTO player_week_scores (season_id, week, player_id, projected_points) VALUES (2099, 2, 1, 27.5)"
+    )
+    conn.commit()
+    facts = commentary.build_weekly_facts(conn, 2099, 1)
+    gtw = facts["next_week_game_to_watch"]
+    assert {gtw["home"]["team_pk"], gtw["away"]["team_pk"]} == {2, 4}
+    assert gtw["home_win_probability"] == pytest.approx(0.5)
+
+
+def test_team_next_week_optimal_projection_ignores_bench_player_ineligible_for_the_slot(conn):
+    # player 2 (Bench RB) is NOT eligible for the QB slot, so it should
+    # never get picked even if it somehow had a huge next-week projection
+    conn.execute(
+        "INSERT INTO player_week_scores (season_id, week, player_id, projected_points) VALUES (2099, 2, 2, 99.0)"
+    )
+    conn.commit()
+    total = commentary._team_next_week_optimal_projection(
+        conn, 2099, roster_week=1, next_week=2, team_pk=1,
+        position_slot_counts={"QB": 1, "BE": 5}, free_agent_avg_by_position={},
+    )
+    assert total == pytest.approx(0.0)  # player 1 (the only QB-eligible player) has no week-2 projection yet
+
+
+def test_team_next_week_optimal_projection_falls_back_to_free_agent_average_for_a_zero_projected_slot(conn):
+    total = commentary._team_next_week_optimal_projection(
+        conn, 2099, roster_week=1, next_week=2, team_pk=1,
+        position_slot_counts={"QB": 1, "BE": 5}, free_agent_avg_by_position={"QB": 15.0},
+    )
+    assert total == pytest.approx(15.0)
+
+
+class _FakePlayer:
+    def __init__(self, projected):
+        self.stats = {2: {"projected_points": projected}}
+
+
+class _FakeLeague:
+    def __init__(self, by_position):
+        self._by_position = by_position
+
+    def free_agents(self, size, position):
+        return self._by_position.get(position, [])
+
+
+def test_free_agent_avg_projection_by_position_averages_and_skips_zeros():
+    league = _FakeLeague(
+        {
+            "QB": [_FakePlayer(10.0), _FakePlayer(20.0), _FakePlayer(0.0)],
+            "RB": [],
+        }
+    )
+    result = commentary._free_agent_avg_projection_by_position(league, next_week=2)
+    assert result["QB"] == pytest.approx(15.0)  # average of 10 and 20 - the 0.0 is excluded
+    assert "RB" not in result  # no usable free agents at RB
+
+
+def test_free_agent_avg_projection_by_position_tolerates_a_failing_position(monkeypatch):
+    class BoomLeague:
+        def free_agents(self, size, position):
+            if position == "QB":
+                raise RuntimeError("ESPN hiccup")
+            return [_FakePlayer(12.0)]
+
+    result = commentary._free_agent_avg_projection_by_position(BoomLeague(), next_week=2)
+    assert "QB" not in result
+    assert result.get("RB") == pytest.approx(12.0)
+
+
+def test_game_to_watch_none_without_position_slot_counts(conn):
+    conn.execute("UPDATE seasons SET position_slot_counts = NULL WHERE season_id = 2099")
+    conn.commit()
+    facts = commentary.build_weekly_facts(conn, 2099, 1)
+    assert facts["next_week_game_to_watch"] is None
+
+
+def test_bad_beat_prompt_scopes_to_the_specific_bad_beat_team(conn):
+    facts = commentary.build_weekly_facts(conn, 2099, 1)
+    bad_beat_pk = facts["awards"]["bad_beat"]["team"]["team_pk"]
+    prompt = commentary._build_claude_prompt(facts)
+    assert f"team_pk {bad_beat_pk!r}" in prompt
+    assert "never cite a real news story about a player on a DIFFERENT team" in prompt
+    assert "never add an 'honorable mention'" in prompt
+
+
+def test_prompt_directs_manager_of_the_week_to_lineup_efficiency_not_blowouts():
+    prompt = commentary._build_claude_prompt({
+        "season": 2099, "week": 1, "awards": {"bad_beat": None}, "biggest_fraud": None,
+        "power_rank_movers": [], "next_week_game_to_watch": None, "starting_rosters": [],
+    })
+    assert "awards.best_lineup_efficiency" in prompt
+    assert "not who scored the most or won by the most" in prompt
+
+
+def test_placeholder_manager_of_the_week_uses_lineup_efficiency():
+    facts = {
+        "week": 1,
+        "awards": {
+            "highest_score": None, "closest_game": None, "biggest_blowout": None, "bad_beat": None,
+            "best_lineup_efficiency": {"team": {"team_name": "Team A", "manager_name": "Alice"}, "lineup_efficiency": 0.943},
+            "smart_lineup_call": None, "coaching_disaster": None,
+        },
+        "biggest_fraud": None, "power_rank_movers": [], "next_week_game_to_watch": None,
+    }
+    text = commentary.generate_placeholder_commentary(facts)
+    assert "Team A (Alice)" in text
+    assert "94.3%" in text
+
+
+def test_placeholder_coaching_disaster_reports_median_and_matchup_consequences():
+    facts = {
+        "week": 1,
+        "awards": {
+            "highest_score": None, "closest_game": None, "biggest_blowout": None, "bad_beat": None,
+            "best_lineup_efficiency": None, "smart_lineup_call": None,
+            "coaching_disaster": {
+                "team": {"team_name": "Team D", "manager_name": "Dan"}, "points_left_on_bench": 12.3,
+                "flipped_result": True, "optimal_beats_median": True,
+            },
+        },
+        "biggest_fraud": None, "power_rank_movers": [], "next_week_game_to_watch": None,
+    }
+    text = commentary.generate_placeholder_commentary(facts)
+    assert "would have won the matchup" in text
+    assert "would have cleared the median" in text
+
+
 def test_force_regenerate_overwrites_existing_recap(conn, monkeypatch):
     monkeypatch.setattr(commentary.config, "anthropic_api_key", lambda: None)
     commentary.get_or_generate_weekly_recap(conn, 2099, 1)

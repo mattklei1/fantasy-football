@@ -3366,3 +3366,92 @@ to the within-week chart).
   `test_matchup_snapshots.py`; `load_snapshots`/`save_snapshot` aren't
   unit tested, live/GitHub-API functions per this project's convention).
   337/337 tests passing.
+
+**Weekly Recap: 4 sections reworked per user's detailed feedback on a
+real preview (2026-09-15, same session).** After previewing a real
+Week-1 recap (generated but not posted, per the user's "give me a
+preview first"), the user gave specific, checkable feedback on 4 of the
+6 real sections - implemented all of it, verified live against the same
+real league data both before/after and via a real Claude-generated pass:
+
+1. **BAD BEAT now scoped to ONE specific team.** Previously the prompt
+   let Claude connect ANY real news story to ANY rostered player league-
+   wide, regardless of whether it affected that player's own team's
+   result - it had cited a Kyler Murray concussion as an "honorable
+   mention" for a team that actually won comfortably (Derrick Henry
+   "cleaned up the mess"), i.e. a real injury that never affected any
+   matchup outcome. `_build_claude_prompt()` now names the specific
+   `awards.bad_beat.team_pk` (the highest-scorer-among-losers, i.e. a
+   confirmed real loss) and instructs Claude to search only for news
+   connecting to players on THAT team's own roster, explicitly banning
+   "honorable mentions" about unrelated teams. Verified live: a real
+   Claude pass now correctly ties McCaffrey/Pollard's real down games to
+   McConkey Kong's own real loss, no more unrelated players.
+2. **MANAGER OF THE WEEK now sources `best_lineup_efficiency`, not
+   "highest score among winners"** (which in practice just restated
+   BEATDOWN OF THE WEEK). The old `manager_of_the_week` award was
+   removed from `weekly_awards.py` entirely (dead code - nothing else
+   used it). Added a new `smart_lineup_call` award/section alongside it:
+   the week's biggest "trusted the gut over the projection, and it paid
+   off" call - a manager started a player PROJECTED lower than a bench
+   alternative eligible for that EXACT slot (a real like-for-like
+   choice, checked via `eligible_slots`, never an illegal position
+   swap), and the started player actually outscored the higher-
+   projected alternative. New `metrics/loaders.load_roster_with_
+   projections()` (player_name/position/slot_position/projected_points
+   added to the existing roster-loading pattern) feeds it.
+3. **COACHING DISASTER now also reports the median (top-half) bonus.**
+   `points_left_on_bench` was ALREADY a fully legal, eligible_slots-
+   respecting optimal lineup (via lineup_optimizer.optimal_lineup()) -
+   confirmed by re-deriving the exact same 41.4 figure independently -
+   so the user's "make sure you're factoring in you can't sub a QB for
+   a WR" concern was already satisfied; what was missing was whether the
+   optimal lineup would have ALSO cleared that week's median. Added
+   `optimal_beats_median` to the award: recomputes the week's median
+   with ONLY this one team's score swapped for their optimal total
+   (every other team's real score stays real, since only this team's
+   roster is hypothetical).
+4. **NEXT WEEK'S GAME TO WATCH now projects from an assumed OPTIMAL
+   lineup using next week's real ESPN projections**, not a season-PPG
+   blend - the old version implied a "right now" win probability while
+   nobody's actually set next week's lineup yet. New `_team_next_week_
+   optimal_projection()` runs the same `optimal_lineup()` solver against
+   each team's CURRENT roster with next week's `player_week_scores.
+   projected_points` (already populated by the daily refresh added
+   earlier this session) as the value. Per the user's exact spec, "if
+   anyone still has a zero after these substitutions, assume they pick
+   someone up off of the waiver wire": any assigned slot whose real
+   rostered player still projects to 0 falls back to the AVERAGE next-
+   week projection among currently available free agents at that
+   player's position (`_free_agent_avg_projection_by_position()`, one
+   live `league.free_agents()` call per position, computed ONCE per
+   recap generation and reused across all teams - not refetched per
+   team). `league` (a live espn_api League) is now an optional parameter
+   threaded through `build_weekly_facts()`/`get_or_generate_weekly_
+   recap()` from both callers (the Streamlit page, the GitHub Actions
+   script) - only actually used on a cache MISS, since a cached recap
+   never touches this code path again.
+5. **FRAUD WATCH deliberately left untouched** - user's own words: "I'm
+   not quite sure how to think about this one... keep for now."
+
+**Real bug found and fixed while implementing #4**: `float(r.
+projected_points or 0.0)` does NOT correctly convert a missing (NaN,
+from the LEFT JOIN) projection to 0 - `nan or 0.0` evaluates to `nan`,
+not `0.0`, because NaN is truthy in Python. This silently poisoned the
+optimal-lineup solver's cost matrix (`ValueError: matrix contains
+invalid numeric entries`) whenever a real, slot-eligible rostered player
+simply hadn't had a next-week projection ingested yet - exactly the
+everyday scenario this whole feature exists to handle gracefully. Fixed
+with an explicit `.fillna(0.0)` on the DataFrame column before
+construction, not a per-use-site `or` fallback. Caught by a test whose
+own initial assumption (which matchup would be "closest") was ALSO
+wrong until traced through by hand - both fixed together.
+
+Verified live against the real production league on a scratch temp DB
+(same pattern as prior features this session): regenerated Week 1's
+real recap with `force_regenerate=True` and a real `league` object,
+both via the placeholder path (to inspect raw award values directly)
+and a real Claude generation pass - confirmed all 4 changes render
+correctly with real data, including the free-agent fallback actually
+firing. 23 new/updated tests in `test_commentary.py`, 15 (was 9) in
+`test_weekly_awards.py`. 353/353 tests passing overall.
