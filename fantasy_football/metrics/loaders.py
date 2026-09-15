@@ -241,3 +241,31 @@ def load_roster_for_week(conn: sqlite3.Connection, season: int, week: int) -> pd
         WHERE wr.season_id = ? AND wr.week = ?
     """
     return pd.read_sql_query(query, conn, params=(season, week))
+
+
+def load_week0_roster_for_strength(conn: sqlite3.Connection, season: int) -> pd.DataFrame:
+    """Like load_roster_for_week(season, 1), but fp_pos_rank comes from
+    the week=0 FantasyPros ADP snapshot (ingest.ingest_fantasypros_adp_
+    rankings) instead of week=1's ROS rank - draft-day consensus, not a
+    rank that's already drifted forward with in-season performance. Real
+    roster composition and ESPN weekly projection still come from the
+    real Week-1 data (nothing to draft-day-snapshot there - Week 1's
+    roster IS the draft result, and ESPN's Week-1 projection is already
+    confirmed frozen at its pregame value). Used only by playoff_odds_
+    snapshots.compute_week0_team_state() - see roster_strength.py's
+    module docstring for why FantasyPros is 40% of the Roster Strength
+    blend and ESPN weekly projection is the other 20%."""
+    query = """
+        SELECT wr.team_pk, wr.player_id, p.default_position AS position,
+               wr.slot_position, wr.is_starter,
+               pws.projected_points,
+               fpr.pos_rank AS fp_pos_rank
+        FROM weekly_rosters wr
+        JOIN players p ON p.player_id = wr.player_id
+        LEFT JOIN player_week_scores pws
+            ON pws.season_id = wr.season_id AND pws.week = 1 AND pws.player_id = wr.player_id
+        LEFT JOIN fantasypros_rankings fpr
+            ON fpr.season_id = wr.season_id AND fpr.week = 0 AND fpr.player_id = wr.player_id
+        WHERE wr.season_id = ? AND wr.week = 1
+    """
+    return pd.read_sql_query(query, conn, params=(season,))

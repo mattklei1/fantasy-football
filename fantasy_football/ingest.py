@@ -510,6 +510,77 @@ def ingest_fantasypros_rankings(conn, season: int, week: int, api_key: str, log=
     db.record_fantasypros_refresh(conn, season)
 
 
+def ingest_fantasypros_adp_rankings(conn, season: int, api_key: str, log=print) -> int:
+    """Real Average Draft Position consensus (fantasypros_client.
+    fetch_all_adp_rankings - a genuinely distinct, draft-time-specific
+    ranking, NOT rest-of-season), matched against the REAL Week-1 roster
+    (the actual draft result, before any waiver moves) and stored in
+    `fantasypros_rankings` under the special `week=0` marker - the same
+    "Week 0" convention used everywhere else in this project (playoff_
+    odds_snapshots.py's manifest, roster_strength_weekly). Powers the
+    Week-0 Roster Strength snapshot (see roster_strength.compute_week0_
+    roster_strength()) with the correct draft-time FantasyPros signal
+    instead of a drifted-forward ROS rank (user, 2026-09-16: "roster
+    strength in week 0 should have been the fantasypros draft rankings
+    instead of rest of season rankings").
+
+    Deliberately does NOT call db.record_fantasypros_refresh() - that
+    timestamp drives the Roster Strength page's "as of" caption for the
+    LIVE ROS pipeline, and this is a one-time historical snapshot, not a
+    refresh of it. Returns the number of players matched - meant to be
+    called ONCE per season (the caller gates on `week=0` rows already
+    existing, same pattern as playoff_odds_snapshots' Week-0 gate) since
+    a real draft only happens once."""
+    from . import fantasypros_client, player_matching
+
+    rows = conn.execute(
+        """
+        SELECT DISTINCT wr.player_id, p.player_name, p.default_position, wr.pro_team
+        FROM weekly_rosters wr JOIN players p ON p.player_id = wr.player_id
+        WHERE wr.season_id = ? AND wr.week = 1
+        """,
+        (season,),
+    ).fetchall()
+    if not rows:
+        return 0
+    espn_players_by_position: dict[str, list[dict]] = {}
+    for player_id, player_name, position, pro_team in rows:
+        espn_players_by_position.setdefault(position, []).append(
+            {"player_id": player_id, "player_name": player_name, "pro_team": pro_team}
+        )
+
+    fp_by_position = fantasypros_client.fetch_all_adp_rankings(api_key, season)
+    espn_id_map = fantasypros_client.fetch_player_espn_id_map(api_key)
+
+    matched_total = 0
+    for fp_position, fp_players in fp_by_position.items():
+        espn_position = player_matching.POSITION_MAP.get(fp_position, fp_position)
+        espn_players = espn_players_by_position.get(espn_position, [])
+        id_map = player_matching.match_players_for_position(
+            espn_players, fp_players, espn_position, espn_id_map=espn_id_map
+        )
+        fp_by_id = {p["player_id"]: p for p in fp_players}
+        for fp_id, espn_id in id_map.items():
+            fp = fp_by_id[fp_id]
+            db.upsert(
+                conn,
+                "fantasypros_rankings",
+                {
+                    "season_id": season,
+                    "week": 0,
+                    "player_id": espn_id,
+                    "position": espn_position,
+                    "rank_ecr": fp.get("rank_ecr"),
+                    "pos_rank": player_matching.parse_pos_rank(fp.get("pos_rank")),
+                    "ros_points": fp.get("r2p_pts"),
+                },
+                conflict_cols=["season_id", "week", "player_id"],
+            )
+        matched_total += len(id_map)
+    log(f"[info] season {season}: matched {matched_total} FantasyPros ADP (Week 0 draft-time) rankings")
+    return matched_total
+
+
 def ingest_season(conn, client: ESPNClient, season: int, log=print) -> None:
     league = client.get_league(season)
     current_season = client.credentials.current_season

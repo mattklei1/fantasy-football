@@ -3779,3 +3779,94 @@ turning a real 9-2 into a fabricated 9-3.
   fixture's real n-1 opponent count), 2 existing `test_commentary.py`
   prompt-content tests updated for the trimmed wording. 380/380 tests
   passing.
+
+**Week 0 playoff odds rebuilt on Roster Strength, with a real
+FantasyPros draft-time (ADP) signal instead of ROS rank (2026-09-16,
+same session).** Prompted by the Driscoll investigation the turn before
+(Roster Strength said his team was elite at Week 0; raw Week-1 point
+projection said below-average; the truth split the difference). User:
+"Rebuild week 0 playoff odds. It should be roster strength. And roster
+strength in week 0 should have been the fantasypros draft rankings
+(instead of rest of season rankings)?"
+
+- **Investigated the "draft rankings" question live first, rather than
+  assuming**: hit FantasyPros' `consensus-rankings` endpoint with
+  `type=DRAFT`, `type=PRESEASON`, and a deliberately-invalid garbage
+  string - all three came back BYTE-IDENTICAL, proving neither `DRAFT`
+  nor `PRESEASON` is a real supported value; the API just silently
+  falls back to some default list for any unrecognized `type`. `type=
+  ADP` (Average Draft Position), however, came back genuinely
+  different - same schema as ROS/weekly (`rank_ecr`, `pos_rank`,
+  `tier`), directly reusable. ADP is the real, correct signal here: it
+  reflects draft-time consensus and, unlike ROS, doesn't drift forward
+  with in-season performance - exactly "what did we know right after
+  the draft" even when fetched weeks into the season.
+- New `fantasypros_client.fetch_adp_rankings()`/`fetch_all_adp_rankings()`
+  (`type=ADP`, mirrors the ROS functions) and `ingest.
+  ingest_fantasypros_adp_rankings()` - matches ADP against the REAL
+  Week-1 roster (the actual draft result) and stores it in
+  `fantasypros_rankings` under the `week=0` marker (the same "Week 0"
+  convention already used by the playoff-odds manifest and `roster_
+  strength_weekly`). Deliberately does NOT call `db.record_fantasypros_
+  refresh()` - that timestamp drives the Roster Strength page's "as of"
+  caption for the LIVE ROS pipeline, and this is a one-time historical
+  snapshot, not a refresh of it (would have been a real, confusing bug
+  if not caught: the page would claim ROS data was refreshed when only
+  a one-time ADP snapshot was fetched). New `loaders.load_week0_
+  roster_for_strength()` joins real Week-1 roster + Week-1 ESPN
+  projection + Week-0 ADP rank, mirroring `load_roster_for_week()`.
+- `compute_week0_team_state()` rewritten: computes each team's Roster
+  Strength (0-100) via `roster_strength.py`'s existing, unchanged,
+  already-calibrated blend (40% FantasyPros/20% ESPN weekly) fed the
+  new Week-0 loader, THEN z-score-remaps that onto the real
+  distribution (mean/stdev) of that week's actual optimal-Week-1-lineup
+  ESPN point projections - Roster Strength drives the ranking and
+  spread entirely; the raw point projections only lend their real point
+  SCALE, no ranking influence. Chose this over inventing an arbitrary
+  points-per-roster-strength-point constant, and over blending the two
+  signals together (user said "it should be roster strength", not
+  "also factor in roster strength") - a z-score transplant is a
+  standard, defensible technique for regrading one ranked quantity onto
+  another distribution's real units, not a guess.
+- **Honestly flagged, not swept under the rug**: `WEEK0_TRUST_GAMES=45`
+  (the shrinkage-trust constant controlling how much Week 0 relies on
+  this signal vs. the league average) was RMSE-calibrated against the
+  RAW point-projection signal this replaced, using 6 real historical
+  seasons - there's no historical Roster Strength data to re-run that
+  same calibration against (FantasyPros/`roster_strength_weekly` only
+  exist for the current season). Carried the same constant over because
+  the z-score remap preserves the exact same mean/stdev as what was
+  calibrated (only the ranking changes, not the distribution's shape) -
+  documented as the best available estimate, explicitly flagged for
+  re-validation once multiple seasons of real Roster Strength history
+  exist.
+- `scripts/post_playoff_odds_snapshot.py` now runs the one-time ADP
+  ingest immediately before computing Week 0, gated the same way as the
+  rest of that script (best-effort - if `FANTASYPROS_API_KEY` isn't
+  configured or the call fails, Roster Strength degrades to its
+  ESPN-only signal, same as the live Roster Strength page already does
+  without a key).
+- Live-verified against the real 2026 production league: 208 real ADP
+  matches (same count as the ROS ingest). Jacob Batters (Driscoll) - the
+  team flagged last turn as having tied-for-best Week-0 Roster Strength
+  (50.3) but a below-average raw Week-1 point projection (126.8, 9th of
+  12) - now shows Week 0 playoff odds of **77.2%**, not the old 30.6%
+  raw-points-based, and much closer to what his elite Roster Strength
+  actually implied; the earlier "Driscoll jumped +51pp in one week"
+  discontinuity from that same investigation shrinks to a much more
+  sensible move now that his Week-0 starting point correctly reflects
+  his roster quality. Corrected the already-live `playoff_odds_
+  snapshots/2026.json` "0" entry on GitHub in place (same direct-MCP-
+  write path as prior corrections, since this dev sandbox still can't
+  write GitHub Contents API directly).
+- 2 new tests in `test_playoff_odds_snapshots.py`: one confirming the
+  ranking/scale still works sensibly in the ESPN-only degraded case (no
+  FantasyPros data), and a genuine regression test giving one team a
+  much lower raw point projection but a far better FantasyPros ADP rank
+  than another team and confirming Roster Strength - not raw points -
+  determines the resulting order (this is the test that couldn't have
+  passed under the old implementation). No new tests for the ingest
+  function itself - it's a live-API function, same untested-by-design
+  category as its ROS sibling per this project's established testing
+  convention (live/AppTest verification instead). 381/381 tests
+  passing.
