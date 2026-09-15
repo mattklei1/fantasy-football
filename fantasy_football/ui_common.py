@@ -521,7 +521,7 @@ def render_league_selector() -> None:
     else:
         accessible_ids = [primary_id]
 
-    labels = {primary_id: "My league (primary)"}
+    labels = {primary_id: "Salted by Quincy"}
     for lid, info in registered.items():
         labels[lid] = info.get("name") or f"League {lid}"
 
@@ -553,7 +553,7 @@ def render_manage_users_tab() -> None:
 
     primary_id = config.load_espn_credentials().league_id
     registered = league_registry.load_registered_leagues()
-    labels = {primary_id: "My league (primary)"}
+    labels = {primary_id: "Salted by Quincy"}
     for lid, info in registered.items():
         labels[lid] = info.get("name") or f"League {lid}"
 
