@@ -333,10 +333,15 @@ def get_trade_rosters(season: int) -> pd.DataFrame:
 
 
 # FantasyPros ROS rank weighted more heavily than ESPN's season-to-date
-# rank for TRADE value specifically - same relative weighting as Roster
-# Strength's fantasypros_ros(40)/season_rank(15) signals, just the two of
-# them renormalized on their own since trade value drops the weekly-
-# projection signal entirely (see get_trade_rosters' docstring).
+# rank for TRADE value specifically - a deliberately DIFFERENT choice
+# from Roster Strength (see roster_strength.py's module docstring), which
+# dropped ESPN's season-to-date rank entirely 2026-09-15 for being
+# backward-looking. Trade value is a different question: a player's
+# recent production IS relevant here (proving out a breakout, timing a
+# sell-high), not just where their value is projected to trend, so both
+# signals stay - just the two of them renormalized on their own since
+# trade value drops the weekly-projection signal entirely (see
+# get_trade_rosters' docstring).
 TRADE_VALUE_WEIGHTS = {"fantasypros_ros": 40, "espn_season_rank": 15}
 
 

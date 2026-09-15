@@ -3273,3 +3273,45 @@ both with a real timestamp and in the "never refreshed yet" state, no
 exceptions. 329/329 tests passing (no new unit tests - `db.py` has no
 test file in this project by established convention, same as the
 functions this mirrors).
+
+**Roster Strength: dropped ESPN season-to-date positional rank from the
+blend (2026-09-15, same session):** user asked what the signal was and
+why it belonged in a "forward-looking" metric, then agreed with the
+pushback - it's backward-looking (cumulative points scored so far this
+season), directly at odds with Roster Strength's own stated design goal,
+and its useful information was already largely subsumed by the
+dominant FantasyPros ROS signal (which itself factors in season-to-date
+production, but with forward-looking judgment a raw points tally can't
+capture). Early season especially it was also a noisy 1-2-game signal -
+the same class of problem just fixed in Playoff Odds.
+
+- `roster_strength.SIGNAL_WEIGHTS`: dropped `season_rank`, renormalized
+  `weekly_projection`/`fantasypros_ros` from 20/75 : 40/75 to 20/60 :
+  40/60 (still roughly the same 1:2 ratio between them).
+  `compute_player_values()` no longer reads a `pos_rank` column at all.
+- `metrics/loaders.load_roster_for_week()` (the ONLY caller of
+  `compute_player_values`, confirmed via grep) dropped the
+  `player_rankings` JOIN entirely - it was fetching a column nothing
+  would use anymore. `ingest_player_rankings()` itself is UNCHANGED and
+  keeps running in the daily refresh - `player_rankings`/`pos_rank` is
+  still genuinely used elsewhere (Waiver Board's `waiver_value.py`, War
+  Room's Trade Calculator), just no longer through this one loader.
+- **Trade Calculator's own, separate `TRADE_VALUE_WEIGHTS` in
+  `war_room_data.py` was deliberately left untouched** - it also blends
+  FantasyPros ROS with ESPN's season-to-date rank, but for a genuinely
+  different question (trade value legitimately cares about proven,
+  recent production - timing a sell-high, confirming a breakout - not
+  just forward trend). Only the comment cross-referencing Roster
+  Strength's old design was fixed, since that lineage no longer exists.
+- Updated `pages/3_Roster_Strength.py`'s module docstring, top captions,
+  and Methodology expander to describe the 2-signal blend.
+- Updated 3 tests in `test_metrics.py` that had `pos_rank` in their
+  synthetic input or asserted against the old 3-signal renormalization
+  behavior (test names/comments updated to match, not just made to pass
+  by coincidence).
+- Verified live against the real production league (scratch DB copy):
+  ran `compute_and_store_roster_strength()` end-to-end for week 1,
+  confirmed `load_roster_for_week()`'s output no longer has a `pos_rank`
+  column, confirmed all 12 teams get sane roster_strength values with no
+  errors. AppTest confirmed the page renders cleanly. 329/329 tests
+  passing.

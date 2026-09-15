@@ -309,7 +309,7 @@ def get_fantasypros_last_refreshed(season: int) -> str | None:
     db.record_fantasypros_refresh(). Deliberately separate from the
     broader roster-strength refresh timestamp: the Roster Strength page's
     "As of" date is anchored specifically to this, its single largest
-    (40/75 weight) and only genuinely forward-looking signal."""
+    (40/60 weight) and only genuinely forward-looking signal."""
     return db.get_fantasypros_last_refreshed(get_connection(), season)
 
 

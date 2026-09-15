@@ -192,21 +192,22 @@ def load_playoff_sim_state(conn: sqlite3.Connection, season: int) -> tuple[pd.Da
 
 def load_roster_for_week(conn: sqlite3.Connection, season: int, week: int) -> pd.DataFrame:
     """One row per rostered player for Roster Strength: team_pk, player_id,
-    position, slot_position, is_starter, projected_points, pos_rank
-    (ESPN's positional rank), fp_pos_rank (FantasyPros' ROS positional
-    rank, only present when FANTASYPROS_API_KEY is configured - see
-    ingest.py:ingest_fantasypros_rankings)."""
+    position, slot_position, is_starter, projected_points, fp_pos_rank
+    (FantasyPros' ROS positional rank, only present when
+    FANTASYPROS_API_KEY is configured - see
+    ingest.py:ingest_fantasypros_rankings). Deliberately does NOT include
+    ESPN's own season-to-date positional rank (player_rankings.pos_rank)
+    - that signal was dropped from Roster Strength's blend 2026-09-15,
+    see roster_strength.py's module docstring for why."""
     query = """
         SELECT wr.team_pk, wr.player_id, p.default_position AS position,
                wr.slot_position, wr.is_starter,
-               pws.projected_points, pr.pos_rank,
+               pws.projected_points,
                fpr.pos_rank AS fp_pos_rank
         FROM weekly_rosters wr
         JOIN players p ON p.player_id = wr.player_id
         LEFT JOIN player_week_scores pws
             ON pws.season_id = wr.season_id AND pws.week = wr.week AND pws.player_id = wr.player_id
-        LEFT JOIN player_rankings pr
-            ON pr.season_id = wr.season_id AND pr.week = wr.week AND pr.player_id = wr.player_id
         LEFT JOIN fantasypros_rankings fpr
             ON fpr.season_id = wr.season_id AND fpr.week = wr.week AND fpr.player_id = wr.player_id
         WHERE wr.season_id = ? AND wr.week = ?

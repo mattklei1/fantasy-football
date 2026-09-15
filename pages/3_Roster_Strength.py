@@ -1,8 +1,9 @@
 """ROSTER STRENGTH page: forward-looking roster quality, blending this
-week's ESPN projection, ESPN's season-long positional rank, and
-FantasyPros' rest-of-season expert rankings, weighted across starters vs.
-bench with a season-position-aware split. See
-fantasy_football/metrics/roster_strength.py for the full methodology."""
+week's ESPN projection and FantasyPros' rest-of-season expert rankings,
+weighted across starters vs. bench with a season-position-aware split.
+See fantasy_football/metrics/roster_strength.py for the full
+methodology, including why ESPN's season-to-date positional rank was
+deliberately dropped from the blend."""
 from __future__ import annotations
 
 import streamlit as st
@@ -26,8 +27,8 @@ else:
 
 st.caption(
     "Forward-looking roster quality (NOT past performance - see Power Score on Home for that). "
-    "Blends this week's ESPN projection, ESPN's season-long positional rank, and a third-party "
-    "rest-of-season expert consensus rank. Refreshes automatically once a day - the projection "
+    "Blends this week's ESPN projection and a third-party rest-of-season expert consensus rank "
+    "- no season-to-date performance data. Refreshes automatically once a day - the projection "
     "component is always a PREGAME number, never mid-game: that refresh is skipped entirely "
     "during live NFL broadcast windows, so it can't pick up a player's live, in-progress score."
 )
@@ -78,23 +79,25 @@ st.markdown(table.to_html(escape=False, index=False, classes="ff-table"), unsafe
 with st.expander("Methodology"):
     st.markdown(
         """
-Each rostered player gets a blended **player value** (0-1), from up to 3 signals:
+Each rostered player gets a blended **player value** (0-1), from up to 2 signals:
 - **This week's ESPN projection** (weight 20), converted to a percentile *within their
   position* across every rostered player league-wide (so a QB's projection is only compared
   to other QBs)
-- **ESPN's season-long positional rank** (weight 15), converted to a bounded 0-1 score via
-  `1 / (1 + (rank-1)/12)` (rank 1 → 1.0, rank 13 → 0.5, rank 25 → 0.33, ...)
-- **A third-party rest-of-season expert consensus positional rank** (weight 40 - the largest
-  single signal, since it's the only genuinely forward-looking one of the three and comes
-  from a licensed panel of experts, not a single source), converted with the same bounded
-  decay as ESPN's rank. Matched to our player records by name (D/ST by NFL team, since the
-  source lists "Houston Texans" where ESPN lists "Texans D/ST") - see
-  `fantasy_football/player_matching.py`. A player who can't be matched, or isn't ranked by
-  that source, simply falls back to whichever of the other two signals it has - missing data
-  is never treated as a zero.
-- An alternate rest-of-season ranking source was considered in the original design (weight 25)
-  but isn't wired up. The remaining 3 weights are renormalized to sum to 100 without it
-  (20:15:40 → proportionally 20/75 : 15/75 : 40/75).
+- **A third-party rest-of-season expert consensus positional rank** (weight 40 - the larger of
+  the two, since it's genuinely forward-looking and comes from a licensed panel of experts, not
+  a single source), converted to a bounded 0-1 score via `1 / (1 + (rank-1)/12)` (rank 1 → 1.0,
+  rank 13 → 0.5, rank 25 → 0.33, ...). Matched to our player records by name (D/ST by NFL team,
+  since the source lists "Houston Texans" where ESPN lists "Texans D/ST") - see
+  `fantasy_football/player_matching.py`. A player who can't be matched, or isn't ranked by that
+  source, falls back entirely to the ESPN projection signal - missing data is never treated as
+  a zero.
+
+Two other signals from the original design aren't used: an alternate rest-of-season ranking
+source (weight 25) was never wired up, and ESPN's own season-to-date positional rank (weight
+15) was deliberately dropped - it's backward-looking (cumulative points scored so far this
+season), which cuts against this metric's own forward-looking premise, and its useful signal
+was already largely captured by the expert consensus above. The remaining 2 weights are
+renormalized to sum to 100 (20:40 → proportionally 20/60 : 40/60, roughly a 1:2 split).
 
 Team-level **Starter Value** and **Bench Value** are the average player value within each
 group (IR-slot players are excluded entirely - they can't play). The final score blends the

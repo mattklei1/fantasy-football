@@ -212,7 +212,6 @@ def test_player_values_percentile_computed_within_position():
             "slot_position": ["QB", "BE", "RB", "BE"],
             "is_starter": [1, 0, 1, 0],
             "projected_points": [20.0, 15.0, 25.0, 5.0],
-            "pos_rank": [None, None, None, None],
         }
     )
     result = compute_player_values(roster)
@@ -231,23 +230,22 @@ def test_player_value_blends_fantasypros_signal_when_present():
             "slot_position": ["QB", "BE"],
             "is_starter": [1, 0],
             "projected_points": [20.0, 10.0],
-            "pos_rank": [None, None],
             "fp_pos_rank": [1, 25],
         }
     )
     result = compute_player_values(roster).set_index("player_id")
-    # with only the FantasyPros signal present (no ESPN pos_rank), a
-    # top-ranked FP player should score much higher than a QB25
+    # both signals agree player 1 is better (top projection AND top FP
+    # rank), so it should score much higher than a QB25
     assert result.loc[1, "player_value"] > result.loc[2, "player_value"]
-    # missing signals renormalize rather than drag the score toward 0 -
-    # a QB1 with only 1 of 3 signals present should still score near 1.0,
-    # not get capped near the FantasyPros weight (40/75 ~= 0.53)
+    # a player who's #1 on BOTH signals should score at/near the ceiling
     assert result.loc[1, "player_value"] == pytest.approx(1.0, abs=0.05)
 
 
-def test_player_value_falls_back_when_fantasypros_column_absent():
+def test_player_value_falls_back_to_projection_when_fantasypros_absent():
     # older call sites (or a DB with no FANTASYPROS_API_KEY configured)
-    # won't have an fp_pos_rank column at all - must not crash
+    # won't have an fp_pos_rank column at all - must not crash, and
+    # should renormalize onto the one remaining signal rather than drag
+    # the score down as if the missing signal were a zero
     roster = pd.DataFrame(
         {
             "team_pk": [1],
@@ -256,7 +254,6 @@ def test_player_value_falls_back_when_fantasypros_column_absent():
             "slot_position": ["QB"],
             "is_starter": [1],
             "projected_points": [20.0],
-            "pos_rank": [1],
         }
     )
     result = compute_player_values(roster)
@@ -272,7 +269,6 @@ def test_team_roster_strength_excludes_ir_and_splits_starter_bench():
             "slot_position": ["QB", "BE", "IR"],
             "is_starter": [1, 0, 0],
             "projected_points": [20.0, 10.0, 0.0],
-            "pos_rank": [1, 20, 999],
         }
     )
     valued = compute_player_values(roster)
