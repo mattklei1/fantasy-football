@@ -90,14 +90,22 @@ display["Record"] = display.apply(
 )
 
 MEDALS = {1: "🥇 ", 2: "🥈 ", 3: "🥉 "}
-display["Rank"] = display["power_rank"].apply(lambda r: f"{MEDALS.get(r, '')}{r}")
+display["Power Rank"] = display["power_rank"].apply(lambda r: f"{MEDALS.get(r, '')}{r}")
 display["Since Wk1"] = display["rank_change"].apply(ui.trend_arrow)
 display["PPG"] = display["ppg"].round(0).astype(int)
 display["All-Play %"] = (display["all_play_win_pct"] * 100).round(1)
 display["Power Score"] = display["power_score"].round(1)
 
+# Default sort: real standings order (combined matchup+median record, this
+# league's own ESPN tiebreak of total points scored - same two-key sort
+# playoff_sim.py's rank_teams() uses for real seeding) - NOT Power Rank,
+# so the table opens on "who's actually winning," with Power Rank as its
+# own separate, clearly-labeled column rather than silently driving row
+# order (user, 2026-09-16: "have the default sort be by actual record").
+display = display.sort_values(["actual_win_pct", "points_for"], ascending=[False, False]).reset_index(drop=True)
+
 table = display[
-    ["Rank", "Since Wk1", "team_name", "manager_name", "Record", "PPG", "All-Play %", "Power Score"]
+    ["Power Rank", "Since Wk1", "team_name", "manager_name", "Record", "PPG", "All-Play %", "Power Score"]
 ].rename(columns={"team_name": "Team", "manager_name": "Manager"})
 
 styled = table.style.map(ui.trend_color, subset=["Since Wk1"])
@@ -107,6 +115,14 @@ st.dataframe(
     hide_index=True,
     use_container_width=True,
     column_config={
+        "Power Rank": st.column_config.TextColumn(
+            "Power Rank",
+            help="Rank by Power Score (see the Power Score column) - NOT the same as actual "
+            "standings position (this table's own sort order, below), NOT Roster Strength "
+            "(a separate, forward-looking 'how good is this roster right now' metric - see "
+            "the Roster Strength tab), and NOT a projected final standing. It's a "
+            "results-plus-underlying-quality blend of THIS SEASON so far.",
+        ),
         "Since Wk1": st.column_config.TextColumn(
             "Since Wk1",
             help="Power Rank movement since Week 1 of THIS season - our own Power Score "
