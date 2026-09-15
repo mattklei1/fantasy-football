@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import streamlit as st
 
+from fantasy_football import config
 from fantasy_football import dashboard_data as dd
+from fantasy_football import playoff_odds_snapshots
 from fantasy_football import ui_common as ui
 from fantasy_football.metrics.playoff_sim import DEFAULT_N_SIMS, SHRINKAGE_GAMES
 from fantasy_football.metrics.win_probability import MIN_STDEV
@@ -52,6 +54,47 @@ table = display[
 ].rename(columns={"team_name": "Team", "manager_name": "Manager"})
 
 st.markdown(table.to_html(escape=False, index=False, classes="ff-table"), unsafe_allow_html=True)
+
+# Playoff-odds-over-time chart: a snapshot of this exact table is
+# captured once a week (see scripts/post_playoff_odds_snapshot.py) and
+# committed to main (a weekly write is cheap enough to skip the
+# non-deploying-branch trick matchup_snapshots.py needs for its
+# 10-minute cadence - see playoff_odds_snapshots.py's module docstring).
+# Degrades to a plain explanatory caption, never a crash, if no token is
+# configured or nothing's been collected yet.
+snapshots = playoff_odds_snapshots.load_snapshots(season)
+with st.container(border=True):
+    st.markdown("#### Playoff Odds Over Time")
+    if not snapshots:
+        if not config.github_token():
+            st.caption(
+                "Playoff-odds tracking isn't set up on this deployment yet "
+                "(GITHUB_TOKEN not configured)."
+            )
+        else:
+            st.caption("No snapshots collected yet this season - check back after week 1 wraps up.")
+    else:
+        metric_label = st.radio(
+            "Metric", ["Championship %", "Playoff %", "Bye %", "#1 Seed %"],
+            horizontal=True, key="playoff_odds_chart_metric",
+        )
+        metric_key = {
+            "Championship %": "championship_pct",
+            "Playoff %": "playoff_pct",
+            "Bye %": "bye_pct",
+            "#1 Seed %": "seed1_pct",
+        }[metric_label]
+
+        fig = playoff_odds_snapshots.build_chart_figure(snapshots, metric_key)
+        st.plotly_chart(fig, use_container_width=True)
+
+        mover = playoff_odds_snapshots.biggest_mover(snapshots, metric=metric_key)
+        if mover and abs(mover["delta"]) > 1e-9:
+            direction = "up" if mover["delta"] > 0 else "down"
+            st.caption(
+                f"📈 Biggest mover: **{mover['team_name']}** {direction} "
+                f"{abs(mover['delta']) * 100:.0f} pts since last week."
+            )
 
 with st.expander("Methodology"):
     st.markdown(

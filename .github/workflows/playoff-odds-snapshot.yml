@@ -1,0 +1,38 @@
+name: Playoff Odds Snapshot
+
+# Fires once a day across a DST-safety window (same pattern as
+# weekly-recap.yml) - the script itself self-gates on "do we already
+# have a snapshot for the real current completed week" via one
+# lightweight ESPN call, before doing any expensive ingest/metrics work,
+# so it's safe (and cheap) to fire daily rather than trying to guess
+# exactly which day a week rolls over on.
+on:
+  schedule:
+    - cron: "10,25,40,55 13,14 * * *"
+  workflow_dispatch: {}
+
+# Needed so the auto-provided secrets.GITHUB_TOKEN below can commit the
+# snapshot to main - no manually-created secret required for this write
+# path (unlike the Streamlit Cloud app's own GITHUB_TOKEN, which the
+# admin sets up separately to read this data back for the chart - see
+# fantasy_football/config.py's github_token() docstring).
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Capture playoff odds snapshot
+        env:
+          LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          SWID: ${{ secrets.SWID }}
+          CURRENT_SEASON: ${{ secrets.CURRENT_SEASON }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/post_playoff_odds_snapshot.py

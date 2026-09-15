@@ -3315,3 +3315,54 @@ the same class of problem just fixed in Playoff Odds.
   column, confirmed all 12 teams get sane roster_strength values with no
   errors. AppTest confirmed the page renders cleanly. 329/329 tests
   passing.
+
+**Playoff Odds Over Time chart (2026-09-15, same session):** user asked
+for a chart on the Playoff Odds page "like we did for in-week odds of
+winning" (the Matchups page's Win Probability Over Time chart). Same
+spirit, different cadence: playoff odds only change once a week (when a
+new week's games finish), not within a week, so the x-axis is WEEK
+NUMBER across the season, not real time within one week - no dead-time
+rangebreaks or benchmark ticks needed (those solved a problem specific
+to the within-week chart).
+
+- New `fantasy_football/playoff_odds_snapshots.py`: `load_snapshots()`/
+  `save_snapshot()` (one growing JSON manifest PER SEASON -
+  `{week_str: [team rows]}` - at `playoff_odds_snapshots/{season}.json`),
+  `snapshots_to_rows()`, `biggest_mover()`, `build_chart_figure()`
+  (reuses `matchup_snapshots._line_colors()` rather than duplicating the
+  Light24-palette helper).
+- **Storage deliberately uses the normal "commit to main" pattern**
+  (`rank_overrides.py`/`league_registry.py`'s pattern), NOT
+  `matchup_snapshots.py`'s dedicated non-deploying branch - that branch
+  exists specifically because a 10-minute cadence committing to `main`
+  would redeploy the live site every 10 minutes for ~16 hours/week; a
+  once-a-week write costs one harmless extra redeploy.
+- New `scripts/post_playoff_odds_snapshot.py` + `.github/workflows/
+  playoff-odds-snapshot.yml`, firing once a day (DST-safety multi-fire
+  window, same pattern as `weekly-recap.yml`). Self-gates BEFORE any
+  expensive work: one lightweight `client.get_league()` call gets the
+  real current week, and if that week's snapshot is already saved, the
+  script exits immediately - a full temp-DB `ingest_season()` +
+  `compute_and_store_season_metrics()` + Monte Carlo sim only actually
+  runs on the one daily firing that lands after a week rolls over, not
+  all 7.
+- `pages/6_Playoff_Odds.py`: new "Playoff Odds Over Time" section
+  between the results table and the Methodology expander, mirroring the
+  Matchups page's chart UI exactly (radio toggle - now 4 metrics:
+  Championship/Playoff/Bye/#1 Seed % - `st.plotly_chart`, biggest-mover
+  caption), degrading to a plain explanatory caption (never a crash)
+  when no `GITHUB_TOKEN` is configured or nothing's been collected yet.
+- Verified: real Plotly output visually checked via kaleido (12 distinct
+  team-colored lines, integer week ticks, 0-100% y-axis) - same QA
+  method used for the original in-week chart. AppTest confirmed the page
+  renders with no exceptions across 3 states (populated / no token / no
+  data yet). Live-checked the collector's gating logic against the real
+  production league (confirmed `current_week`/`last_completed_week`
+  computation and the empty-manifest read both work correctly) without
+  actually writing a snapshot, since that's the scheduled job's role
+  once deployed, not something to trigger ad hoc from this session.
+- 8 new tests in `test_playoff_odds_snapshots.py` (`snapshots_to_rows`,
+  `biggest_mover` - same pure-logic-only convention as
+  `test_matchup_snapshots.py`; `load_snapshots`/`save_snapshot` aren't
+  unit tested, live/GitHub-API functions per this project's convention).
+  337/337 tests passing.
