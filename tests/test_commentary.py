@@ -186,6 +186,36 @@ def test_get_or_generate_recap_uses_claude_when_available(conn, monkeypatch):
     assert result["commentary"] == "HEADLINE\nFake AI recap"
 
 
+def test_generate_claude_commentary_raises_on_max_tokens_truncation(monkeypatch):
+    # A recap cut off mid-sentence by the token limit is NOT a usable
+    # recap - it must raise (so get_or_generate_weekly_recap falls back
+    # to the placeholder) rather than silently return partial text, the
+    # way a "refusal" stop_reason already does.
+    import anthropic
+
+    class FakeBlock:
+        type = "text"
+        text = "**HEADLINE**\n\nThis recap gets cut off mid-sen"
+
+    class FakeResponse:
+        stop_reason = "max_tokens"
+        stop_details = None
+        content = [FakeBlock()]
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            return FakeResponse()
+
+    class FakeClient:
+        def __init__(self, api_key):
+            self.messages = FakeMessages()
+
+    monkeypatch.setattr(anthropic, "Anthropic", FakeClient)
+    facts = {"season": 2099, "week": 1, "awards": {"bad_beat": None}}
+    with pytest.raises(RuntimeError, match="cut off"):
+        commentary.generate_claude_commentary(facts, "fake-key")
+
+
 def test_next_week_game_to_watch_uses_optimal_lineup_projection_not_ppg(conn):
     # give team1 a real week-2 projection for its one real slot-eligible
     # player (QB) - should flow straight into home_projected_score,

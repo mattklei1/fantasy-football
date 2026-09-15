@@ -58,7 +58,7 @@ NEXT_WEEK_POSITIONS = ["QB", "RB", "WR", "TE", "K", "D/ST"]
 RECAP_PLAYOFF_SIM_N_SIMS = 3000
 
 CLAUDE_MODEL = "claude-opus-5"
-MAX_TOKENS = 4096
+MAX_TOKENS = 8192
 
 SECTION_ORDER = [
     "HEADLINE",
@@ -841,6 +841,8 @@ def generate_claude_commentary(facts: dict, api_key: str) -> str:
     )
     if response.stop_reason == "refusal":
         raise RuntimeError(f"Claude declined to generate this recap: {response.stop_details}")
+    if response.stop_reason == "max_tokens":
+        raise RuntimeError(f"Claude's recap was cut off at the {MAX_TOKENS}-token limit - not a complete recap")
     text = _strip_preamble("".join(block.text for block in response.content if block.type == "text"))
     if not text.strip():
         raise RuntimeError("Claude returned an empty recap")
