@@ -4223,3 +4223,32 @@ The Worst League of All Time). Verified rather than changed:
   correctly fall back rather than break; only the primary league gets
   the full Week-0-aware experience, which matches "just usc pike
   league" being the only league this infra was ever meant to cover.
+
+**Bug: Home page Record column always added median bonus wins, even
+for leagues without median scoring.** User screenshot ("BIR and
+Friends" league): teams showing 2-0/1-1/0-2 after only 1 real week
+played. Verified live against BIR and Friends' actual ESPN settings
+(`league.settings.median_scoring == False`, real ESPN team records all
+1-0/0-1 after week 1) - the dashboard's inflated records were a real
+bug, not a valid median-format result. Root cause: `Home.py`'s Record
+column (lines ~83-90) unconditionally added `median_wins`/`median_
+losses`/`median_ties` onto `matchup_wins`/`matchup_losses`/`matchup_
+ties` for every league, regardless of that season's own `median_
+scoring` flag - `metrics_weekly.median_wins` etc. are computed and
+stored for EVERY league unconditionally (informational top-half-of-week
+finish, independent of format), so a non-median league's real 1-0
+record was silently becoming a displayed 2-0. `season_metrics.py`'s own
+`actual_win_pct` already correctly gates this combination on `median_
+scoring` (see `combined_win_equiv` in season_metrics.py) - `get_
+standings()` just never surfaced that flag for Home.py's separately
+hand-built Record string to check. Fixed by reading `dd.get_season_
+meta(season)["median_scoring"]` in Home.py and only combining
+matchup+median wins/losses/ties when true; false now formats the
+Record from `matchup_wins`/`matchup_losses`/`matchup_ties` alone.
+Live-verified end to end against BIR and Friends' real data (temp-DB
+ingest + compute_and_store_season_metrics): now correctly shows 1-0/0-1
+for every team after week 1, matching ESPN's own displayed records
+exactly. 395/395 tests still passing (no existing test covered this -
+Home.py has no unit test file, consistent with this project's
+established pattern of live-verifying page-level Streamlit logic
+directly rather than through pytest/AppTest).

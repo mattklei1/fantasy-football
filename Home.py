@@ -80,14 +80,31 @@ with c4:
 st.markdown("### Standings & Power Rankings")
 
 display = standings.copy()
-display["Record"] = display.apply(
-    lambda r: ui.format_record(
-        r["matchup_wins"] + (r["median_wins"] if pd.notna(r["median_wins"]) else 0),
-        r["matchup_losses"] + (r["median_losses"] if pd.notna(r["median_losses"]) else 0),
-        r["matchup_ties"] + (r["median_ties"] if pd.notna(r["median_ties"]) else 0),
-    ),
-    axis=1,
-)
+
+# median_wins/losses/ties are computed and stored for EVERY league
+# (purely informational - who finished top-half of scoring each week),
+# but only actually COUNT toward the displayed Record for a season that
+# genuinely uses ESPN's median-scoring format - folding them in
+# unconditionally showed a false 2-0 for a team that ESPN itself has at
+# 1-0 on a league without median scoring turned on (user report,
+# 2026-09-16, screenshot of "BIR and Friends" showing inflated records;
+# confirmed against live ESPN settings - that league's median_scoring
+# is False, matchup-only 1-0/0-1 is the real record). Same flag
+# season_metrics.py's own actual_win_pct already gates on.
+median_scoring = bool(dd.get_season_meta(season).get("median_scoring"))
+if median_scoring:
+    display["Record"] = display.apply(
+        lambda r: ui.format_record(
+            r["matchup_wins"] + (r["median_wins"] if pd.notna(r["median_wins"]) else 0),
+            r["matchup_losses"] + (r["median_losses"] if pd.notna(r["median_losses"]) else 0),
+            r["matchup_ties"] + (r["median_ties"] if pd.notna(r["median_ties"]) else 0),
+        ),
+        axis=1,
+    )
+else:
+    display["Record"] = display.apply(
+        lambda r: ui.format_record(r["matchup_wins"], r["matchup_losses"], r["matchup_ties"]), axis=1,
+    )
 
 MEDALS = {1: "🥇 ", 2: "🥈 ", 3: "🥉 "}
 display["Power Rank"] = display["power_rank"].apply(lambda r: f"{MEDALS.get(r, '')}{r}")
