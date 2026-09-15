@@ -364,10 +364,13 @@ def _game_of_the_week(
 
 def _playoff_odds_summary(season: int, week: int, names: dict, actual: pd.DataFrame | None) -> dict | None:
     """Top-3 teams by playoff odds this week, plus the week's biggest
-    riser/faller (playoff_pct change vs. last week's real committed
+    riser/faller (playoff_pct change vs. the last real committed
     snapshot - playoff_odds_snapshots.py) and the season's biggest riser
-    (vs. the preseason fair-share baseline - see that module's
-    preseason_baseline_rows()). User feedback 2026-09-15: "there should
+    (vs. the REAL Week-0 snapshot - roster/projection-based odds right
+    after the draft, before any games - see that module's
+    compute_week0_snapshot_rows(); falls back to the synthetic Pre-draft
+    fair-share baseline, preseason_baseline_rows(), only if Week 0
+    hasn't been collected yet). User feedback 2026-09-15: "there should
     also be a section around playoff odds... top three teams... biggest
     riser from the past week, the biggest faller from the past week, and
     the biggest riser season long." None if this week's playoff sim
@@ -383,19 +386,25 @@ def _playoff_odds_summary(season: int, week: int, names: dict, actual: pd.DataFr
 
     team_names = {int(pk): names[int(pk)]["team_name"] for pk in actual.index if int(pk) in names}
     manifest = playoff_odds_snapshots.load_snapshots(season)
-    last_week_rows = manifest.get(str(week - 1)) if week > 1 else None
+    week0_rows = manifest.get("0")
+    # "last week" for week 1 has nothing real to compare against - Week
+    # 0 (roster-based, real) is the best available stand-in, one step
+    # better than the flat Pre-draft baseline.
+    last_week_rows = manifest.get(str(week - 1)) if week > 1 else week0_rows
+
     preseason_rows = playoff_odds_snapshots.preseason_baseline_rows(
         team_names, playoff_team_count=SUPPORTED_PLAYOFF_TEAM_COUNT
     )
     preseason_pct = {r["team_pk"]: r["playoff_pct"] for r in preseason_rows}
-    last_week_pct = {r["team_pk"]: r["playoff_pct"] for r in last_week_rows} if last_week_rows else preseason_pct
+    week0_pct = {r["team_pk"]: r["playoff_pct"] for r in week0_rows} if week0_rows else preseason_pct
+    last_week_pct = {r["team_pk"]: r["playoff_pct"] for r in last_week_rows} if last_week_rows else week0_pct
 
     weekly_riser = weekly_faller = season_riser = None
     for pk_raw, row in actual.iterrows():
         pk = int(pk_raw)
         now = float(row["playoff_pct"])
         weekly_delta = now - last_week_pct.get(pk, now)
-        season_delta = now - preseason_pct.get(pk, now)
+        season_delta = now - week0_pct.get(pk, now)
         if weekly_riser is None or weekly_delta > weekly_riser["delta"]:
             weekly_riser = {"team": _label(names, pk), "delta": round(weekly_delta, 3), "playoff_pct": round(now, 3)}
         if weekly_faller is None or weekly_delta < weekly_faller["delta"]:
@@ -408,11 +417,19 @@ def _playoff_odds_summary(season: int, week: int, names: dict, actual: pd.DataFr
         "weekly_riser": weekly_riser,
         "weekly_faller": weekly_faller,
         "season_riser": season_riser,
-        # True when there was no real last-week snapshot to compare
-        # against (e.g. recapping week 1) - the weekly figures above
-        # fell back to the preseason baseline instead, so callers should
-        # say "since preseason", not "since last week".
-        "weekly_compared_to_preseason": last_week_rows is None,
+        # What the weekly figures above actually got compared against -
+        # a real last-week snapshot, or (recapping week 1, or a season
+        # where Week 0 hasn't been collected) a fallback. Callers should
+        # phrase the comparison accordingly ("since last week" vs.
+        # "since Week 0" vs. "since preseason").
+        "weekly_compared_to": (
+            "last_week" if last_week_rows is not None and last_week_rows is not week0_rows
+            else ("week0" if week0_rows else "preseason")
+        ),
+        # Whether the season-long riser was measured against the real
+        # Week-0 snapshot or (not collected yet) the synthetic Pre-draft
+        # fair-share baseline.
+        "season_compared_to": "week0" if week0_rows else "preseason",
     }
 
 
@@ -556,14 +573,17 @@ def generate_placeholder_commentary(facts: dict) -> str:
         po_lines = [
             "Top 3: " + ", ".join(f"{_fmt_team(t['team'])} {t['playoff_pct']:.0%}" for t in pos["top3"])
         ]
-        since = "since preseason" if pos["weekly_compared_to_preseason"] else "this week"
+        since = {"last_week": "since last week", "week0": "since Week 0", "preseason": "since preseason"}[
+            pos["weekly_compared_to"]
+        ]
+        season_since = {"week0": "since Week 0", "preseason": "since preseason"}[pos["season_compared_to"]]
         wr, wf, sr = pos["weekly_riser"], pos["weekly_faller"], pos["season_riser"]
         if wr:
             po_lines.append(f"Riser ({since}): {_fmt_team(wr['team'])} {wr['delta']:+.0%} (now {wr['playoff_pct']:.0%})")
         if wf:
             po_lines.append(f"Faller ({since}): {_fmt_team(wf['team'])} {wf['delta']:+.0%} (now {wf['playoff_pct']:.0%})")
         if sr:
-            po_lines.append(f"Season-long riser: {_fmt_team(sr['team'])} {sr['delta']:+.0%} since preseason (now {sr['playoff_pct']:.0%})")
+            po_lines.append(f"Season-long riser: {_fmt_team(sr['team'])} {sr['delta']:+.0%} {season_since} (now {sr['playoff_pct']:.0%})")
         section("PLAYOFF ODDS", *po_lines)
     else:
         section("PLAYOFF ODDS", "Not available yet this season.")
@@ -684,9 +704,11 @@ def _build_claude_prompt(facts: dict) -> str:
     )
     other_instructions = (
         "For PLAYOFF ODDS: base it on `playoff_odds_summary` - `top3` (the current top-3 teams and their "
-        "playoff odds), `weekly_riser`/`weekly_faller` (biggest playoff-odds swing since last week - or "
-        "since preseason if `weekly_compared_to_preseason` is true, e.g. week 1), and `season_riser` "
-        "(biggest swing since the preseason fair-share baseline, always). Keep it snappy - a few sentences, "
+        "playoff odds), `weekly_riser`/`weekly_faller` (biggest playoff-odds swing - `weekly_compared_to` "
+        "says what against: a real last week, or Week 0/preseason if there's no real last week yet, e.g. "
+        "recapping week 1), and `season_riser` (biggest swing since `season_compared_to` - ideally the "
+        "real Week-0 snapshot, roster quality right after the draft before any games; only the flat "
+        "preseason fair-share baseline if Week 0 hasn't been collected yet). Keep it snappy - a few sentences, "
         "not a full leaderboard dump.\n\n"
         "For GAME OF THE WEEK: this is NOT about the closest score margin - it's about `game_of_the_week`, "
         "the real matchup that swung a PLAYOFF ODDS outcome the most for one of its two participants "

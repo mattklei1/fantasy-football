@@ -109,22 +109,34 @@ def test_preseason_baseline_empty_for_no_teams():
 
 # --- build_chart_figure -----------------------------------------------------
 
-def test_build_chart_figure_prepends_a_preseason_point_when_team_names_given():
+def test_build_chart_figure_prepends_a_pre_draft_point_when_team_names_given():
     from fantasy_football.playoff_odds_snapshots import build_chart_figure
 
     manifest = {"1": [_row(1, "A", 0.20), _row(2, "B", 0.10)]}
     team_names = {1: "A", 2: "B"}
     fig = build_chart_figure(manifest, "championship_pct", team_names=team_names, playoff_team_count=6)
     trace_a = next(t for t in fig.data if t.name == "A")
-    assert list(trace_a.x) == [0, 1]  # preseason (0) then week 1
+    assert list(trace_a.x) == [-1, 1]  # pre-draft (-1) then week 1 - no real Week 0 in this manifest
 
 
-def test_build_chart_figure_x_axis_labels_preseason_and_post_week():
+def test_build_chart_figure_uses_real_week0_snapshot_when_present():
     from fantasy_football.playoff_odds_snapshots import build_chart_figure
 
-    manifest = {"1": [_row(1, "A", 0.20)], "2": [_row(1, "A", 0.25)]}
+    manifest = {"0": [_row(1, "A", 0.15)], "1": [_row(1, "A", 0.20)]}
     fig = build_chart_figure(manifest, "championship_pct", team_names={1: "A"}, playoff_team_count=6)
-    assert list(fig.layout.xaxis.ticktext) == ["Preseason", "Post Wk1", "Post Wk2"]
+    trace_a = next(t for t in fig.data if t.name == "A")
+    # pre-draft (-1, synthetic) + the REAL week-0 snapshot (0) + week 1 -
+    # the real "0" entry must NOT be clobbered by the synthetic one
+    assert list(trace_a.x) == [-1, 0, 1]
+    assert list(trace_a.y) == [pytest.approx(1 / 1), pytest.approx(0.15), pytest.approx(0.20)]
+
+
+def test_build_chart_figure_x_axis_labels_pre_draft_week0_and_post_week():
+    from fantasy_football.playoff_odds_snapshots import build_chart_figure
+
+    manifest = {"0": [_row(1, "A", 0.18)], "1": [_row(1, "A", 0.20)], "2": [_row(1, "A", 0.25)]}
+    fig = build_chart_figure(manifest, "championship_pct", team_names={1: "A"}, playoff_team_count=6)
+    assert list(fig.layout.xaxis.ticktext) == ["Pre-draft", "Week 0", "Post Wk1", "Post Wk2"]
 
 
 def test_build_chart_figure_without_team_names_has_no_preseason_point():

@@ -3537,3 +3537,76 @@ production league - all 3 changes render correctly with real data, and
 the chart's preseason-anchor behavior separately confirmed via a
 rendered synthetic 12-team image (visually checked: a single point at
 50% for every team, diverging cleanly starting at Post Wk1).
+
+**Real "Week 0" playoff odds point added before Week 1 (2026-09-15, same
+session).** Follow-up to the preseason-anchor work above. User: "Show the
+first data point as pre-draft. Everyone is 50/50. Then show week 0. This
+means after draft but before week 1 games. Do you have playoff odds for
+that? Can you calculate using roster strength at that time?" Confirmed
+YES by directly querying the real production DB: `player_week_scores.
+projected_points` for week 1 is genuinely FROZEN at its pregame ESPN
+value and never overwritten by the live/actual result (spot-checked a
+player projected 18.49 who scored 0.0 - still shows 18.49). That makes a
+real, non-synthetic Week 0 playoff-odds point computable, unlike the
+"Preseason" point (renamed "Pre-draft") which has no roster data behind
+it at all and stays a pure fair-share constant.
+
+- Chart's pre-Week-1 region is now TWO points, not one: **Pre-draft**
+  (x=-1, unchanged synthetic fair-share formula from before, just
+  renamed/shifted off x=0) and **Week 0** (x=0, NEW - real playoff odds
+  computed from each team's optimal Week-1 lineup's total ESPN pregame
+  projection, reusing the same `optimal_lineup()` Hungarian-algorithm
+  solver already used for lineup efficiency and the recap's NEXT WEEK'S
+  GAME TO WATCH feature). Chose the optimal-lineup point total (already
+  in real fantasy-point units) over the 0-100 Roster Strength scale to
+  avoid inventing a synthetic scale-conversion formula.
+- New `playoff_odds_snapshots.compute_week0_team_state()` - builds a
+  `team_state` DataFrame from each team's Week-1 `weekly_rosters` +
+  `player_week_scores.projected_points` (0-0 record, `score_stdev`
+  floored at `MIN_STDEV`, `season_ppg`/`last3_ppg` both set to the
+  optimal lineup's projected total since there's no real scoring history
+  yet) and `compute_week0_snapshot_rows()` - feeds that into the same
+  `playoff_sim.simulate_season()` engine used everywhere else, so Week 0
+  odds are produced by the identical Monte Carlo model as every other
+  week, not a bespoke formula.
+- `build_chart_figure()` now only ever SYNTHESIZES the Pre-draft point
+  (`setdefault("-1", ...)` - never clobbers a real "0" entry if one
+  exists in the manifest); a real Week 0 snapshot, once collected,
+  always wins over the synthetic baseline. Tick labels: "Pre-draft",
+  "Week 0", "Post Wk1", "Post Wk2", ...
+- `_playoff_odds_summary()` (Weekly Recap's PLAYOFF ODDS section)
+  reworked to prefer the real Week 0 snapshot over the Pre-draft
+  synthetic baseline for both the season-long riser comparison and the
+  week-1 weekly riser/faller comparison (which has no real "last week"
+  to diff against) - falls back to the synthetic baseline only when no
+  real Week 0 snapshot has been collected yet for that season. Replaced
+  the old single boolean `weekly_compared_to_preseason` field with two
+  descriptive strings (`weekly_compared_to`: "last_week"/"week0"/
+  "preseason"; `season_compared_to`: "week0"/"preseason") so the recap
+  text always says exactly what it's comparing against.
+- `scripts/post_playoff_odds_snapshot.py` rewritten: still fires daily
+  and self-gates on one lightweight ESPN call before doing any real
+  work, but now backfills Week 0 (a one-time-ever computation per
+  season, the moment Week-1 roster/projection data exists) alongside
+  its existing latest-completed-week capture, sharing one temp-DB
+  ingest between the two so a day that needs both doesn't double the
+  ESPN/FantasyPros cost. Never fails the workflow over this - both
+  writes are best-effort and logged, not fatal.
+- Live-verified against the real 2026 production league (scratch temp
+  DB, real ESPN + FantasyPros calls, same pattern as every other feature
+  this session): all 12 real teams produced sensible Week 0 odds
+  clustered near 50% (0.49-0.51 playoff%, expected this early with no
+  scoring history yet and roster quality still close across a
+  competently-drafted 12-team league). Running the actual collector
+  script confirmed it computes correctly end-to-end and only fails at
+  the final write step in this dev sandbox ("Write access to this
+  GitHub API path is not permitted through this proxy" - the sandbox's
+  network policy blocks GitHub Contents API writes, unlike the real
+  GitHub Actions runner this script runs on in production) - and
+  degrades exactly as designed (logs the failure, still exits 0). The
+  real Week 0 snapshot will get written for real the next time the
+  scheduled GitHub Actions workflow runs after this lands on `main`.
+- 3 new/updated tests in `test_playoff_odds_snapshots.py`, 1 new test in
+  `test_commentary.py` (plus 2 existing tests updated for the new
+  `weekly_compared_to`/`season_compared_to` field names). 367/367 tests
+  passing overall.

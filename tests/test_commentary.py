@@ -423,8 +423,9 @@ def test_playoff_odds_summary_top3_and_season_riser_vs_preseason(monkeypatch):
         team_state, _EMPTY_REMAINING, median_scoring=True, reg_season_count=1,
         n_sims=2000, rng=np.random.default_rng(1),
     ).set_index("team_pk")
-    # no real snapshot history at all - forces the season-long/weekly
-    # comparisons to fall back to the preseason fair-share baseline
+    # no real snapshot history at all (no Week 0, no last week) - forces
+    # the season-long/weekly comparisons to fall back to the synthetic
+    # Pre-draft fair-share baseline
     monkeypatch.setattr(commentary.playoff_odds_snapshots, "load_snapshots", lambda season: {})
 
     result = commentary._playoff_odds_summary(2099, week=1, names=_EIGHT_TEAM_NAMES, actual=actual)
@@ -432,10 +433,36 @@ def test_playoff_odds_summary_top3_and_season_riser_vs_preseason(monkeypatch):
     assert len(result["top3"]) == 3
     # all 3 of the top-3 must be real playoff locks (playoff_pct == 1.0)
     assert all(t["playoff_pct"] == pytest.approx(1.0) for t in result["top3"])
-    assert result["weekly_compared_to_preseason"] is True
+    assert result["weekly_compared_to"] == "preseason"
+    assert result["season_compared_to"] == "preseason"
     # preseason baseline for 8 teams / 6 playoff spots = 6/8 = 0.75 -
     # team1 (a real 1.0 lock) rose the most above that baseline
     assert result["season_riser"]["delta"] == pytest.approx(0.25)
+
+
+def test_playoff_odds_summary_prefers_real_week0_snapshot_over_preseason(monkeypatch):
+    team_state = _eight_team_state()
+    actual = simulate_season(
+        team_state, _EMPTY_REMAINING, median_scoring=True, reg_season_count=1,
+        n_sims=2000, rng=np.random.default_rng(1),
+    ).set_index("team_pk")
+    # Real actual playoff_pct for this fixture: teams {1,3,5,6,7,8}=1.0,
+    # {2,4}=0.0. Give every OTHER playoff team a Week-0 baseline that
+    # already matched its real outcome exactly (delta=0), and team1 a
+    # Week-0 baseline well below its real 1.0 - the unambiguous riser.
+    week0_rows = [
+        {"team_pk": pk, "team_name": _EIGHT_TEAM_NAMES[pk]["team_name"],
+         "playoff_pct": 0.5 if pk == 1 else (0.0 if pk in (2, 4) else 1.0),
+         "bye_pct": 0.0, "seed1_pct": 0.0, "championship_pct": 0.0}
+        for pk in range(1, 9)
+    ]
+    monkeypatch.setattr(commentary.playoff_odds_snapshots, "load_snapshots", lambda season: {"0": week0_rows})
+
+    result = commentary._playoff_odds_summary(2099, week=1, names=_EIGHT_TEAM_NAMES, actual=actual)
+    assert result["weekly_compared_to"] == "week0"
+    assert result["season_compared_to"] == "week0"
+    assert result["season_riser"]["team"]["team_pk"] == 1
+    assert result["season_riser"]["delta"] == pytest.approx(0.5)  # 1.0 real - 0.5 real Week 0
 
 
 def test_playoff_odds_summary_uses_real_last_week_snapshot_when_present(monkeypatch):
@@ -457,7 +484,7 @@ def test_playoff_odds_summary_uses_real_last_week_snapshot_when_present(monkeypa
     )
 
     result = commentary._playoff_odds_summary(2099, week=2, names=_EIGHT_TEAM_NAMES, actual=actual)
-    assert result["weekly_compared_to_preseason"] is False
+    assert result["weekly_compared_to"] == "last_week"
     assert result["weekly_faller"]["team"]["team_pk"] == 2
     assert result["weekly_faller"]["delta"] == pytest.approx(-1.0)
 
