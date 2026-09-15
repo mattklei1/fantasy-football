@@ -193,8 +193,16 @@ def compute_league_records(matchups: pd.DataFrame) -> dict:
             d["opp_score"] = float(row["opp_score"])
         return d
 
+    # Top 3 highest scores ever (user, 2026-09-16: "show me the top 3") -
+    # same rank_col as the single `highest_score` above (percentile when
+    # available, raw score otherwise), so the #1 entry always matches
+    # `highest_score` exactly.
+    top3 = m.sort_values(rank_col, ascending=False).head(3)
+    highest_scores = [row_dict(row) for _, row in top3.iterrows()]
+
     return {
         "highest_score": row_dict(highest),
+        "highest_scores": highest_scores,
         "lowest_score": row_dict(lowest),
         "biggest_blowout": {**row_dict(blowout, with_opponent=True), "margin": abs(float(blowout["margin"]))},
         "closest_game": {**row_dict(closest, with_opponent=True), "margin": abs(float(closest["margin"]))},

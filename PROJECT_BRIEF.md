@@ -4490,3 +4490,24 @@ visibility rather than assuming:
   - not a leak to a non-War-Room member.
 399/399 tests passing (no test asserted the exact caption text
 changed).
+
+**History page: League Records' Highest Score Ever now shows the top
+3, both raw and normalized points at 2 decimals.** User: "For highest
+score ever in league records - show me the top 3. And show me raw
+points and normalized points (with decimals, enough to show difference
+between scores)." Was previously a single stat_card showing only the
+#1 score at 1 decimal and its percentile rounded to the nearest whole
+number - not enough precision to tell two close scores apart, and no
+way to see who else was near the top.
+- `metrics/history.compute_league_records()`: new `highest_scores` key
+  (top 3 by the same `rank_col` the existing single `highest_score`
+  already uses - percentile when available, raw score otherwise, so
+  entry #1 always matches `highest_score` exactly). `highest_score`
+  itself is unchanged, so `tests/test_metrics.py`'s existing assertions
+  against it still hold.
+- `pages/5_History.py`: the Highest Score Ever card now lists all 3,
+  each with raw score AND season-relative percentile at 2 decimals
+  (`177.90` / `94.23th pctile`, not `177.9` / `94th pctile`) - one line
+  per rank inside the card via `<br>`-joined HTML, reusing the existing
+  `stat_card()` (no new UI component needed).
+399/399 tests passing.

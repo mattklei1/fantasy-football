@@ -131,12 +131,23 @@ with tab_records:
 
         c1, c2, c3 = st.columns(3)
         hs, ls = records.get("highest_score"), records.get("lowest_score")
+        hs3 = records.get("highest_scores") or ([hs] if hs else [])
         bb, cg = records.get("biggest_blowout"), records.get("closest_game")
         mpl, lsw = records.get("most_points_in_loss"), records.get("lowest_score_in_win")
         with c1:
-            if hs:
-                pct = f" · {hs['score_percentile']*100:.0f}th pctile that season" if "score_percentile" in hs else ""
-                ui.stat_card("Highest Score Ever", f"{hs['score']:.1f}", f"{who(hs)} · {hs['season_id']} Wk{hs['week']}{pct}")
+            if hs3:
+                # Top 3, raw + normalized points both shown to 2 decimals -
+                # enough to actually tell two close scores apart (user,
+                # 2026-09-16: "show me the top 3... raw points and
+                # normalized points (with decimals, enough to show
+                # difference between scores)").
+                rank_lines = []
+                for rank, row in enumerate(hs3, start=1):
+                    pct = f" · {row['score_percentile']*100:.2f}th pctile" if "score_percentile" in row else ""
+                    rank_lines.append(
+                        f"#{rank} {row['score']:.2f} - {who(row)} · {row['season_id']} Wk{row['week']}{pct}"
+                    )
+                ui.stat_card("Highest Score Ever", f"{hs3[0]['score']:.2f}", "<br>".join(rank_lines))
             if bb:
                 ui.stat_card(
                     "Biggest Blowout", f"{bb['margin']:.1f} pt margin",
