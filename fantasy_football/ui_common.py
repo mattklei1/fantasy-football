@@ -439,11 +439,12 @@ def ensure_data_bootstrapped() -> None:
 
 
 def ensure_daily_data_fresh() -> None:
-    """Companion to ensure_data_bootstrapped(): keeps Roster Strength's
-    FantasyPros/ESPN rank inputs AND team metadata (name, record - e.g.
-    a manager renaming their team in ESPN) current on the LIVE deployed
-    site without a manual "Refresh ESPN Data" click. GitHub Actions
-    can't reach this site's local DB directly (see
+    """Companion to ensure_data_bootstrapped(): keeps all 3 of Roster
+    Strength's inputs (FantasyPros ROS rank, ESPN season-to-date
+    positional rank, ESPN weekly point projection) AND team metadata
+    (name, record - e.g. a manager renaming their team in ESPN) current
+    on the LIVE deployed site without a manual "Refresh ESPN Data" click.
+    GitHub Actions can't reach this site's local DB directly (see
     ensure_data_bootstrapped's docstring on filesystem persistence), so
     a daily refresh has to be triggered from inside the app itself -
     here, on page load. The should_refresh_daily gate (see

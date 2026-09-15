@@ -3169,3 +3169,55 @@ bugs in `metrics/win_probability.py` / `metrics/playoff_sim.py`:
   playoff simulation). Flagging this as a known follow-up: those two
   features could show the same "week-1 fluke = certainty" pattern for a
   single upcoming matchup until they get the same shrinkage treatment.
+
+**Home page: medal podium replaces stale "Projected Champion" tile
+(2026-09-15, same session):** the 4th headline card still said "Coming
+soon - Playoff simulation not built yet (Phase 7)" even though Phase 7
+shipped last session. Now shows the top-3 teams by `championship_pct`
+(from the same `get_playoff_simulation()` the Playoff Odds tab uses)
+with 🥇🥈🥉 and their odds, falling back to a "not enough data yet"
+message when fewer than 3 teams have simulation results. Also dropped
+the bottom-of-page caption's stale "Playoff Probability and per-team
+commentary are not built yet (Phases 7-8)" line - both are live
+(per-team commentary via `commentary.py` powers the Weekly Recap page).
+Verified via AppTest against both a populated and an empty playoff-sim
+result. 329/329 tests passing (no test changes needed).
+
+**Roster Strength: weekly ESPN projection added to the daily refresh
+cadence (2026-09-15, same session):** user noticed Roster Strength
+swung a lot on a Tuesday morning and asked which of its 3 inputs
+(FantasyPros ROS rank, ESPN season-to-date positional rank, ESPN weekly
+point projection) had actually refreshed automatically. Traced the code
+and found only 2 of 3 did: `refresh_daily_data_if_due()` (the function
+`ui_common.ensure_daily_data_fresh()` runs once/day on page load) called
+`ingest_player_rankings` (ESPN rank) and `ingest_fantasypros_rankings`
+(FantasyPros ROS), but never anything that touches `player_week_scores.
+projected_points` - that field only got refreshed by the much slower
+full `refresh_all()` pipeline (a restart-triggered rebuild, or a manual
+"Refresh ESPN Data" click), so it could sit stale for days between those.
+User's ask: "Add it into the refresh cadence. That should always be
+updating."
+
+Fix: `refresh_daily_data_if_due()` now also calls the existing
+`ingest_week_boxscores()` for just the current week (`league.
+current_week`, `completed=False` - the same convention `ingest_season`'s
+own per-week loop already uses for the in-progress week), reusing
+`ingest_teams()`'s already-fetched `team_pk_by_espn_id` return value
+(previously discarded) rather than adding a new ESPN call. A single
+week's box_scores() call is the same order of cost already accepted for
+this daily path (comparable to `ingest_player_rankings`'s "single
+batched call, ~1s for 200+ players").
+
+No unit test added - `ingest.py` has no test file in this project by
+established convention (real ESPN API objects, not mocked; validated
+live instead, same as the rest of the ingestion pipeline). Verified live
+against the real production league on a scratch COPY of the local DB
+(not the working copy): confirmed `league.current_week` was 2 (ESPN had
+already rolled over past week 1), confirmed 208 players' `projected_points`
+got populated for week 2 where there were previously 0, confirmed week
+1's already-stale matchup rows were left completely untouched (this
+refresh only ever touches the current week, by design), and confirmed
+week 2's matchup rows were created cleanly with `completed=0` as
+expected for not-yet-played games. Scratch DB deleted after verification;
+real local `data/` was never touched. 329/329 tests passing (no
+regressions - existing tests don't exercise this function directly).

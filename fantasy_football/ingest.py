@@ -555,8 +555,9 @@ def ingest_season(conn, client: ESPNClient, season: int, log=print) -> None:
 
 
 def refresh_daily_data_if_due(conn, league, season: int, log=print) -> bool:
-    """Refreshes the FantasyPros/ESPN positional-rank inputs behind
-    Roster Strength, PLUS team metadata (name, record - cheap, from the
+    """Refreshes the 3 inputs behind Roster Strength (ESPN weekly point
+    projection, ESPN season-to-date positional rank, FantasyPros ROS
+    rank), PLUS team metadata (name, record - cheap, from the
     already-fetched `league` object, no extra ESPN call) so a manager
     renaming their team in ESPN shows up here too. Gated by
     schedule_guard.should_refresh_daily so it actually does this work at
@@ -564,14 +565,24 @@ def refresh_daily_data_if_due(conn, league, season: int, log=print) -> bool:
     separate from the rest of ingest_season's week-by-week roster/score
     backfill (which is comparatively slow) so this can also be called
     directly from a page load - see ui_common.ensure_daily_data_fresh().
-    Returns True if it actually refreshed."""
+    Returns True if it actually refreshed.
+
+    The weekly point projection refresh (ingest_week_boxscores for just
+    the current week, `completed=False` - same convention as
+    ingest_season's own per-week loop) was added 2026-09-15: it used to
+    only ever get updated by the much slower full refresh_all() (a
+    restart-triggered rebuild, or a manual "Refresh ESPN Data" click),
+    so a roster strength view between those could be running on a stale
+    projection days old even though the rank-based signals refreshed
+    daily (user feedback: "That should always be updating")."""
     last_rs_refresh = db.get_roster_strength_last_refreshed(conn, season)
     if not should_refresh_daily(last_rs_refresh):
         log(f"[skip] season {season} daily data (roster strength + team info): already refreshed today")
         return False
 
+    team_pk_by_espn_id: dict[int, int] = {}
     try:
-        ingest_teams(conn, league, season)
+        team_pk_by_espn_id = ingest_teams(conn, league, season)
     except Exception as exc:  # noqa: BLE001 - a team-metadata hiccup shouldn't block the rank refresh below
         log(f"[warn] season {season} team info: {exc}")
 
@@ -580,6 +591,12 @@ def refresh_daily_data_if_due(conn, league, season: int, log=print) -> bool:
         ingest_player_rankings(conn, league, season, last_week, log=log)
     except Exception as exc:  # noqa: BLE001
         log(f"[warn] season {season} player rankings: {exc}")
+
+    if team_pk_by_espn_id:
+        try:
+            ingest_week_boxscores(conn, league, season, last_week, team_pk_by_espn_id, completed=False)
+        except Exception as exc:  # noqa: BLE001
+            log(f"[warn] season {season} week {last_week} projections: {exc}")
 
     fp_api_key = config.fantasypros_api_key()
     if fp_api_key:
