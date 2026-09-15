@@ -260,6 +260,52 @@ def cutline_table_html(rows: list[dict]) -> str:
     )
 
 
+def historical_cutline_table_html(rows: list[dict]) -> str:
+    """Median Cutline table for an ALREADY-COMPLETED week - same layout/
+    styling as cutline_table_html, but for a real, final, deterministic
+    result instead of a live in-progress projection (user, 2026-09-16:
+    "keep the median cutline for historical weeks" - before this, the
+    whole widget just disappeared once a week finished, see pages/1_
+    Matchups.py). No Make %/10th-90th range to show (the week's over,
+    there's nothing left to model) - a plain Result column instead. Each
+    row dict needs: rank, team, manager, score, vs_cutline, made_it
+    (bool), tone ("win"/"loss")."""
+    body_rows = []
+    for r in rows:
+        bg = CUTLINE_TINT.get(r["tone"], "transparent")
+        result = "Made it" if r["made_it"] else "Missed"
+        body_rows.append(
+            f'<tr style="background:{bg};">'
+            f'<td style="padding:2px 8px; text-align:center;">{r["rank"]}</td>'
+            '<td style="padding:2px 8px; white-space:nowrap;">'
+            f'<span style="font-weight:600;">{r["team"]}</span>'
+            f'<span class="cutline-manager" style="font-size:0.72rem; color:var(--text-muted); '
+            f'margin-left:6px;">{r["manager"]}</span>'
+            '</td>'
+            f'<td style="padding:2px 8px; text-align:right;">{r["score"]:.1f}</td>'
+            f'<td style="padding:2px 8px; text-align:right;">{r["vs_cutline"]:+.1f}</td>'
+            f'<td style="padding:2px 8px; text-align:right; font-weight:600;">{result}</td>'
+            '</tr>'
+        )
+    header = (
+        '<tr style="border-bottom:2px solid var(--card-border);">'
+        '<th style="padding:2px 8px; text-align:center;">#</th>'
+        '<th style="padding:2px 8px; text-align:left;">Team</th>'
+        '<th style="padding:2px 8px; text-align:right;">Score</th>'
+        '<th style="padding:2px 8px; text-align:right;">vs Cut</th>'
+        '<th style="padding:2px 8px; text-align:right;">Result</th>'
+        '</tr>'
+    )
+    return (
+        '<style>@media (max-width: 480px) { .cutline-manager { display: none; } }</style>'
+        '<div style="overflow-x:auto;">'
+        '<table style="width:100%; border-collapse:collapse; font-size:0.8rem; line-height:1.2;">'
+        f'<thead>{header}</thead><tbody>{"".join(body_rows)}</tbody>'
+        '</table>'
+        '</div>'
+    )
+
+
 def score_detail_html(win_prob_pct: str, range_text: str, tone: str) -> str:
     """Small line under score_row_html's projected number - win
     probability (tone-colored, matching the projected number above it)

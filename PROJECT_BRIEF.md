@@ -4422,3 +4422,31 @@ was never going to appear in the "Extra leagues" grant multiselect
 bug - it needs to be added via "Registered leagues -> Add league by
 ESPN league ID" first, same as BIR and Friends was. Told the user this
 and asked for that league's ESPN league ID if they want it added.
+
+**Matchups page: Median Cutline widget now also shows for completed
+weeks, not just the live in-progress one.** User: "in the usc pike
+league, keep the median cutline for historical weeks." Before this,
+`pages/1_Matchups.py`'s Median Cutline section was gated on `not
+is_final_week` only - browsing back to any already-completed week made
+the whole widget disappear instead of showing that week's real result.
+- New `ui.historical_cutline_table_html(rows)` - same layout/tinting as
+  the live `cutline_table_html`, but for a deterministic final result
+  (real score, real cutline, a plain "Made it"/"Missed" Result column)
+  instead of a live probabilistic one (no Proj/Make %/10th-90th columns
+  - there's nothing left to model once the week's over).
+- `pages/1_Matchups.py`: new `elif meta.get("median_scoring") and
+  is_final_week:` branch building the same rank/cutoff logic as the
+  live version (`cutoff_idx = n_teams // 2`, ranked by score
+  descending) directly from `matchups` (already loaded on this page)
+  instead of `live_by_team` (only ever populated for the current
+  in-progress week).
+- Live-verified against the real primary league (league_id 1025842,
+  "Salted by Quincy" - confirmed its real ESPN name this session, see
+  above)'s real completed Week 1: 12 teams, cutoff_idx=6, correctly
+  splits into a top-6 "Made it" group (Jacob Batters 177.9 down to
+  House of the Rising Sun God 136.4) and a bottom-6 "Missed" group
+  (Gary Had a Little Lamb 129.6 down to Doody Guac Boys 94.8) - matches
+  the real ESPN median-scoring result for that week. No unit test added
+  (matches this project's existing convention of NOT unit-testing pure
+  HTML-string builders like the sibling `cutline_table_html`, which
+  also has none - live-verification only). 399/399 tests passing.

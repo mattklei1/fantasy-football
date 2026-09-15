@@ -194,6 +194,46 @@ if meta.get("median_scoring") and not is_final_week and not is_future_week and n
                 "score as a bell curve centered on its live projection, using that team's own real "
                 "scoring volatility this season."
             )
+elif meta.get("median_scoring") and is_final_week:
+    # Same Median Cutline widget for an ALREADY-COMPLETED week - real
+    # final scores, a real final cutline, no more modeling to do (user,
+    # 2026-09-16: "keep the median cutline for historical weeks" - this
+    # used to just vanish once a week finished). Built directly from
+    # `matchups` (already loaded above for this page), not live_by_team
+    # (only populated for the current in-progress week).
+    final_score_by_team: dict[int, float] = {}
+    for _, m in matchups.iterrows():
+        if m["home_score"] is not None:
+            final_score_by_team[m["home_team_pk"]] = m["home_score"]
+        if m["away_score"] is not None:
+            final_score_by_team[m["away_team_pk"]] = m["away_score"]
+
+    ranked_final = sorted(
+        ((pk, team_name_by_pk.get(pk, "?"), manager_name_for(pk), score) for pk, score in final_score_by_team.items()),
+        key=lambda t: t[3], reverse=True,
+    )
+    if len(ranked_final) >= 2:
+        n_teams = len(ranked_final)
+        cutoff_idx = n_teams // 2
+        cutline_score = ranked_final[cutoff_idx - 1][3]
+
+        historical_rows = [
+            {
+                "rank": rank,
+                "team": team_name,
+                "manager": mgr.split()[-1] if mgr else mgr,
+                "score": score,
+                "vs_cutline": score - cutline_score,
+                "made_it": rank <= cutoff_idx,
+                "tone": "win" if rank <= cutoff_idx else "loss",
+            }
+            for rank, (pk, team_name, mgr, score) in enumerate(ranked_final, start=1)
+        ]
+
+        with st.container(border=True):
+            st.markdown("#### Median Cutline (top half earns the bonus win)")
+            st.markdown(ui.historical_cutline_table_html(historical_rows), unsafe_allow_html=True)
+            st.caption("Final scores for this completed week - who actually made the top half.")
 
 if not is_final_week and not is_future_week and not live_error:
     # Win-probability-over-time chart: a live snapshot is collected every
