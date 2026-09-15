@@ -4,16 +4,24 @@ does the DB reads that feed this.
 
 Model: each remaining regular-season game's score is sampled
 Normal(expected_score, team's own weekly stdev), where the RAW
-expected_score = 60% season PPG + 40% last-3-week PPG - the same formula
-(and the same win_probability.expected_score()/MIN_STDEV) as the
-Matchups page's single-game win probability, so the two features agree
-with each other. A team's expected_score/stdev are FROZEN at their
-current real values for an entire trial - both its remaining
-regular-season games and, if it reaches the playoffs, its playoff games
-- rather than being recomputed mid-trial from that trial's own simulated
-results. This is a simplifying assumption (a real team's form could keep
-trending within a single simulated future), stated here rather than
-silently baked in.
+expected_score for the NEAREST remaining week = 60% season PPG + 40%
+last-3-week PPG - the same formula (and the same win_probability.
+expected_score()/MIN_STDEV) as the Matchups page's single-game win
+probability, so the two features agree with each other. A team's
+STDEV is FROZEN at its current real value for an entire trial - both
+its remaining regular-season games and, if it reaches the playoffs, its
+playoff games. Its expected_score is NOT frozen past the nearest
+remaining week: shrink_expected_score()'s early-season shrinkage is
+recomputed every remaining week using that TRIAL's own running (real-
+then-simulated) season-to-date average and an incrementing games_played,
+so a real early-season outlier's drag on later weeks fades exactly like
+real accumulating evidence would (fixed 2026-09-16 - see simulate_
+season()'s own docstring for the real case that motivated it; last3_ppg
+itself isn't separately tracked per trial, so it's only used for the
+nearest remaining week). Stdev staying frozen (a team's own week-to-week
+volatility is a far more stable property than its mean scoring level) is
+the one simplifying assumption left here, stated rather than silently
+baked in.
 
 Early-season shrinkage: the raw expected_score above is blended toward
 the LEAGUE-WIDE average PPG, weighted by how many real games a team has
@@ -203,10 +211,11 @@ def simulate_season(
             team_state["matchup_wins"] + team_state["matchup_losses"] + team_state["matchup_ties"]
         ).to_numpy(dtype=float)
     if shrinkage_prior is not None:
-        prior = np.asarray(shrinkage_prior, dtype=float)
+        # reshaped to (n_teams, 1) so it broadcasts against the (n_teams,
+        # n_sims) arrays the per-week shrinkage below now uses
+        prior = np.asarray(shrinkage_prior, dtype=float)[:, None]
     else:
         prior = float(team_state["season_ppg"].mean())
-    expected = shrink_expected_score(raw_expected, games_played, prior)
     stdev = team_state["score_stdev"].to_numpy()
 
     matchup_wins = np.tile(team_state["matchup_wins"].to_numpy(dtype=float)[:, None], n_sims)
@@ -217,10 +226,50 @@ def simulate_season(
     median_ties = team_state["median_ties"].to_numpy(dtype=float)[:, None]
     points_for = np.tile(team_state["points_for"].to_numpy(dtype=float)[:, None], n_sims)
 
+    # Running per-trial state for expected score: starts at each team's
+    # real season-to-date average, then evolves week by week as THAT
+    # TRIAL's own simulated scores come in - games_played genuinely
+    # increments as the simulated season progresses, so shrink_expected_
+    # score() trusts the team's own (real-then-simulated) average more
+    # with each passing week, same as it would in reality. Previously
+    # `expected`/games_played were computed ONCE and reused unchanged for
+    # every remaining week - a real Week-1 outlier stayed discounted at
+    # the SAME rate through Week 14 in every trial regardless of how that
+    # trial's simulated season actually went (an explicitly documented
+    # simplification - see this function's docstring - that turned out
+    # to matter a lot in practice: fixed 2026-09-16 after a real case, a
+    # team with a historically bad Week 1 but an average Roster Strength
+    # staying discounted the entire season in every trial. User: "1 week
+    # of scores isn't very significant over the course of a full
+    # season... there's a very real chance his points scored recovers to
+    # average or above average"). last3_ppg isn't separately tracked per
+    # trial (would need each team's individual real recent scores, not
+    # just the already-blended real average) - the real season_ppg/
+    # last3_ppg blend is used for the nearest remaining week only (still
+    # the most real-recent-form-sensitive one); the running season-to-
+    # date average takes over from the second remaining week onward.
+    sim_games_played = np.tile(games_played[:, None], n_sims).astype(float)
+    sim_points_for = np.tile(team_state["points_for"].to_numpy(dtype=float)[:, None], n_sims)
+    # (n_teams, n_sims) throughout, even before any remaining-week loop
+    # iteration runs, so it's always a valid, correctly-shaped "current
+    # expected score" for playoff-bracket sampling below - both when
+    # regular-season games remain (updated each iteration) and when none
+    # do (e.g. simulating the playoffs alone after the real regular
+    # season already finished).
+    week_expected = shrink_expected_score(raw_expected[:, None], sim_games_played, prior)
+    first_remaining_week = True
+
     for week in sorted(remaining_matchups["week"].unique()):
-        week_scores = rng.normal(loc=expected[:, None], scale=stdev[:, None], size=(n_teams, n_sims))
+        if not first_remaining_week:
+            running_season_ppg = sim_points_for / sim_games_played
+            week_expected = shrink_expected_score(running_season_ppg, sim_games_played, prior)
+        first_remaining_week = False
+
+        week_scores = rng.normal(loc=week_expected, scale=stdev[:, None], size=(n_teams, n_sims))
         week_scores = np.clip(week_scores, 0, None)
         points_for += week_scores
+        sim_points_for += week_scores
+        sim_games_played += 1
 
         if median_scoring:
             week_median = np.median(week_scores, axis=0)
@@ -260,7 +309,11 @@ def simulate_season(
                 seed1_count[team_i] += 1
 
         def sample_playoff_score(team_i: int) -> float:
-            return max(0.0, rng.normal(expected[team_i], stdev[team_i]))
+            # week_expected here is each team's expected score for the
+            # week AFTER the real regular season's last simulated week -
+            # i.e. this trial's own fully-evolved end-of-season estimate,
+            # not a single frozen value shared across every trial.
+            return max(0.0, rng.normal(week_expected[team_i, s], stdev[team_i]))
 
         champion_i = simulate_bracket_once(seed_order, sample_playoff_score)
         championship_count[champion_i] += 1

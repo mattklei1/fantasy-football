@@ -3983,3 +3983,73 @@ higher % chance of winning that matchup."
   `get_playoff_simulation()` itself - no prior test coverage existed for
   it either (live/AppTest verification only, established convention for
   `dashboard_data.py`). 388/388 tests passing.
+
+**Fixed a real bug the shrinkage_prior work surfaced: a bad week's drag
+on the simulation never faded, no matter how many weeks remained
+(2026-09-16, same session).** User pushed back hard, correctly, on
+Doody Guac Boys' 18.4% after the Roster Strength fix above: "Ian still
+needs to have a higher playoff %. He has a higher RS than 4 other
+teams. 1 bad week in a 14 week season isn't enough to drop his odds
+that much." Then, after I explained the points-for-tiebreak mechanism:
+"the tiebreak won't be off of week 1 points scored. it will be off of
+full season. 1 week of scores isn't very significant over the course of
+a full season... there's a very real chance his points scored recovers
+to average or above average over the course of the season."
+
+Isolated it precisely before touching any code: of the ~21-point gap
+between Ian's real 18.4% and a "what if his one bad week were erased"
+counterfactual, only ~2 points came from the real, already-locked
+points-for deficit itself - ~18.6 points came from `simulate_season()`
+computing `expected`/`games_played` ONCE, outside the per-week loop, and
+reusing that SAME frozen value (and the SAME shrinkage weight) for every
+remaining week of the season - Week 14 was discounted by a bad Week 1
+exactly as much as Week 2 was, forever, in every trial, regardless of
+how that trial's own simulated season actually went. This was an
+existing, explicitly-documented "simplifying assumption" in the module
+docstring, predating today - not something introduced by the Roster
+Strength work, just surfaced by it (Ian's case made it visible because
+his Roster Strength is otherwise unremarkable, so nothing else was
+masking the effect).
+
+- `simulate_season()`'s core loop reworked: `games_played` and a running
+  per-trial `points_for`-derived season-to-date average now evolve WEEK
+  BY WEEK as the simulated season progresses (starting from each team's
+  real values), and `shrink_expected_score()` is recomputed every
+  remaining week against that evolving state instead of once up front.
+  A team's shrinkage weight now genuinely increases as more (real-then-
+  simulated) evidence accumulates within each trial, exactly as it
+  would in reality - so a real bad week's influence fades in on its
+  own, rather than needing a special case. `last3_ppg` isn't separately
+  tracked per trial (would need each team's individual real recent
+  scores, not just the already-blended real average) - the real
+  season_ppg/last3_ppg blend is used for the nearest remaining week
+  only; the running season-to-date average takes over from the second
+  remaining week onward. The playoff-bracket sampling step (previously
+  referencing a since-removed frozen `expected` array - had to be fixed
+  in the same change) now draws from each trial's own fully-evolved
+  end-of-season estimate instead of a single value shared identically
+  across every trial.
+- Stdev is still frozen per trial (a team's own week-to-week volatility
+  is a far more stable property than its mean scoring level) - the one
+  remaining simplification, now stated more precisely in the module
+  docstring.
+- Live-verified against the real production league: Ian's playoff odds
+  moved from 18.4% (with the bug) to 25.2% once the fix was in place,
+  and the whole distribution moderated toward more realistic values
+  generally (e.g. Jacob Batters 97.9%->93.7%, Thankful for Coffeys Team
+  6.5%->12.6%) - only 1 real week has been played, so less-extreme
+  certainty across the board is the correct direction for every team,
+  not just Ian's case specifically.
+- New regression test proving the actual mechanism: an otherwise-
+  identical team with a disastrous real Week 1 sees its playoff-odds
+  gap versus a normal-week team narrow by more than 20 real percentage
+  points (84.5pp -> 53.0pp in the underlying empirical check) as the
+  number of remaining weeks in the simulated schedule goes from 1 to 7 -
+  proving recovery genuinely happens over time, not just as a single
+  before/after snapshot. Performance re-verified: 10,000-sim run at
+  production scale still completes in ~0.26s, no material slowdown from
+  moving the shrinkage computation inside the per-week loop.
+- Corrected the already-live "1" (Post-Wk1) entry in `playoff_odds_
+  snapshots/2026.json` again to match (same direct-MCP-write path as
+  every prior correction this session).
+- 1 new test in `test_playoff_sim.py`. 389/389 tests passing overall.

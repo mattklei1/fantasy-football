@@ -268,6 +268,51 @@ def test_shrinkage_prior_override_lets_a_team_specific_prior_drive_future_weeks(
     assert with_prior.loc[7, "playoff_pct"] > with_prior.loc[0, "playoff_pct"]
 
 
+def test_bad_opening_week_recovers_as_more_weeks_remain_to_play():
+    # Regression test for a real fix (2026-09-16): previously, a team's
+    # expected score for EVERY remaining week was permanently discounted
+    # by the SAME shrinkage weight computed from its real games_played
+    # at the moment simulate_season() was called - a real bad Week 1
+    # dragged down Week 14's expected score exactly as much as Week 2's,
+    # even though by Week 14 that team would have accumulated 13 more
+    # real games' worth of evidence. Fixed by letting games_played (and
+    # the resulting shrinkage weight) increment WITHIN each simulated
+    # trial as weeks are simulated. User: "1 week of scores isn't very
+    # significant over the course of a full season... there's a very
+    # real chance his points scored recovers to average or above
+    # average" - proven here: the SAME disastrous Week 1 costs a team
+    # much less when many weeks remain to recover in than when almost
+    # none do.
+    n_teams = 8
+    prior = np.full(n_teams, 130.0)
+    rows = [
+        {
+            "team_pk": i,
+            "season_ppg": 60.0 if i == 0 else 130.0,  # team 0: a disaster week; everyone else: right at the prior
+            "last3_ppg": 60.0 if i == 0 else 130.0,
+            "score_stdev": MIN_STDEV, "matchup_wins": 0 if i == 0 else 1, "matchup_losses": 1 if i == 0 else 0,
+            "matchup_ties": 0, "median_wins": 0, "median_losses": 0, "median_ties": 0,
+            "points_for": 60.0 if i == 0 else 130.0,
+        }
+        for i in range(n_teams)
+    ]
+    team_state = pd.DataFrame(rows)
+    full_schedule = _round_robin_schedule(n_teams)  # 7 weeks total
+
+    def gap(weeks_remaining, seed):
+        remaining = full_schedule[full_schedule["week"] <= weeks_remaining]
+        result = simulate_season(
+            team_state, remaining, median_scoring=False, reg_season_count=n_teams - 1,
+            n_sims=8000, rng=np.random.default_rng(seed), shrinkage_prior=prior,
+        ).set_index("team_pk")
+        return result.loc[1, "playoff_pct"] - result.loc[0, "playoff_pct"]
+
+    gap_almost_no_time_to_recover = gap(1, seed=1)
+    gap_a_full_season_to_recover = gap(7, seed=1)
+
+    assert gap_a_full_season_to_recover < gap_almost_no_time_to_recover - 0.20  # a real, large narrowing, not noise
+
+
 def test_simulate_season_empty_team_state_returns_empty():
     result = simulate_season(
         pd.DataFrame(columns=["team_pk", "season_ppg", "last3_ppg", "score_stdev",
