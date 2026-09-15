@@ -4622,7 +4622,78 @@ regular-season rank at all.
   this area - it still said "excludes ESPN's separate consolation
   ladder for teams that missed the playoffs" only, stale after the
   same-day WINNERS_CONSOLATION_LADDER exclusion above.
-400/400 tests passing (live-verification against real multi-season
-league data in progress - this environment's ESPN calls were running
-slower than usual, taking multiple background attempts to complete a
-full 12-season re-ingest; will confirm here once it lands).
+400/400 tests passing (live multi-season re-ingest verification never
+completed - this environment's ESPN calls were consistently timing out
+that day even at reduced scope - superseded by a faster, deterministic
+synthetic-DB verification instead: see below).
+
+**Two real bugs found and fixed the same day, prompted by: "Are you
+sure the most points scored tile is correct? I remember a week I
+scored 196 that isn't on here."**
+
+1. **A playoff-bye team's own real score was never stored ANYWHERE in
+   the DB - not filtered out, never written at all.** `ingest_week_
+   boxscores`'s bye branch (`home_team is None or away_team is None`)
+   recorded the bye itself (`db.playoff_byes`, added earlier this
+   session) but then `continue`d before ever reaching the weekly_team_
+   scores/roster/player-points storing loop - which only ran for the
+   two-sided (real opponent) case. Verified directly against this
+   league's own real cached data (`data/league.db`, 12 seasons,
+   pre-dating this fix): EVERY single completed season's two playoff-
+   bye teams (the #1/#2 seeds) had ZERO `weekly_team_scores` row for
+   that week - not a rare edge case, a 100% reproducible gap hitting 2
+   teams every single year since 2019. Fixed by extracting the
+   per-team storing logic (score/projection-snapshot/roster/player-
+   points) into a new `ingest._ingest_team_week()` helper, called once
+   for each side of a normal 2-team matchup (unchanged) AND once for
+   the lone bye team (new) - a bye team's own real score is exactly as
+   real as anyone else's, it just has no opponent that week.
+   `ingest_week_scoreboard` (the pre-2019 fallback) already handled
+   this correctly and needed no change - only the 2019+ box-score path
+   had the gap. Live re-ingested just week 15 of a real past season
+   against this bug fix (targeted single-week call, not a full
+   backfill, to dodge this environment's slow-ESPN-day issue) and
+   confirmed: 10/12 weekly_team_scores rows before -> 12/12 after,
+   with the 2 previously-missing scores matching the real teams that
+   had that year's playoff byes.
+2. **`get_all_team_weeks()` (League Records' data source) only ever
+   read from `matchups`, which structurally has no row for a bye at
+   all** (no opponent to pair with) - so even after bug #1's fix, a
+   bye-week score still couldn't surface in Highest/Lowest Score Ever.
+   Added a third `UNION ALL` branch reading directly from `weekly_
+   team_scores` for any `(season_id, week, team_pk)` with no matching
+   `matchups` row, with `opp_score`/`opp_team_name`/`opp_manager_name`
+   = NULL. Relies on pandas' NaN handling in `compute_league_records()`
+   (`idxmax`/`idxmin` skip NaN, `<`/`>` against NaN are always False)
+   to automatically and correctly exclude these opponent-less rows
+   from every record that NEEDS an opponent (Biggest Blowout, Closest
+   Game, Most Points in a Loss, Lowest Score in a Win) while still
+   correctly including them in Highest/Lowest Score Ever (score-only,
+   no opponent required) - no extra filtering code needed for either
+   case.
+3. **A third, independent bug surfaced while live-verifying #1/#2**:
+   even with a bye score now flowing all the way through, the actual
+   196.1 STILL wasn't reliably reaching the top-3 in test runs -
+   because `compute_league_records()`'s Highest/Lowest Score Ever
+   picked by `score_percentile` (era-normalized) when present, not raw
+   score. Every SEASON's own #1 scorer ties at percentile exactly 1.0
+   by construction (same for the #N/worst scorer at 0) - with 12
+   seasons of real history that's 12 ties at the very top, broken
+   arbitrarily by whichever row happened to sort first, NOT by whose
+   score was actually higher. Confirmed directly against this league's
+   real data: Matthew Klei's real 196.1 (2018 week 9) is the #2 raw
+   score in the league's entire 12-season history, yet the old
+   percentile-first selection was routinely losing it to other
+   seasons' own champions who scored far fewer raw points. Reverted
+   Highest/Lowest Score Ever (and the top-3 list) to select by RAW
+   SCORE always - a league record book is a raw fact, not an
+   era-normalized claim; `score_percentile` is still attached to every
+   result as supporting context, just no longer used to pick winners.
+   Rewrote the one existing test that had asserted the old (now
+   understood to be wrong) percentile-primary behavior.
+- Live-verified end to end against the real cached primary-league data
+  once both fixes landed: top 3 highest scores ever are now correctly
+  204.4 (2022 wk2, Nick McGillivray) / 196.1 (2018 wk9, Matthew Klei -
+  the user's own remembered score) / 192.4 (2025 wk7, Nick
+  McGillivray), in genuine descending raw-score order.
+400/400 tests passing.

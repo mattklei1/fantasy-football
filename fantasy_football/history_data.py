@@ -131,10 +131,27 @@ def get_all_team_weeks() -> pd.DataFrame:
     """One row per team per completed matchup-week (both sides
     unpivoted), ALL seasons - used for league records. Includes the
     OPPONENT's team/manager too, so a record like Biggest Blowout can
-    show both sides, not just the team that set it."""
+    show both sides, not just the team that set it.
+
+    Also includes a THIRD source: a playoff-bye week's real score (see
+    ingest._ingest_team_week - fixed 2026-09-16, user: "Are you sure
+    the most points scored tile is correct? I remember a week I scored
+    196 that isn't on here" - a bye team's own score used to never get
+    stored anywhere at all, so it could never show up in Highest/Lowest
+    Score Ever even after that fix landed, since this function only
+    ever read from `matchups`, which structurally has no row for a bye
+    - no opponent to pair with). These bye rows get opp_score/opp_
+    team_name/opp_manager_name = NULL - correct for Highest/Lowest
+    Score Ever (score-only, no opponent needed), and pandas' NaN
+    handling in compute_league_records() (idxmax/idxmin skip NaN,
+    `< 0`/`> 0` comparisons against NaN are always False) means a bye
+    row is automatically and correctly EXCLUDED from every opponent-
+    relative record (Biggest Blowout, Closest Game, Most Points in a
+    Loss, Lowest Score in a Win) without any extra filtering here."""
     conn = dd.get_connection()
     ht_mgr = db.manager_full_name_sql("ht_mgr")
     at_mgr = db.manager_full_name_sql("at_mgr")
+    bye_mgr = db.manager_full_name_sql("t_mgr")
     query = f"""
         SELECT m.season_id, m.week, m.is_playoff,
                ht.id AS team_pk, ht.team_name, {ht_mgr} AS manager_name,
@@ -157,6 +174,20 @@ def get_all_team_weeks() -> pd.DataFrame:
         {_primary_manager_sql('ht')}
         {_primary_manager_sql('at')}
         WHERE m.completed = 1
+        UNION ALL
+        SELECT wts.season_id, wts.week, wts.is_playoff,
+               t.id AS team_pk, t.team_name, {bye_mgr} AS manager_name,
+               wts.score AS score, NULL AS opp_score,
+               NULL AS opp_team_name, NULL AS opp_manager_name
+        FROM weekly_team_scores wts
+        JOIN teams t ON t.id = wts.team_pk
+        {_primary_manager_sql('t')}
+        WHERE wts.completed = 1
+          AND NOT EXISTS (
+              SELECT 1 FROM matchups m
+              WHERE m.season_id = wts.season_id AND m.week = wts.week
+                AND (m.home_team_pk = wts.team_pk OR m.away_team_pk = wts.team_pk)
+          )
     """
     return pd.read_sql_query(query, conn)
 

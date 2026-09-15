@@ -556,13 +556,20 @@ def test_league_records_biggest_blowout_and_closest_game_include_opponent():
     assert "opp_team_name" not in result["highest_score"]
 
 
-def test_league_records_highest_lowest_use_season_relative_percentile_when_present():
-    # Season 2010 is a low-scoring era (max 120), season 2020 a high-scoring
-    # one (max 300) - without normalization, the RAW highest score would
-    # always come from 2020 regardless of how exceptional it actually was
-    # within its own season. "Modest 2010 Topper" is the best score of a
-    # LOW-scoring season (should win via percentile) even though its raw
-    # points are far below several 2020 scores.
+def test_league_records_highest_lowest_pick_the_real_raw_score_not_percentile():
+    """Highest/Lowest Score Ever must be the actual raw-point record,
+    not an era-normalized pick - every season's own #1 scorer ties at
+    score_percentile 1.0 by construction (same for the #N scorer at the
+    bottom), so with N seasons of history there are N ties at the very
+    top/bottom, broken arbitrarily by row order if percentile were used
+    to select the winner - not by whose score was actually higher/lower
+    (user, 2026-09-16: "Are you sure the most points scored tile is
+    correct? I remember a week I scored 196 that isn't on here" - a
+    real #2-all-time raw score was losing that arbitrary tie-break to
+    lower-raw-score "season champions" from other years). Season 2010 is
+    a low-scoring era (max 120, its own #1 also ties at percentile 1.0),
+    season 2020 a high-scoring one (real max 300) - the true highest
+    score (300) must win regardless of the percentile tie."""
     records = pd.DataFrame(
         {
             "season_id": [2010, 2010, 2010, 2020, 2020, 2020],
@@ -579,14 +586,16 @@ def test_league_records_highest_lowest_use_season_relative_percentile_when_prese
     )
     records["score_percentile"] = records.groupby("season_id")["score"].rank(pct=True)
     result = compute_league_records(records)
-    # 2020's "Big Score" (300, raw max) is only the 2020 max, same percentile
-    # tier as 2010's max - both are their season's #1, so whichever pandas
-    # picks first on a tie is fine; the real assertion is that a LOW raw
-    # score season's leader is still eligible to win via percentile.
+    # the REAL highest/lowest raw scores, unambiguously - not a tie
+    assert result["highest_score"]["score"] == pytest.approx(300.0)
+    assert result["lowest_score"]["score"] == pytest.approx(40.0)
+    # score_percentile is still attached as context, just not the selector
     assert result["highest_score"]["score_percentile"] == pytest.approx(1.0)
     assert result["lowest_score"]["score_percentile"] == pytest.approx(1 / 3)
-    # headline number is still the RAW score, not the percentile
-    assert result["highest_score"]["score"] in (120.0, 300.0)
+    # top 3 by raw score must be 300, 250, 200 in that order - not
+    # picking a low-scoring season's #1 (120) over a real 250/200
+    top3_scores = [row["score"] for row in result["highest_scores"]]
+    assert top3_scores == [300.0, 250.0, 200.0]
 
 
 def test_compute_season_metrics_empty_input_returns_empty():

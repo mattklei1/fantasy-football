@@ -161,21 +161,30 @@ def compute_league_records(matchups: pd.DataFrame) -> dict:
     manager_name, score, opp_score, opp_team_name, opp_manager_name,
     is_playoff, and (optional) score_percentile - that last one is a
     season-relative rank percentile computed by history_data.py (kept
-    out of this pure/DB-free module on purpose). When present, Highest/
-    Lowest Score Ever are picked by score_percentile (how exceptional a
-    score was WITHIN its own season, fair across eras with different
-    scoring settings) rather than raw points - raw points still get
-    shown as the headline number, since that's the fact people actually
-    remember, with the percentile as supporting context."""
+    out of this pure/DB-free module on purpose), attached to every row
+    for context but NOT used to pick the winners below.
+
+    Highest/Lowest Score Ever are picked by raw points, always - a
+    league record book is a raw fact ("who actually scored the most
+    points"), not an era-normalized claim. This used to rank by score_
+    percentile instead when present ("fair across eras with different
+    scoring settings"), but every season's own #1 (and #N) scorer ties
+    at percentile 1.0 (0.0) by construction - with 10+ seasons of
+    history that's 10+ ties at the very top, broken arbitrarily by
+    whichever row happened to sort first, not by whose score actually
+    was higher. Reverted 2026-09-16 (user: "Are you sure the most
+    points scored tile is correct? I remember a week I scored 196 that
+    isn't on here" - a real 196.1, the #2 raw score in this league's
+    entire history, was losing that arbitrary tie-break to lower-raw-
+    score "season champions" from other years)."""
     if matchups.empty:
         return {}
 
     m = matchups.copy()
     m["margin"] = m["score"] - m["opp_score"]
-    rank_col = "score_percentile" if "score_percentile" in m.columns else "score"
 
-    highest = m.loc[m[rank_col].idxmax()]
-    lowest = m.loc[m[rank_col].idxmin()]
+    highest = m.loc[m["score"].idxmax()]
+    lowest = m.loc[m["score"].idxmin()]
     blowout = m.loc[m["margin"].idxmax()]
     closest = m.loc[m["margin"].abs().idxmin()]
 
@@ -201,10 +210,9 @@ def compute_league_records(matchups: pd.DataFrame) -> dict:
         return d
 
     # Top 3 highest scores ever (user, 2026-09-16: "show me the top 3") -
-    # same rank_col as the single `highest_score` above (percentile when
-    # available, raw score otherwise), so the #1 entry always matches
-    # `highest_score` exactly.
-    top3 = m.sort_values(rank_col, ascending=False).head(3)
+    # same raw-score ranking as the single `highest_score` above, so the
+    # #1 entry always matches `highest_score` exactly.
+    top3 = m.sort_values("score", ascending=False).head(3)
     highest_scores = [row_dict(row) for _, row in top3.iterrows()]
 
     return {

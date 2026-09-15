@@ -129,6 +129,72 @@ def _upsert_player(conn, player_id: int, name: str, position: str) -> None:
     )
 
 
+def _ingest_team_week(
+    conn, season: int, week: int, team_pk: int, score, projected, lineup, is_playoff: bool, completed: bool
+) -> None:
+    """One team's real week - score, roster, per-player points. Shared by
+    the normal (both sides real) and bye-week (one side real) paths
+    below, since a bye-week team's own real score/lineup is exactly as
+    real as any other team's - it just has no opponent that week."""
+    db.upsert(
+        conn,
+        "weekly_team_scores",
+        {
+            "season_id": season,
+            "week": week,
+            "team_pk": team_pk,
+            "score": score,
+            "projected_score": projected,
+            "is_playoff": int(is_playoff),
+            "completed": int(completed),
+        },
+        conflict_cols=["season_id", "week", "team_pk"],
+    )
+
+    if not completed:
+        # Captures a "start of week" projection baseline as early
+        # as possible - any refresh of the persistent site DB
+        # (the "Refresh ESPN Data" button, or the auto-refresh on
+        # restart) races to lock this in via INSERT OR IGNORE,
+        # not just a live visit to the Matchups page. Only for
+        # not-yet-completed weeks - snapshotting a long-finished
+        # week's stale projected_score during a historical
+        # backfill would be meaningless table growth for nothing.
+        db.record_projection_snapshot(conn, season, week, team_pk, projected)
+
+    for bp in lineup:
+        _upsert_player(conn, bp.playerId, bp.name, bp.position)
+
+        db.upsert(
+            conn,
+            "weekly_rosters",
+            {
+                "season_id": season,
+                "week": week,
+                "team_pk": team_pk,
+                "player_id": bp.playerId,
+                "slot_position": bp.slot_position,
+                "pro_team": bp.proTeam,
+                "eligible_slots": json.dumps(bp.eligibleSlots),
+                "is_starter": int(bp.slot_position not in BENCH_SLOTS),
+            },
+            conflict_cols=["season_id", "week", "team_pk", "player_id"],
+        )
+
+        db.upsert(
+            conn,
+            "player_week_scores",
+            {
+                "season_id": season,
+                "week": week,
+                "player_id": bp.playerId,
+                "points": bp.points,
+                "projected_points": bp.projected_points,
+            },
+            conflict_cols=["season_id", "week", "player_id"],
+        )
+
+
 def ingest_week_boxscores(
     conn, league, season: int, week: int, team_pk_by_espn_id: dict, completed: bool
 ) -> None:
@@ -142,6 +208,16 @@ def ingest_week_boxscores(
             # History page can note it without counting it as a game
             # played; anything else with a missing side (a genuinely
             # unscheduled slot) is silently skipped, same as before.
+            #
+            # BUG fixed 2026-09-16 (user: "Are you sure the most points
+            # scored tile is correct? I remember a week I scored 196
+            # that isn't on here"): this whole branch used to just
+            # `continue` here, meaning the bye team's own real score/
+            # lineup/roster for the week was NEVER stored anywhere -
+            # not lost to a filter, never written at all. Verified
+            # against this league's own real cached data: EVERY
+            # completed season's two playoff-bye teams (the #1/#2
+            # seeds) had zero weekly_team_scores row for that week.
             bye_team = home_team or away_team
             if bye_team is not None and box.is_playoff and box.matchup_type in REAL_PLAYOFF_MATCHUP_TYPES:
                 bye_pk = team_pk_by_espn_id.get(bye_team.team_id)
@@ -152,7 +228,18 @@ def ingest_week_boxscores(
                         {"season_id": season, "week": week, "team_pk": bye_pk, "matchup_type": box.matchup_type},
                         conflict_cols=["season_id", "week", "team_pk"],
                     )
-            continue  # bye week - no real matchup to record
+            if bye_team is not None:
+                bye_pk = team_pk_by_espn_id.get(bye_team.team_id)
+                if bye_pk is not None:
+                    is_home = home_team is not None
+                    _ingest_team_week(
+                        conn, season, week, bye_pk,
+                        score=box.home_score if is_home else box.away_score,
+                        projected=box.home_projected if is_home else box.away_projected,
+                        lineup=box.home_lineup if is_home else box.away_lineup,
+                        is_playoff=box.is_playoff, completed=completed,
+                    )
+            continue  # bye week - no real matchup/opponent to record
         home_pk = team_pk_by_espn_id.get(home_team.team_id)
         away_pk = team_pk_by_espn_id.get(away_team.team_id)
         if home_pk is None or away_pk is None:
@@ -179,63 +266,10 @@ def ingest_week_boxscores(
             (home_pk, box.home_score, box.home_projected, box.home_lineup),
             (away_pk, box.away_score, box.away_projected, box.away_lineup),
         ):
-            db.upsert(
-                conn,
-                "weekly_team_scores",
-                {
-                    "season_id": season,
-                    "week": week,
-                    "team_pk": team_pk,
-                    "score": score,
-                    "projected_score": projected,
-                    "is_playoff": int(box.is_playoff),
-                    "completed": int(completed),
-                },
-                conflict_cols=["season_id", "week", "team_pk"],
+            _ingest_team_week(
+                conn, season, week, team_pk, score, projected, lineup,
+                is_playoff=box.is_playoff, completed=completed,
             )
-
-            if not completed:
-                # Captures a "start of week" projection baseline as early
-                # as possible - any refresh of the persistent site DB
-                # (the "Refresh ESPN Data" button, or the auto-refresh on
-                # restart) races to lock this in via INSERT OR IGNORE,
-                # not just a live visit to the Matchups page. Only for
-                # not-yet-completed weeks - snapshotting a long-finished
-                # week's stale projected_score during a historical
-                # backfill would be meaningless table growth for nothing.
-                db.record_projection_snapshot(conn, season, week, team_pk, projected)
-
-            for bp in lineup:
-                _upsert_player(conn, bp.playerId, bp.name, bp.position)
-
-                db.upsert(
-                    conn,
-                    "weekly_rosters",
-                    {
-                        "season_id": season,
-                        "week": week,
-                        "team_pk": team_pk,
-                        "player_id": bp.playerId,
-                        "slot_position": bp.slot_position,
-                        "pro_team": bp.proTeam,
-                        "eligible_slots": json.dumps(bp.eligibleSlots),
-                        "is_starter": int(bp.slot_position not in BENCH_SLOTS),
-                    },
-                    conflict_cols=["season_id", "week", "team_pk", "player_id"],
-                )
-
-                db.upsert(
-                    conn,
-                    "player_week_scores",
-                    {
-                        "season_id": season,
-                        "week": week,
-                        "player_id": bp.playerId,
-                        "points": bp.points,
-                        "projected_points": bp.projected_points,
-                    },
-                    conflict_cols=["season_id", "week", "player_id"],
-                )
 
 
 def ingest_week_scoreboard(
