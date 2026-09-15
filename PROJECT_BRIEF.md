@@ -4252,3 +4252,123 @@ exactly. 395/395 tests still passing (no existing test covered this -
 Home.py has no unit test file, consistent with this project's
 established pattern of live-verifying page-level Streamlit logic
 directly rather than through pytest/AppTest).
+
+**Bug: a manager whose ESPN account got re-linked to a new member id
+between seasons split into two separate History-page identities, plus
+three related History page additions, same session.** User: "brent
+richwood has 2 manager lines in BIR and friends league but is 1
+manager." Investigated live against BIR and Friends (league_id
+1243473, 12 real seasons of history, 2015-2026 - NOT the 4 I initially
+assumed): Brent Richwood's team was the sole owner under member id
+`{1585306A...}` in 2023, and a DIFFERENT sole member id `{D4AC5C09...}`
+for 2024-2026 - same real person (first/last name match exactly), no
+season where ESPN ever listed both as co-owners together. `db.
+primary_owner_join_sql`'s existing tenure-ranking fix (added for a
+different, WITHIN-one-season co-owner version of this exact failure
+mode - see its own docstring) only resolves conflicts when both ids
+appear as co-owners of the SAME team in the SAME season; it has no
+mechanism to catch two ids that only ever appear in DIFFERENT seasons
+with zero overlap, so `history_data.py`'s cross-season aggregations
+(Hall of Fame, head-to-head, all-time lineup efficiency) silently
+treated them as two different managers, splitting one real career in
+two. Found 4 more real-world cases in the same league by cross-checking
+first/last names against every owner id across all 12 seasons (Ryan
+Genn, Jeros Domagas, Omkar Ganesan, Alex Acosta) - not a one-off.
+
+Fixed with a new, general cross-season identity layer:
+- `db.build_canonical_manager_map(conn)`: groups every manager_id by
+  (first_name, last_name) - lowercased/trimmed, and ONLY when both are
+  non-blank (so username-only accounts never merge on a coincidental
+  blank-string match) - and picks whichever id has the most total
+  `team_owners` rows (same tenure ranking `primary_owner_join_sql`
+  already uses) as canonical for the group. Every id in a group,
+  canonical one included, maps to it.
+- `history_data.py`: new `_canonical_manager_map()`/`_canonical_
+  manager_names()` cached wrappers; every function that resolves a
+  per-season primary manager_id (`get_primary_manager_id`, `get_
+  managers`, `get_all_matchups_by_manager`, `get_hall_of_fame`) now
+  remaps it through the canonical map immediately after the raw SQL
+  fetch, before any grouping/merging.
+- **Second bug caught during live verification, same fix**: remapping
+  `manager_id` alone wasn't enough - `get_hall_of_fame`'s `agg = teams.
+  groupby(["manager_id", "manager_name"])` still fractured into two
+  rows for a manager whose two merged aliases had even trivially
+  different name text on file ("omkar ganesan" vs. "Omkar Ganesan" -
+  same person, different capitalization per ESPN member id). Fixed by
+  also normalizing `manager_name` to the canonical id's OWN name
+  (`_canonical_manager_names()`, a fresh DB lookup keyed on the
+  canonical ids only) everywhere `manager_id` gets remapped - not just
+  in `get_hall_of_fame`, also `get_managers()` (the selector) and `get_
+  all_matchups_by_manager()` (head-to-head display), so a merged
+  manager can never show two different name spellings anywhere on the
+  page either.
+- Live-verified end to end against a full 12-season ingest of BIR and
+  Friends: total distinct Hall-of-Fame rows dropped from 16 to 15
+  (Ganesan's split closed); Richwood/Genn/Domagas/Ganesan/Acosta each
+  now show as exactly one row with correct combined career totals.
+  395/395 tests still passing (no existing test covered this - same
+  live-verification-only pattern as the Home.py fix above, `history_
+  data.py` has no unit test file).
+
+**Same investigation, two new History-page Hall of Fame columns
+requested mid-session.** User: "in playoff record under history, add
+in parentheses how many byes that team has had as well. dont count it
+as a W but let them know" and "also for championship wins, put in
+parentheses which years they have won."
+- **Playoff byes were previously invisible data, not just undisplayed**:
+  `ingest_week_boxscores`/`ingest_week_scoreboard` had ALWAYS silently
+  `continue`d past a real playoff-bracket bye (ESPN's box score returns
+  the bye team's opponent as `None`, e.g. a 6-team/top-2-bye bracket's
+  top 2 seeds in round 1) - nothing in the DB ever recorded who got
+  one. Added `db.playoff_byes` (season_id, week, team_pk, matchup_type)
+  and now upsert a row there (gated on `matchup_type in REAL_PLAYOFF_
+  MATCHUP_TYPES`, so only a REAL playoff-bracket bye counts, never
+  ESPN's separate missed-playoffs consolation ladder) in both ingest
+  paths instead of dropping the bye entirely. Backfills automatically
+  on the next full ingest/refresh of any season, same as any other
+  idempotent upsert in this project.
+- `history_data.get_hall_of_fame()` now also returns `playoff_byes`
+  (joined through the same canonical-manager remap above) and
+  `championship_years` (sorted list of season_id where `final_standing
+  == 1`, grouped by manager_id).
+- `pages/5_History.py`: Playoff Record now appends " (N byes)" when
+  nonzero (byes are explicitly NOT added into the win column - a bye
+  isn't a game played); the 🏆 column now shows "N (year, year, ...)"
+  instead of a bare count. Fixed a latent bug while wiring this up: the
+  table's default sort by 🏆 used to sort the RAW numeric `championships`
+  column then rename it to 🏆 - now that 🏆 is itself the formatted
+  "N (years)" string, sorting had to move to happen on the numeric
+  column BEFORE the rename/format, not after (a lexicographic sort on
+  the formatted string would misorder anything reaching double digits).
+- Live-verified against the same 12-season BIR and Friends ingest:
+  Brent Richwood now correctly shows "3 (2017, 2023, 2024)" for 🏆 and
+  "14-4 (2 byes)" for Playoff Record. 395/395 tests passing.
+
+**Bug: Playoff Odds page showed the PRIMARY league's snapshot data
+while viewing any other registered league.** User: "switching to
+playoff odds tab while in the BIR and friends league brings me to the
+playoff odds of the usc pike league." Root cause: `playoff_odds_
+snapshots._path(season)` was `f"playoff_odds_snapshots/{season}.json"` -
+no league_id in the path at all, so EVERY league sharing a season
+number (e.g. every registered league in 2026) read/wrote the exact
+same GitHub-committed file. Since the scheduled snapshot collector
+(`scripts/post_playoff_odds_snapshot.py`) only ever runs for the
+primary league (see the earlier "multi-league scope check" entry
+above), that shared file only ever holds the PRIMARY league's team_pks
+and percentages - so `load_snapshots()` for ANY other active league
+was silently handing back the wrong league's data: wrong team_pks
+(mismatched against the active league's own teams), wrong Week-0/
+Post-Wk odds in the point-in-time selector, wrong "Playoff Odds Over
+Time" chart. Fixed by scoping `_path()` on `league_context.get_active_
+league_id()`: the PRIMARY league keeps its original, un-prefixed path
+(zero migration, existing history untouched), every other league now
+gets `playoff_odds_snapshots/{league_id}/{season}.json` - which
+correctly starts EMPTY (nothing's ever been collected there), so a
+non-primary league now gracefully falls back to "Pre-draft"/"Current"
+only and the chart's existing empty-state caption, instead of showing
+wrong data. `get_active_league_id()` already degrades to the primary
+league outside a real Streamlit session (see its own docstring), so
+the scheduled collector script's behavior is unchanged. Live-verified:
+`_path(2026)` returns the original unprefixed path for the primary
+league and `playoff_odds_snapshots/1243473/2026.json` when BIR and
+Friends is simulated as active. 395/395 tests passing.

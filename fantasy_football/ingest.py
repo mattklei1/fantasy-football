@@ -21,6 +21,7 @@ from espn_api.football.team import Team as ESPNTeam
 
 from . import config, db
 from .espn_client import ESPNClient
+from .metrics.history import REAL_PLAYOFF_MATCHUP_TYPES
 from .schedule_guard import is_within_live_window, should_refresh_daily
 
 BENCH_SLOTS = {"BE", "IR"}
@@ -135,6 +136,22 @@ def ingest_week_boxscores(
     for box in boxes:
         home_team, away_team = box.home_team, box.away_team
         if home_team is None or away_team is None:
+            # A real playoff-bracket bye (top seed advances without
+            # playing) - ESPN represents this as a box with only one
+            # side populated. Record it (see db.playoff_byes) so the
+            # History page can note it without counting it as a game
+            # played; anything else with a missing side (a genuinely
+            # unscheduled slot) is silently skipped, same as before.
+            bye_team = home_team or away_team
+            if bye_team is not None and box.is_playoff and box.matchup_type in REAL_PLAYOFF_MATCHUP_TYPES:
+                bye_pk = team_pk_by_espn_id.get(bye_team.team_id)
+                if bye_pk is not None:
+                    db.upsert(
+                        conn,
+                        "playoff_byes",
+                        {"season_id": season, "week": week, "team_pk": bye_pk, "matchup_type": box.matchup_type},
+                        conflict_cols=["season_id", "week", "team_pk"],
+                    )
             continue  # bye week - no real matchup to record
         home_pk = team_pk_by_espn_id.get(home_team.team_id)
         away_pk = team_pk_by_espn_id.get(away_team.team_id)
@@ -258,6 +275,17 @@ def ingest_week_scoreboard(
                 },
                 conflict_cols=["season_id", "week", "home_team_pk", "away_team_pk"],
             )
+        else:
+            # Same real playoff-bracket bye as ingest_week_boxscores - see
+            # db.playoff_byes.
+            bye_pk = home_pk if home_pk is not None else away_pk
+            if bye_pk is not None and m.is_playoff and m.matchup_type in REAL_PLAYOFF_MATCHUP_TYPES:
+                db.upsert(
+                    conn,
+                    "playoff_byes",
+                    {"season_id": season, "week": week, "team_pk": bye_pk, "matchup_type": m.matchup_type},
+                    conflict_cols=["season_id", "week", "team_pk"],
+                )
 
         # Record a score for whichever side(s) are real teams, even on a
         # bye week with no opponent - the team still put up a real score

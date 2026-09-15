@@ -73,6 +73,22 @@ CREATE TABLE IF NOT EXISTS matchups (
     UNIQUE(season_id, week, home_team_pk, away_team_pk)
 );
 
+-- A real playoff-bracket bye (WINNERS_BRACKET/WINNERS_CONSOLATION_LADDER
+-- week with only one side scheduled - ESPN's box_scores() returns the
+-- other side as None rather than a real matchup, so byes are otherwise
+-- invisible: ingest_week_boxscores used to just `continue` past them,
+-- meaning nothing in the DB ever recorded who got one. Added 2026-09-16
+-- so the History page's Playoff Record can note "(N byes)" alongside a
+-- manager's actual playoff win/loss record without counting a bye as a
+-- win (user: "dont count it as a W but let them know").
+CREATE TABLE IF NOT EXISTS playoff_byes (
+    season_id INTEGER NOT NULL REFERENCES seasons(season_id),
+    week INTEGER NOT NULL,
+    team_pk INTEGER NOT NULL REFERENCES teams(id),
+    matchup_type TEXT,
+    PRIMARY KEY (season_id, week, team_pk)
+);
+
 CREATE TABLE IF NOT EXISTS weekly_team_scores (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     season_id INTEGER NOT NULL REFERENCES seasons(season_id),
@@ -427,6 +443,54 @@ def primary_owner_join_sql(team_alias: str, mgr_alias: Optional[str] = None, own
         ) {owner_alias} ON {owner_alias}.team_pk = {team_alias}.id
         LEFT JOIN managers {mgr_alias} ON {mgr_alias}.manager_id = {owner_alias}.manager_id
     """
+
+
+def build_canonical_manager_map(conn: sqlite3.Connection) -> dict[str, str]:
+    """Maps every manager_id to one CANONICAL identity - merges manager_
+    ids that are really the same real person under a different ESPN
+    member id. primary_owner_join_sql (above) already handles this when
+    ESPN lists both ids as CO-OWNERS of the same team in the same
+    season (ranks by tenure, picks one) - but ESPN can also silently
+    re-link an account to a brand-new member id with NO co-owner
+    overlap at all, so a later season lists only the new id as sole
+    owner while an earlier season's team_owners row still has only the
+    old one (found 2026-09-16: "BIR and Friends"' Brent Richwood was
+    the sole owner under one member id for 2023, a different member id
+    for 2024-2026 - same real person, confirmed by matching first/last
+    name, exactly like the co-owner case's own docstring describes, but
+    with no season where both ids ever appear together for
+    primary_owner_join_sql's ranking to even see). Left unfixed, every
+    cross-season aggregation (Hall of Fame, head-to-head, all-time
+    lineup efficiency) silently splits one person's career into two
+    separate "manager" rows/identities.
+
+    Groups manager_ids by (first_name, last_name), lowercased and
+    trimmed - a group only forms when BOTH names are present and
+    non-blank, so accounts with no real name on file (username only)
+    never get merged on a coincidental blank-string match. Within a
+    group, the manager_id with the most total team_owners rows (i.e.
+    the most tenured alias, same ranking primary_owner_join_sql already
+    uses) is canonical; every id in the group - canonical one included -
+    maps to it, so callers can blindly remap every manager_id without a
+    membership check first."""
+    rows = conn.execute(
+        "SELECT manager_id, TRIM(COALESCE(first_name, '')) AS fn, TRIM(COALESCE(last_name, '')) AS ln "
+        "FROM managers"
+    ).fetchall()
+    tenure = dict(conn.execute("SELECT manager_id, COUNT(*) FROM team_owners GROUP BY manager_id").fetchall())
+
+    groups: dict[tuple[str, str], list[str]] = {}
+    for manager_id, fn, ln in rows:
+        if not fn or not ln:
+            continue
+        groups.setdefault((fn.lower(), ln.lower()), []).append(manager_id)
+
+    canonical_map: dict[str, str] = {}
+    for ids in groups.values():
+        canonical = sorted(ids, key=lambda mid: (-tenure.get(mid, 0), mid))[0]
+        for manager_id in ids:
+            canonical_map[manager_id] = canonical
+    return canonical_map
 
 
 AMA_VIEW_NAMES = [

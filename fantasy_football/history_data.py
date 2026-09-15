@@ -19,6 +19,42 @@ def _primary_manager_sql(team_alias: str) -> str:
 
 
 @st.cache_data(ttl=300)
+def _canonical_manager_map() -> dict[str, str]:
+    """See db.build_canonical_manager_map - merges manager_ids that are
+    the same real person under a different ESPN member id (an account
+    re-link with no co-owner overlap for primary_owner_join_sql's own
+    ranking to catch), so every function below can blindly remap a raw
+    per-season manager_id onto one persistent cross-season identity."""
+    return db.build_canonical_manager_map(dd.get_connection())
+
+
+@st.cache_data(ttl=300)
+def _canonical_manager_names() -> dict[str, str]:
+    """canonical manager_id -> that manager's OWN display name (from
+    ITS OWN managers row specifically, not whichever alias a given
+    per-season query happened to join). Remapping manager_id to
+    canonical without ALSO normalizing manager_name this way left a
+    real bug: two merged aliases whose first/last name differ even
+    trivially (found 2026-09-16: "omkar ganesan" vs. "Omkar Ganesan" -
+    same real person, different capitalization on file for each of his
+    two ESPN member ids) still fracture a groupby(["manager_id",
+    "manager_name"]) into two rows despite sharing one manager_id,
+    silently splitting that person's stats (e.g. a championship
+    recorded on the row groupby happened to undercount)."""
+    conn = dd.get_connection()
+    canonical_ids = set(_canonical_manager_map().values())
+    if not canonical_ids:
+        return {}
+    placeholders = ",".join("?" * len(canonical_ids))
+    rows = conn.execute(
+        f"SELECT manager_id, {db.manager_full_name_sql('managers')} FROM managers "
+        f"WHERE manager_id IN ({placeholders})",
+        tuple(canonical_ids),
+    ).fetchall()
+    return dict(rows)
+
+
+@st.cache_data(ttl=300)
 def get_primary_manager_id(team_pk: int) -> str | None:
     """Resolve a SEASON-SPECIFIC team_pk to its primary manager's
     persistent identity - used by the Matchups page to look up a
@@ -29,24 +65,36 @@ def get_primary_manager_id(team_pk: int) -> str | None:
         f"SELECT t_mgr.manager_id FROM teams t {_primary_manager_sql('t')} WHERE t.id = ?",
         (team_pk,),
     ).fetchone()
-    return row[0] if row else None
+    if not row:
+        return None
+    return _canonical_manager_map().get(row[0], row[0])
 
 
 @st.cache_data(ttl=300)
 def get_managers() -> pd.DataFrame:
     """Only PRIMARY manager identities - excludes secondary co-owner
-    aliases (see db.primary_owner_join_sql) that would otherwise show up
-    as a selectable "manager" that can never actually match a matchup,
-    since matchup resolution always uses the primary identity. Name shown
-    is the real full name when ESPN has it on file, not the account
-    display name/username (see db.manager_full_name_sql)."""
+    aliases (see db.primary_owner_join_sql) AND cross-season re-link
+    aliases (see db.build_canonical_manager_map) that would otherwise
+    show up as a second, selectable "manager" for the same real person
+    who can never actually match a matchup played under their OTHER
+    alias. Name shown is the real full name when ESPN has it on file,
+    not the account display name/username (see db.manager_full_name_sql)."""
     conn = dd.get_connection()
-    return pd.read_sql_query(
+    df = pd.read_sql_query(
         f"SELECT manager_id, {db.manager_full_name_sql('managers')} AS display_name FROM managers "
-        f"WHERE manager_id IN ({db.primary_manager_ids_sql()}) "
-        f"ORDER BY display_name",
+        f"WHERE manager_id IN ({db.primary_manager_ids_sql()})",
         conn,
     )
+    canonical_map = _canonical_manager_map()
+    canonical_names = _canonical_manager_names()
+    df["manager_id"] = df["manager_id"].map(lambda m: canonical_map.get(m, m))
+    # Use the canonical id's OWN name (not whichever alias's name this
+    # particular pre-remap row happened to carry) - two merged aliases
+    # can differ trivially (e.g. capitalization), which would otherwise
+    # leave the dropped duplicate's name showing at random.
+    df["display_name"] = df["manager_id"].map(lambda m: canonical_names.get(m, m)).combine_first(df["display_name"])
+    df = df.drop_duplicates(subset="manager_id").sort_values("display_name").reset_index(drop=True)
+    return df
 
 
 @st.cache_data(ttl=300)
@@ -68,7 +116,14 @@ def get_all_matchups_by_manager() -> pd.DataFrame:
         {_primary_manager_sql('at')}
         WHERE m.completed = 1
     """
-    return pd.read_sql_query(query, conn)
+    df = pd.read_sql_query(query, conn)
+    canonical_map = _canonical_manager_map()
+    canonical_names = _canonical_manager_names()
+    df["home_manager_id"] = df["home_manager_id"].map(lambda m: canonical_map.get(m, m))
+    df["away_manager_id"] = df["away_manager_id"].map(lambda m: canonical_map.get(m, m))
+    df["home_manager_name"] = df["home_manager_id"].map(canonical_names).combine_first(df["home_manager_name"])
+    df["away_manager_name"] = df["away_manager_id"].map(canonical_names).combine_first(df["away_manager_name"])
+    return df
 
 
 @st.cache_data(ttl=300)
@@ -117,7 +172,9 @@ def get_hall_of_fame() -> pd.DataFrame:
     compared to its own season's field), and best/worst season by
     season-relative PPG percentile (metrics_weekly.ppg_percentile at each
     season's final week - the same cross-season design note in
-    ingest.py/season_metrics.py)."""
+    ingest.py/season_metrics.py). Also returns `championship_years` (list
+    of season_id, sorted) and `playoff_byes` (a real playoff-bracket bye -
+    NOT counted in playoff_wins/losses/ties, a bye isn't a game played)."""
     conn = dd.get_connection()
 
     teams_query = f"""
@@ -130,6 +187,15 @@ def get_hall_of_fame() -> pd.DataFrame:
     teams = pd.read_sql_query(teams_query, conn)
     if teams.empty:
         return teams
+
+    canonical_map = _canonical_manager_map()
+    canonical_names = _canonical_manager_names()
+    teams["manager_id"] = teams["manager_id"].map(lambda m: canonical_map.get(m, m))
+    # manager_name must be normalized to the canonical id's OWN name too -
+    # groupby(["manager_id", "manager_name"]) below would otherwise still
+    # fracture into two rows for two merged aliases whose name differs
+    # even trivially (see _canonical_manager_names' docstring).
+    teams["manager_name"] = teams["manager_id"].map(canonical_names).combine_first(teams["manager_name"])
 
     # Career record, split regular-season vs. playoff, derived directly
     # from actual matchup scores (NOT teams.wins/losses/ties, which is
@@ -149,6 +215,7 @@ def get_hall_of_fame() -> pd.DataFrame:
         """,
         conn,
     )
+    team_weeks["manager_id"] = team_weeks["manager_id"].map(lambda m: canonical_map.get(m, m))
     team_weeks["win"] = (team_weeks["score"] > team_weeks["opp_score"]).astype(int)
     team_weeks["loss"] = (team_weeks["score"] < team_weeks["opp_score"]).astype(int)
     team_weeks["tie"] = (team_weeks["score"] == team_weeks["opp_score"]).astype(int)
@@ -179,6 +246,8 @@ def get_hall_of_fame() -> pd.DataFrame:
         """,
         conn,
     )
+    if not best_worst.empty:
+        best_worst["manager_id"] = best_worst["manager_id"].map(lambda m: canonical_map.get(m, m))
 
     # Normalized points for/against: each team-season's percentile WITHIN
     # that season's field (era-normalized, same reasoning as ppg_percentile
@@ -187,6 +256,11 @@ def get_hall_of_fame() -> pd.DataFrame:
     # compare to that year's league," not a raw-points era-biased number.
     teams["points_for_pct"] = teams.groupby("season_id")["points_for"].rank(pct=True)
     teams["points_against_pct"] = teams.groupby("season_id")["points_against"].rank(pct=True)
+
+    championship_years = (
+        teams[teams["final_standing"] == 1].groupby("manager_id")["season_id"]
+        .apply(lambda s: sorted(int(y) for y in s)).rename("championship_years")
+    )
 
     agg = teams.groupby(["manager_id", "manager_name"]).agg(
         seasons_played=("season_id", "nunique"),
@@ -201,11 +275,33 @@ def get_hall_of_fame() -> pd.DataFrame:
     agg = agg.merge(reg_record, on="manager_id", how="left")
     agg = agg.merge(playoff_record, on="manager_id", how="left")
     agg = agg.merge(playoff_counts, on="manager_id", how="left")
+    agg = agg.merge(championship_years, on="manager_id", how="left")
     for col in (
         "reg_wins", "reg_losses", "reg_ties", "playoff_wins", "playoff_losses", "playoff_ties",
         "playoff_appearances",
     ):
         agg[col] = agg[col].fillna(0).astype(int)
+    agg["championship_years"] = agg["championship_years"].apply(lambda v: v if isinstance(v, list) else [])
+
+    # Real playoff-bracket byes (top seed advances without playing a
+    # game) - see db.playoff_byes/ingest.py's bye-capture. NOT part of
+    # playoff_wins/losses/ties above (a bye isn't a game played), shown
+    # alongside the Playoff Record as context only (user, 2026-09-16:
+    # "add in parentheses how many byes that team has had as well. dont
+    # count it as a W but let them know").
+    byes = pd.read_sql_query(
+        f"SELECT pb.season_id, pb.week, t_mgr.manager_id FROM playoff_byes pb "
+        f"JOIN teams t ON t.id = pb.team_pk {_primary_manager_sql('t')} "
+        f"WHERE t_mgr.manager_id IS NOT NULL",
+        conn,
+    )
+    if not byes.empty:
+        byes["manager_id"] = byes["manager_id"].map(lambda m: canonical_map.get(m, m))
+        bye_counts = byes.groupby("manager_id").size().rename("playoff_byes")
+        agg = agg.merge(bye_counts, on="manager_id", how="left")
+    else:
+        agg["playoff_byes"] = 0
+    agg["playoff_byes"] = agg["playoff_byes"].fillna(0).astype(int)
 
     if not best_worst.empty:
         season_end = best_worst.sort_values("week").groupby(["manager_id", "season_id"]).tail(1)

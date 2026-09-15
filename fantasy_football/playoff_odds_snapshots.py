@@ -258,7 +258,27 @@ def compute_week0_snapshot_rows(conn: sqlite3.Connection, season: int, n_sims: i
 
 
 def _path(season: int) -> str:
-    return f"playoff_odds_snapshots/{season}.json"
+    """The primary league keeps its original, un-prefixed path (no
+    migration needed for existing deployments/history) - every OTHER
+    registered league gets its own league_id-scoped path. Before this
+    (2026-09-16 bug report: "switching to playoff odds tab while in the
+    BIR and friends league brings me to the playoff odds of the usc pike
+    league"), every league shared this single un-scoped path, so
+    load_snapshots()/save_snapshot() for ANY league actually read/wrote
+    the PRIMARY league's data - wrong team_pks, wrong percentages,
+    silently mixed into whichever league happened to be active in the
+    session. The collector script (scripts/post_playoff_odds_snapshot.py)
+    only ever runs for the primary league (see PROJECT_BRIEF, 2026-09-16
+    multi-league scope check), so every non-primary league correctly
+    starts with NO snapshot data - load_snapshots() degrading to {} for
+    those leagues is the correct, already-handled empty case, not a bug."""
+    from . import config as _config
+    from . import league_context
+
+    league_id = league_context.get_active_league_id()
+    if league_id == _config.load_espn_credentials().league_id:
+        return f"playoff_odds_snapshots/{season}.json"
+    return f"playoff_odds_snapshots/{league_id}/{season}.json"
 
 
 def load_snapshots(season: int) -> dict[str, list[dict]]:

@@ -41,9 +41,24 @@ with tab_hof:
         display["Regular Season Record"] = display.apply(
             lambda r: ui.format_record(r["reg_wins"], r["reg_losses"], r["reg_ties"]), axis=1
         )
-        display["Playoff Record"] = display.apply(
-            lambda r: ui.format_record(r["playoff_wins"], r["playoff_losses"], r["playoff_ties"]), axis=1
-        )
+
+        def _playoff_record(r):
+            record = ui.format_record(r["playoff_wins"], r["playoff_losses"], r["playoff_ties"])
+            byes = int(r.get("playoff_byes", 0) or 0)
+            if byes:
+                record += f" ({byes} bye{'s' if byes != 1 else ''})"
+            return record
+
+        display["Playoff Record"] = display.apply(_playoff_record, axis=1)
+
+        def _championships(r):
+            n = int(r["championships"])
+            years = r.get("championship_years") or []
+            if n and years:
+                return f"{n} ({', '.join(str(y) for y in years)})"
+            return str(n)
+
+        display["🏆"] = display.apply(_championships, axis=1)
         display["Career Points For"] = display["career_points_for"].round(0).astype(int)
         display["Career Points Against"] = display["career_points_against"].round(0).astype(int)
         display["Norm. Points For"] = (display["career_points_for_pct"] * 100).round(0).astype(int)
@@ -53,22 +68,31 @@ with tab_hof:
         for col in ("Best Season", "Worst Season"):
             display[col] = display[col].apply(lambda v: int(v) if pd.notna(v) else None)
 
+        # Sort by the real numeric championship count (not the formatted
+        # "N (years)" string) BEFORE selecting/renaming down to it.
+        display = display.sort_values("championships", ascending=False)
+
         table = display[
-            ["manager_name", "championships", "finals_appearances", "playoff_appearances",
+            ["manager_name", "🏆", "finals_appearances", "playoff_appearances",
              "Regular Season Record", "Playoff Record",
              "Career Points For", "Career Points Against",
              "Norm. Points For", "Norm. Points Against",
              "Best Season", "Worst Season"]
         ].rename(columns={
-            "manager_name": "Manager", "championships": "🏆", "finals_appearances": "Finals",
-            "playoff_appearances": "Playoffs",
-        }).sort_values("🏆", ascending=False)
+            "manager_name": "Manager", "finals_appearances": "Finals", "playoff_appearances": "Playoffs",
+        })
 
         st.dataframe(
             table,
             hide_index=True,
             use_container_width=True,
             column_config={
+                "🏆": st.column_config.TextColumn(help="Championship count, with the winning year(s) in parentheses."),
+                "Playoff Record": st.column_config.TextColumn(
+                    help="Real playoff bracket games only (including placement games among "
+                    "teams that qualified) - excludes the consolation bracket. A bye (top seed "
+                    "advancing without playing) is noted in parentheses but NOT counted as a win.",
+                ),
                 "Career Points For": st.column_config.NumberColumn(format="localized"),
                 "Career Points Against": st.column_config.NumberColumn(format="localized"),
                 "Norm. Points For": st.column_config.NumberColumn(
@@ -84,10 +108,6 @@ with tab_hof:
                 "Playoffs": st.column_config.NumberColumn(
                     help="Real playoff bracket appearances only - excludes ESPN's separate "
                     "consolation ladder for teams that missed the playoffs.",
-                ),
-                "Playoff Record": st.column_config.TextColumn(
-                    help="Real playoff bracket games only (including placement games among "
-                    "teams that qualified) - excludes the consolation bracket.",
                 ),
                 "Best Season": st.column_config.NumberColumn(format="%d", help="Year of the season with the highest season-relative PPG percentile."),
                 "Worst Season": st.column_config.NumberColumn(format="%d", help="Year of the season with the lowest season-relative PPG percentile."),
