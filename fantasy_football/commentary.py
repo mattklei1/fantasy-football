@@ -93,27 +93,65 @@ def _label(names: dict, team_pk: int | None) -> dict | None:
     return {"team_pk": team_pk, **names.get(team_pk, {"team_name": "Unknown", "manager_name": "Unknown"})}
 
 
-def _power_rank_movers(conn: sqlite3.Connection, season: int, week: int, names: dict) -> list[dict]:
-    """Week-over-week Power Score rank change - biggest riser/faller."""
+def _power_rank_movers(conn: sqlite3.Connection, season: int, week: int, names: dict) -> dict | None:
+    """Two-tier Power Rank movement, mirroring _playoff_odds_summary()'s
+    own weekly/season-long pattern: WEEKLY (vs last week's real Power
+    Rank - None for week 1, since there's no real last week yet) and
+    SEASON-LONG (vs Week 0's real Roster Strength rank - the same
+    signal Home.py's "Since Wk0" column and dashboard_data.
+    get_standings() use - "are you over/under-performing your preseason
+    draft grade"). User, 2026-09-16, after seeing this week's recap:
+    "for future recaps, highlight the biggest risers and fallers from
+    the past week and season long." None if there's no current-week
+    Power Score data at all, or neither tier has a real baseline to
+    compare against (e.g. week 1 with no Week-0 snapshot collected
+    yet)."""
+    from . import playoff_odds_snapshots
+
     rows = pd.read_sql_query(
         "SELECT team_pk, power_score FROM metrics_weekly WHERE season_id = ? AND week = ?",
         conn, params=(season, week),
     )
-    prev_rows = pd.read_sql_query(
-        "SELECT team_pk, power_score FROM metrics_weekly WHERE season_id = ? AND week = ?",
-        conn, params=(season, week - 1),
-    )
-    if rows.empty or prev_rows.empty:
-        return []
+    if rows.empty:
+        return None
     rows["rank"] = rows["power_score"].rank(ascending=False, method="min").astype(int)
-    prev_rows["prev_rank"] = prev_rows["power_score"].rank(ascending=False, method="min").astype(int)
-    merged = rows.merge(prev_rows[["team_pk", "prev_rank"]], on="team_pk", how="inner")
-    merged["change"] = merged["prev_rank"] - merged["rank"]
-    merged = merged.sort_values("change", ascending=False)
-    movers = []
-    for _, r in merged.iterrows():
-        movers.append({**_label(names, int(r.team_pk)), "rank": int(r["rank"]), "change": int(r["change"])})
-    return movers
+    rank_by_pk = dict(zip(rows["team_pk"], rows["rank"]))
+
+    def biggest_mover(baseline_rank_by_pk: dict | None) -> tuple[dict | None, dict | None]:
+        if not baseline_rank_by_pk:
+            return None, None
+        changes = [
+            {**_label(names, int(pk)), "rank": int(rank), "change": int(baseline_rank_by_pk[pk] - rank)}
+            for pk, rank in rank_by_pk.items() if pk in baseline_rank_by_pk
+        ]
+        if not changes:
+            return None, None
+        changes.sort(key=lambda c: c["change"], reverse=True)
+        return changes[0], changes[-1]
+
+    weekly_riser = weekly_faller = None
+    if week > 1:
+        prev_rows = pd.read_sql_query(
+            "SELECT team_pk, power_score FROM metrics_weekly WHERE season_id = ? AND week = ?",
+            conn, params=(season, week - 1),
+        )
+        if not prev_rows.empty:
+            prev_rows["rank"] = prev_rows["power_score"].rank(ascending=False, method="min").astype(int)
+            weekly_riser, weekly_faller = biggest_mover(dict(zip(prev_rows["team_pk"], prev_rows["rank"])))
+
+    season_riser = season_faller = None
+    week0_rows = playoff_odds_snapshots.load_snapshots(season).get("0")
+    if week0_rows and "roster_strength" in week0_rows[0]:
+        week0 = pd.DataFrame(week0_rows)
+        week0["week0_rank"] = week0["roster_strength"].rank(ascending=False, method="min").astype(int)
+        season_riser, season_faller = biggest_mover(dict(zip(week0["team_pk"], week0["week0_rank"])))
+
+    if weekly_riser is None and season_riser is None:
+        return None
+    return {
+        "weekly_riser": weekly_riser, "weekly_faller": weekly_faller,
+        "season_riser": season_riser, "season_faller": season_faller,
+    }
 
 
 def _free_agent_avg_projection_by_position(league, next_week: int, pool_size: int = 25) -> dict[str, float]:
@@ -670,14 +708,24 @@ def generate_placeholder_commentary(facts: dict) -> str:
         f"{_fmt_team(fw['team'])} has the largest gap between their record and their all-play record." if fw else "Nothing to report.",
     )
 
-    movers = facts.get("power_rank_movers") or []
+    movers = facts.get("power_rank_movers")
     if movers:
-        riser, faller = movers[0], movers[-1]
-        section(
-            "POWER RANKING MOVERS",
-            f"Riser: {_fmt_team(riser)} (now #{riser['rank']}, {riser['change']:+d})",
-            f"Faller: {_fmt_team(faller)} (now #{faller['rank']}, {faller['change']:+d})",
-        )
+        mover_lines = []
+        wr, wf = movers.get("weekly_riser"), movers.get("weekly_faller")
+        if wr:
+            mover_lines.append(f"Riser this week: {_fmt_team(wr)} (now #{wr['rank']}, {wr['change']:+d})")
+        if wf:
+            mover_lines.append(f"Faller this week: {_fmt_team(wf)} (now #{wf['rank']}, {wf['change']:+d})")
+        sr, sf = movers.get("season_riser"), movers.get("season_faller")
+        if sr:
+            mover_lines.append(
+                f"Season-long riser vs. Week 0: {_fmt_team(sr)} (now #{sr['rank']}, {sr['change']:+d})"
+            )
+        if sf:
+            mover_lines.append(
+                f"Season-long faller vs. Week 0: {_fmt_team(sf)} (now #{sf['rank']}, {sf['change']:+d})"
+            )
+        section("POWER RANKING MOVERS", *mover_lines)
     else:
         section("POWER RANKING MOVERS", "Not enough history yet to track movers.")
 
@@ -769,6 +817,12 @@ def _build_claude_prompt(facts: dict) -> str:
         "impossible swap. Report both `flipped_result` (would the optimal lineup have won the real "
         "matchup) and `optimal_beats_median` (would it have also cleared that week's median/top-half "
         "bonus, if this league uses one) plainly, whichever combination applies.\n\n"
+        "For POWER RANKING MOVERS: `power_rank_movers` has up to two tiers - `weekly_riser`/`weekly_faller` "
+        "(vs. last week's real Power Rank - null for week 1, no real 'last week' yet) and `season_riser`/"
+        "`season_faller` (vs. Week 0's real Roster Strength rank - are they over- or under-performing "
+        "their PRESEASON draft grade, a different and often more interesting question than 'moved since "
+        "last week'). Report whichever tiers are present; skip a tier gracefully if it's null rather than "
+        "inventing one.\n\n"
         "For NEXT WEEK'S GAME TO WATCH: `next_week_game_to_watch.home_projected_score`/"
         "`away_projected_score` already assume each team sets an OPTIMAL lineup from their current roster "
         "using next week's real ESPN projections (with a free-agent-average stand-in for any empty slot) "

@@ -4128,3 +4128,34 @@ RANKING MOVERS specifically.
   (vs. Week 0), instead of today's single "since week 1" comparison -
   explicitly said this week's recap (Week 1, no real "last week" to
   diff against yet) doesn't need it fixed, only "future recaps."
+
+**POWER RANKING MOVERS rebuilt as a two-tier weekly + season-long
+section, same session, immediately after the above.** `_power_rank_
+movers()` rewritten: `weekly_riser`/`weekly_faller` (vs. last week's
+real Power Rank - null for week 1, no real "last week" exists yet) and
+`season_riser`/`season_faller` (vs. Week 0's real Roster Strength rank -
+the exact same signal Home.py's "Since Wk0" column and `dashboard_data.
+get_standings()` now use) - mirrors `_playoff_odds_summary()`'s own
+weekly/season-long shape exactly. Returns `dict | None` now (was a
+flat, always-sorted `list[dict]` before) - both the placeholder writer
+and the Claude prompt's `other_instructions` updated for the new shape;
+gracefully skips whichever tier(s) have no real baseline instead of
+inventing one, and returns `None` entirely only when NEITHER tier has
+anything to compare against.
+
+- Live-verified against the real 2026 production league (week 1, no
+  weekly tier possible yet): `season_riser` correctly picked out Max
+  Coffey (Hammer Time, +6 ranks since Week 0 despite a genuinely weak
+  Roster Strength) and `season_faller` correctly picked Ian Forrest
+  (Doody Guac Boys, -9 ranks despite a mid-pack Roster Strength) -
+  exactly the two teams this session's own Roster-Strength-vs-Playoff-
+  Odds investigation earlier flagged as the league's clearest over/
+  under-performers-vs-their-draft-grade, confirming the new signal is
+  catching the right story.
+- 6 new tests in `test_commentary.py` (a minimal `metrics_weekly`-only
+  DB fixture + `monkeypatch` on `playoff_odds_snapshots.load_snapshots`,
+  mirroring the pattern already used for `_playoff_odds_summary()`'s own
+  tests): weekly-tier-only, season-tier-only, both-null-at-week-1,
+  gracefully ignoring an older-format Week-0 snapshot missing the new
+  `roster_strength` field, and the empty/no-data case. 395/395 tests
+  passing overall.

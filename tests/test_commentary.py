@@ -569,3 +569,77 @@ def test_playoff_sim_baseline_none_when_not_enough_real_teams(conn):
     )
     assert team_state is None
     assert actual is None
+
+
+# --- _power_rank_movers (two-tier: weekly vs. last week, season-long vs. Week 0) ---
+
+_MOVER_NAMES = {i: {"team_pk": i, "team_name": f"Team {i}", "manager_name": f"Mgr {i}"} for i in range(1, 5)}
+
+
+def _power_rank_conn(rows_by_week: dict[int, dict[int, float]]) -> sqlite3.Connection:
+    c = sqlite3.connect(":memory:")
+    db.init_db(c)
+    for week, scores in rows_by_week.items():
+        for team_pk, power_score in scores.items():
+            c.execute(
+                "INSERT INTO metrics_weekly (season_id, week, team_pk, power_score) VALUES (2099, ?, ?, ?)",
+                (week, team_pk, power_score),
+            )
+    c.commit()
+    return c
+
+
+def test_power_rank_movers_none_without_any_current_week_data():
+    conn = _power_rank_conn({})
+    assert commentary._power_rank_movers(conn, 2099, 1, _MOVER_NAMES) is None
+
+
+def test_power_rank_movers_weekly_tier_uses_last_week(monkeypatch):
+    monkeypatch.setattr(commentary.playoff_odds_snapshots, "load_snapshots", lambda season: {})
+    conn = _power_rank_conn(
+        {
+            1: {1: 90, 2: 80, 3: 70, 4: 60},  # week1 ranks: 1,2,3,4
+            2: {1: 60, 2: 90, 3: 80, 4: 70},  # week2 ranks: 4,1,2,3 - team2 rose to #1, team1 fell to #4
+        }
+    )
+    result = commentary._power_rank_movers(conn, 2099, 2, _MOVER_NAMES)
+    assert result is not None
+    assert result["weekly_riser"]["team_pk"] == 2
+    assert result["weekly_faller"]["team_pk"] == 1
+    assert result["season_riser"] is None  # no Week-0 snapshot mocked in
+    assert result["season_faller"] is None
+
+
+def test_power_rank_movers_none_for_week1_without_any_baseline(monkeypatch):
+    # week 1 has no real "last week", and no Week-0 snapshot exists -
+    # neither tier has anything to compare against
+    monkeypatch.setattr(commentary.playoff_odds_snapshots, "load_snapshots", lambda season: {})
+    conn = _power_rank_conn({1: {1: 90, 2: 80, 3: 70, 4: 60}})
+    assert commentary._power_rank_movers(conn, 2099, 1, _MOVER_NAMES) is None
+
+
+def test_power_rank_movers_season_tier_uses_week0_roster_strength(monkeypatch):
+    # week0 roster_strength ranks (best to worst): team2, team3, team4, team1
+    week0_rows = [
+        {"team_pk": 1, "roster_strength": 30.0}, {"team_pk": 2, "roster_strength": 90.0},
+        {"team_pk": 3, "roster_strength": 60.0}, {"team_pk": 4, "roster_strength": 50.0},
+    ]
+    monkeypatch.setattr(commentary.playoff_odds_snapshots, "load_snapshots", lambda season: {"0": week0_rows})
+    conn = _power_rank_conn({1: {1: 90, 2: 80, 3: 70, 4: 60}})  # week1 power ranks: 1,2,3,4
+
+    result = commentary._power_rank_movers(conn, 2099, 1, _MOVER_NAMES)
+    assert result is not None
+    assert result["weekly_riser"] is None  # week 1, no real last week
+    # team1: week0_rank=4 (worst on paper) -> now power_rank=1 (best) => +3, the biggest riser
+    assert result["season_riser"]["team_pk"] == 1
+    assert result["season_riser"]["change"] == 3
+
+
+def test_power_rank_movers_ignores_older_week0_snapshot_without_roster_strength(monkeypatch):
+    # pre-2026-09-16 snapshots don't have the roster_strength field
+    monkeypatch.setattr(
+        commentary.playoff_odds_snapshots, "load_snapshots",
+        lambda season: {"0": [{"team_pk": 1, "playoff_pct": 0.5}]},
+    )
+    conn = _power_rank_conn({1: {1: 90, 2: 80, 3: 70, 4: 60}})
+    assert commentary._power_rank_movers(conn, 2099, 1, _MOVER_NAMES) is None
