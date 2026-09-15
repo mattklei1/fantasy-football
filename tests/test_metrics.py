@@ -594,3 +594,28 @@ def test_compute_season_metrics_empty_input_returns_empty():
     empty_matchups = pd.DataFrame(columns=["week", "home_team_pk", "away_team_pk", "home_score", "away_score"])
     result = compute_season_metrics(empty_scores, empty_matchups, median_scoring=False)
     assert result.empty
+
+
+def test_lineup_efficiency_playoffs_scope_matches_history_playoff_definition():
+    """Lineup Efficiency's "Playoffs"/"All" scope used to count
+    WINNERS_BRACKET only - a narrower "championship path" definition
+    that disagreed with the History page's own Playoff Record
+    (REAL_PLAYOFF_MATCHUP_TYPES = WINNERS_BRACKET + WINNERS_CONSOLATION_
+    LADDER), causing a real per-manager games/seasons mismatch between
+    the two pages (user, 2026-09-16). Both scopes must include
+    WINNERS_CONSOLATION_LADDER now, and neither may include
+    LOSERS_CONSOLATION_LADDER (the separate bracket for teams that
+    MISSED the playoffs)."""
+    from fantasy_football.metrics.history import REAL_PLAYOFF_MATCHUP_TYPES
+    from fantasy_football.metrics.loaders import _scope_matchup_type_filter
+
+    playoffs_filter = _scope_matchup_type_filter("playoffs")
+    for matchup_type in REAL_PLAYOFF_MATCHUP_TYPES:
+        assert f"'{matchup_type}'" in playoffs_filter
+    assert "LOSERS_CONSOLATION_LADDER" not in playoffs_filter
+
+    all_filter = _scope_matchup_type_filter("all")
+    assert "'NONE'" in all_filter
+    for matchup_type in REAL_PLAYOFF_MATCHUP_TYPES:
+        assert f"'{matchup_type}'" in all_filter
+    assert "LOSERS_CONSOLATION_LADDER" not in all_filter

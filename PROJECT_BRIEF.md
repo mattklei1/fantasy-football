@@ -4511,3 +4511,39 @@ way to see who else was near the top.
   per rank inside the card via `<br>`-joined HTML, reusing the existing
   `stat_card()` (no new UI component needed).
 399/399 tests passing.
+
+**Bug: Lineup Efficiency's "Playoffs"/"All" scope disagreed with
+History's own Playoff Record on what counts as a real playoff game.**
+User: "On lineup efficiency. For pike league, the seasons and records
+aren't aligning with the historical playoff records for these teams.
+Different number of games and seasons in the playoffs." Root cause:
+`metrics/loaders.py::_scope_matchup_type_filter()`'s "playoffs" scope
+only ever counted `matchup_type = WINNERS_BRACKET` (the championship
+path, deliberately excluding `WINNERS_CONSOLATION_LADDER` - the
+placement bracket for teams that qualified but lost early), while
+`metrics/history.REAL_PLAYOFF_MATCHUP_TYPES` (History's Playoff
+Record, Hall of Fame `playoff_appearances`/`playoff_wins`) counts BOTH
+- teams that qualified but lost early are still real playoff
+participants. Two different, undocumented-as-different definitions of
+"playoffs" in the same app meant a manager's own playoff game/season
+counts genuinely disagreed between the two pages - not the "seasons"
+gap (that part's a real, unavoidable ESPN data limit: Lineup Efficiency
+needs per-player box-score eligibility data only available 2019+,
+already clearly captioned).
+- `_scope_matchup_type_filter()` now imports and reuses `REAL_PLAYOFF_
+  MATCHUP_TYPES` directly (single source of truth, can't drift apart
+  again) for both "playoffs" and "all" - still correctly excludes
+  `LOSERS_CONSOLATION_LADDER` (the separate bracket for teams that
+  MISSED the playoffs) and playoff byes (no matchup row exists for
+  one). Propagates automatically to both `load_matchups_by_scope` and
+  `load_roster_with_points_by_scope` (both already funnel through this
+  one helper).
+- `pages/4_Lineup_Efficiency.py`: module docstring, both scope
+  captions, and the Methodology expander's Scope bullet all updated to
+  describe the aligned definition instead of the old "championship
+  path only" one.
+- New regression test (`test_lineup_efficiency_playoffs_scope_matches_
+  history_playoff_definition`) asserting both scopes' SQL filter
+  literally contains every `REAL_PLAYOFF_MATCHUP_TYPES` value and never
+  `LOSERS_CONSOLATION_LADDER` - locks the two definitions together so
+  they can't silently diverge again. 400/400 tests passing.

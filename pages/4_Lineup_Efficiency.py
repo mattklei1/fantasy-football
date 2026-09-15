@@ -1,8 +1,10 @@
 """LINEUP EFFICIENCY page: Actual vs. Optimal starter points, and
 whether a different legal lineup would have won the matchup. Filterable
-by Regular Season / Playoffs (championship-bracket weeks only) / All.
-Supports "All time" (every season combined, aggregated by manager
-identity since team_pk resets every season) alongside a single season."""
+by Regular Season / Playoffs (every real playoff-bracket week - same
+definition as the History page's Playoff Record, see metrics/history.
+REAL_PLAYOFF_MATCHUP_TYPES) / All. Supports "All time" (every season
+combined, aggregated by manager identity since team_pk resets every
+season) alongside a single season."""
 from __future__ import annotations
 
 import streamlit as st
@@ -25,14 +27,17 @@ scope = scope_label_to_value[scope_label]
 
 if scope == "playoffs":
     st.caption(
-        "Championship-bracket weeks only - consolation-ladder games and playoff bye weeks are "
-        "excluded (they were never a shot at the title)."
+        "Every real playoff-bracket week (championship path AND the placement games among "
+        "teams that qualified) - same definition as History's Playoff Record. Excludes the "
+        "separate consolation ladder for teams that MISSED the playoffs, and playoff bye weeks "
+        "(no matchup row exists for one)."
     )
 elif scope == "all":
     st.caption(
-        "Regular season + championship-bracket weeks combined (consolation games still "
-        "excluded). Teams with fewer playoff appearances naturally contribute fewer weeks to "
-        "their own numerator/denominator here - that's correct, not a bug: fewer shots at it."
+        "Regular season + every real playoff-bracket week combined (see Playoffs scope above "
+        "for exactly what counts). Teams with fewer playoff appearances naturally contribute "
+        "fewer weeks to their own numerator/denominator here - that's correct, not a bug: "
+        "fewer shots at it."
     )
 
 df = hd.get_all_time_lineup_efficiency(scope) if all_time else dd.get_lineup_efficiency_by_scope(season, scope)
@@ -106,11 +111,11 @@ an exact maximum-weight assignment of rostered players to starting slots, respec
 player's real slot eligibility and the league's real roster settings pulled from ESPN
 (`league.settings.position_slot_counts` - never hardcoded).
 
-- **Scope**: Regular Season (weeks with `matchup_type = NONE`), Playoffs (`WINNERS_BRACKET`
-  only - the championship path), or All (both combined). Consolation-ladder games and playoff
-  bye weeks are excluded from every scope - a bye week has no matchup row to draw a lineup
-  eligibility snapshot from in the first place, and a consolation game was never a shot at the
-  title, so it's deliberately left out of Playoffs/All rather than silently diluting the numbers.
+- **Scope**: Regular Season (weeks with `matchup_type = NONE`), Playoffs (every real
+  playoff-bracket week - `WINNERS_BRACKET` + `WINNERS_CONSOLATION_LADDER`, same definition as
+  the History page's Playoff Record), or All (both combined). The separate consolation ladder
+  for teams that MISSED the playoffs, and playoff bye weeks, are excluded from every scope - a
+  bye week has no matchup row to draw a lineup eligibility snapshot from in the first place.
 - **Lineup Efficiency** = Actual Starter Points ÷ Optimal Starter Points, summed over the
   selected scope's weeks
 - **Decision Accuracy** = a points-BLIND companion metric: compares the SET of players you
