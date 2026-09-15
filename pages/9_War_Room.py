@@ -44,9 +44,14 @@ if not config.fantasypros_api_key():
         "will be empty. Trade Calculator still works off ESPN's own positional rank alone."
     )
 
-tab_lineup, tab_rankings, tab_waiver, tab_mine, tab_trade = st.tabs(
-    ["Lineup Optimizer", "Rankings Browser", "Waiver Board", "My Waiver Bids", "Trade Calculator"]
-)
+_tab_labels = ["Lineup Optimizer", "Rankings Browser", "Waiver Board", "My Waiver Bids", "Trade Calculator"]
+if ui.is_primary_admin():
+    _tab_labels.append("🗂️ Manage Users")
+    (
+        tab_lineup, tab_rankings, tab_waiver, tab_mine, tab_trade, tab_manage_users,
+    ) = st.tabs(_tab_labels)
+else:
+    tab_lineup, tab_rankings, tab_waiver, tab_mine, tab_trade = st.tabs(_tab_labels)
 
 with tab_rankings:
     st.caption(
@@ -749,3 +754,7 @@ This has zero effect on scoring - ESPN scores a player identically regardless of
 slot he's sitting in - it's purely a lineup-management preference.
                 """
             )
+
+if ui.is_primary_admin():
+    with tab_manage_users:
+        ui.render_manage_users_tab()

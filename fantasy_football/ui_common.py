@@ -539,11 +539,36 @@ def render_league_selector() -> None:
             dd.clear_all_caches()
             st.rerun()
 
-    if not is_primary_admin():
-        return
 
-    with st.sidebar.expander("➕ Manage leagues"):
-        show_flash("league_registry")
+def render_manage_users_tab() -> None:
+    """The ONE SOURCE OF TRUTH for "who has what access to which
+    leagues" - registered leagues, every user's league/War Room grants,
+    and whether they have their own ESPN credentials configured, all in
+    one place instead of scattered across a sidebar expander, a
+    Streamlit secrets table, and an env var (user feedback 2026-09-15:
+    "I forget all the places I need to add them"). Primary-admin-only -
+    call from inside an `if ui.is_primary_admin():` guarded tab (see
+    pages/9_War_Room.py)."""
+    from . import access_control, league_context, league_registry
+
+    primary_id = config.load_espn_credentials().league_id
+    registered = league_registry.load_registered_leagues()
+    labels = {primary_id: "My league (primary)"}
+    for lid, info in registered.items():
+        labels[lid] = info.get("name") or f"League {lid}"
+
+    st.markdown("#### Registered leagues")
+    show_flash("league_registry")
+    if registered:
+        st.dataframe(
+            [{"League ID": lid, "Name": info.get("name"), "Season": info.get("season")} for lid, info in registered.items()],
+            hide_index=True, use_container_width=True,
+        )
+    else:
+        st.caption("No extra leagues registered yet - just the primary one.")
+
+    col_add, col_remove = st.columns(2)
+    with col_add:
         new_id_raw = st.text_input("Add league by ESPN league ID", key="league_registry_add_id")
         if st.button("Add league", key="league_registry_add_btn") and new_id_raw.strip():
             try:
@@ -572,7 +597,7 @@ def render_league_selector() -> None:
                     st.rerun()
                 except Exception as exc:  # noqa: BLE001 - a bad league id/no access should show a clear error, not crash
                     st.error(f"Couldn't add league {new_id}: {type(exc).__name__}: {exc}")
-
+    with col_remove:
         if registered:
             remove_id = st.selectbox(
                 "Remove a league", list(registered.keys()),
@@ -580,49 +605,77 @@ def render_league_selector() -> None:
             )
             if st.button("Remove", key="league_registry_remove_btn"):
                 save_result = league_registry.remove_league(remove_id)
-                if league_context.get_active_league_id() == remove_id:
-                    league_context.set_active_league_id(None)
-                    league_context.sync_db_path()
+                league_context.sync_db_path()
                 if not save_result["committed"]:
                     set_flash("league_registry", "warning", save_result["commit_message"])
                 st.rerun()
 
-    with st.sidebar.expander("👤 Manage league access"):
-        st.caption(
-            "Grant a signed-in user access to specific leagues (beyond the primary one everyone gets) "
-            "and/or War Room. Also lets them log in at all, even if they're not separately on "
-            "ALLOWED_EMAILS."
-        )
-        show_flash("league_access")
-        access = access_control.load_access()
-        if access:
-            for granted_email, entry in access.items():
-                league_names = ", ".join(labels.get(lid, str(lid)) for lid in entry["leagues"]) or "(primary only)"
-                wr = " · War Room" if entry["war_room"] else ""
-                st.caption(f"**{granted_email}**: {league_names}{wr}")
+    st.divider()
+    st.markdown("#### Who has access to what")
+    show_flash("league_access")
 
-        grant_email = st.text_input("Email", key="league_access_email")
-        grant_league_ids = st.multiselect(
-            "Extra leagues", sorted(registered.keys()), format_func=lambda lid: labels.get(lid, str(lid)),
-            key="league_access_leagues",
+    admin_email = config.admin_email()
+    access = access_control.load_access()
+    rows = []
+    if admin_email:
+        rows.append(
+            {
+                "Email": admin_email, "Leagues": "All (primary admin)", "War Room": True,
+                "Own ESPN credentials": bool(config.get_manager_credentials(admin_email)),
+            }
         )
-        grant_war_room = st.checkbox("War Room access", key="league_access_war_room")
-        col_grant, col_revoke = st.columns(2)
-        with col_grant:
-            if st.button("Save grant", key="league_access_save") and grant_email.strip():
-                save_result = access_control.set_user_access(grant_email, grant_league_ids, grant_war_room)
-                level = "success" if save_result["committed"] else "warning"
-                set_flash(
-                    "league_access", level,
-                    "Saved." if save_result["committed"] else f"Saved locally only. {save_result['commit_message']}",
-                )
-                st.rerun()
-        with col_revoke:
-            if st.button("Revoke", key="league_access_revoke") and grant_email.strip():
-                save_result = access_control.remove_user_access(grant_email)
-                if not save_result["committed"]:
-                    set_flash("league_access", "warning", save_result["commit_message"])
-                st.rerun()
+    for email, entry in access.items():
+        league_names = ", ".join(labels.get(lid, str(lid)) for lid in entry["leagues"]) or "(primary only)"
+        has_extra_league = any(lid != primary_id for lid in entry["leagues"])
+        has_creds = bool(config.get_manager_credentials(email))
+        row = {
+            "Email": email, "Leagues": league_names, "War Room": entry["war_room"],
+            "Own ESPN credentials": has_creds,
+        }
+        rows.append(row)
+        if entry["war_room"] and has_extra_league and not has_creds:
+            st.warning(
+                f"**{email}** has War Room access to a non-primary league but no ESPN credentials "
+                "configured - they'll see the PRIMARY account's team there, not their own, until "
+                "credentials are added (see below)."
+            )
+
+    if rows:
+        st.dataframe(rows, hide_index=True, use_container_width=True)
+    else:
+        st.caption("Nobody's been granted anything yet - everyone but the primary admin sees just the primary league.")
+
+    st.caption(
+        "Site login: anyone granted below can log in even if they're not separately on the "
+        "ALLOWED_EMAILS secret. Own ESPN credentials aren't settable here (a real login credential, "
+        "same sensitivity as the primary account's own ESPN_S2/SWID) - add them as a Streamlit Cloud "
+        "secret: `[manager_credentials.\"their-email@example.com\"]` with `espn_s2`/`swid` keys, from "
+        "their own browser session. Without their own credentials, War Room's \"my team\" and any real "
+        "write (waiver claims, lineup submits) uses the PRIMARY account's team instead of theirs."
+    )
+
+    grant_email = st.text_input("Email to grant/edit", key="league_access_email")
+    grant_league_ids = st.multiselect(
+        "Extra leagues", sorted(registered.keys()), format_func=lambda lid: labels.get(lid, str(lid)),
+        key="league_access_leagues",
+    )
+    grant_war_room = st.checkbox("War Room access", key="league_access_war_room")
+    col_grant, col_revoke = st.columns(2)
+    with col_grant:
+        if st.button("Save grant", key="league_access_save") and grant_email.strip():
+            save_result = access_control.set_user_access(grant_email, grant_league_ids, grant_war_room)
+            level = "success" if save_result["committed"] else "warning"
+            set_flash(
+                "league_access", level,
+                "Saved." if save_result["committed"] else f"Saved locally only. {save_result['commit_message']}",
+            )
+            st.rerun()
+    with col_revoke:
+        if st.button("Revoke", key="league_access_revoke") and grant_email.strip():
+            save_result = access_control.remove_user_access(grant_email)
+            if not save_result["committed"]:
+                set_flash("league_access", "warning", save_result["commit_message"])
+            st.rerun()
 
 
 def render_sidebar(support_all_time: bool = False) -> tuple[int | str, int | None]:

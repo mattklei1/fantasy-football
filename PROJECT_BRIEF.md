@@ -3044,3 +3044,37 @@ user confirmed the APPROACH, not the actual values yet) - the credential
 the signed-in user's own credentials over the primary's when both are
 configured, falls back correctly when they're not). 326/326 tests
 passing (`test_config.py` new, `test_league_context.py` extended).
+
+**"Manage Users" tab - one source of truth for access (2026-09-15, same
+session):** user feedback after Phase 3 landed - "How do I add other
+people? I forget all the places I need to add them." Multi-league access
+had accreted across two separate primary-admin-only sidebar expanders
+("➕ Manage leagues", "👤 Manage league access") plus a Streamlit secrets
+table the UI couldn't even show - no single place to see the whole
+picture. Consolidated into one new War Room tab, primary-admin-only:
+
+- `render_league_selector()` trimmed back down to ONLY the league-picker
+  dropdown itself - the two management expanders were removed from the
+  sidebar entirely, not duplicated.
+- New `ui_common.render_manage_users_tab()` combines both prior expanders
+  into one screen: registered-leagues table + add/remove, and a single
+  unified "Who has access to what" table (primary admin's implicit
+  all-leagues/War-Room row, plus every `access_control`-granted user's
+  email, granted leagues, War Room flag, and whether they have their own
+  ESPN credentials configured) followed by the grant/revoke form. Flags
+  the exact Madeline-shaped risk inline: anyone with War Room access to a
+  non-primary league but no credentials of their own gets an explicit
+  `st.warning()` (their "my team" would silently resolve to the PRIMARY
+  account's team, not theirs) with the fix spelled out (a Streamlit Cloud
+  `[manager_credentials."their-email"]` secret - not settable through
+  this UI, since it's a real per-person credential, same sensitivity
+  class as the primary account's own ESPN_S2/SWID).
+- `pages/9_War_Room.py` adds a 6th "🗂️ Manage Users" tab, but only when
+  `ui.is_primary_admin()` - everyone else's `st.tabs()` call is unchanged
+  (5 tabs, same as before).
+- Verified via AppTest: primary admin sees 6 tabs including Manage Users
+  with zero exceptions; a granted non-primary War Room user sees exactly
+  5 tabs, no Manage Users tab at all.
+- 326/326 tests passing (no test changes needed - this was a pure UI
+  relocation, all underlying logic in `league_registry.py`/
+  `access_control.py`/`config.py` was already tested).
