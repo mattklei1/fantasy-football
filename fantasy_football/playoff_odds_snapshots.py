@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import numpy as np
 import pandas as pd
 
 from . import config
@@ -50,6 +51,23 @@ METRICS = ("championship_pct", "playoff_pct", "bye_pct", "seed1_pct")
 #: The only bracket shape playoff_sim.py supports (top-2-bye, 6-team
 #: field) - see that module's own SUPPORTED_PLAYOFF_TEAM_COUNT.
 PLAYOFF_BYE_COUNT = 2
+
+#: How much to trust a team's Week-0 season_ppg (its optimal Week-1
+#: lineup's ESPN pregame projection) vs. the league average, expressed
+#: as an equivalent games_played fed into playoff_sim.shrink_expected_
+#: score() (see compute_week0_snapshot_rows()). NOT guessed: RMSE-swept
+#: blend weights (0.00-1.00) predicting each team's REAL rest-of-season
+#: PPG from `w * week1_optimal_projection + (1-w) * league_avg_projection`
+#: across 6 completed real seasons with usable Week-1 projection data
+#: (2019-2022, 2024-2025 - 2023 excluded, its Week-1 projected_points
+#: data is bad that season, league_avg_proj came out ~18 vs. a real
+#: ~114 PPG average). w=0 (today's bug - full shrinkage to the league
+#: average) gave RMSE 9.95; the minimum, RMSE 9.22, sat at w=0.85 (flat
+#: within +/-0.05 either side - not a knife-edge optimum), confirming a
+#: team's Week-1 pregame projection genuinely predicts its rest-of-
+#: season scoring better than just assuming every team is average.
+#: w=games/(games+SHRINKAGE_GAMES) => games = SHRINKAGE_GAMES*w/(1-w).
+WEEK0_TRUST_GAMES = 45.0
 
 
 def preseason_baseline_rows(team_names: dict[int, str], playoff_team_count: int = 6) -> list[dict]:
@@ -134,7 +152,19 @@ def compute_week0_snapshot_rows(conn: sqlite3.Connection, season: int, n_sims: i
     happened yet). None if this season's format isn't the 6-team/top-2-
     bye shape playoff_sim.py supports, or there's no Week-1 roster data
     to compute from yet (before the draft, or too early in a brand new
-    season for rosters to be set)."""
+    season for rosters to be set).
+
+    Passes WEEK0_TRUST_GAMES as simulate_season()'s shrinkage override -
+    without it, team_state's real matchup record (genuinely 0-0-0 at
+    Week 0) makes playoff_sim's normal early-season shrinkage treat
+    EVERY team as exactly the league-average team, discarding the real
+    roster-quality signal this function just computed entirely (caught
+    live 2026-09-15: a first version of this feature had all 12 real
+    teams landing at 49-51% playoff odds - user, correctly: "I wouldn't
+    expect all teams to be at 49-51% at week 0... we have a pretty good
+    idea of who will make the playoffs based on projected score"). See
+    WEEK0_TRUST_GAMES's own docstring for the RMSE calibration proving
+    that idea out against 6 real completed seasons."""
     from .metrics.playoff_sim import SUPPORTED_PLAYOFF_TEAM_COUNT, simulate_season
 
     meta = conn.execute(
@@ -159,6 +189,7 @@ def compute_week0_snapshot_rows(conn: sqlite3.Connection, season: int, n_sims: i
 
     result = simulate_season(
         team_state, remaining_matchups, bool(median_scoring), reg_season_count, n_sims=n_sims,
+        shrinkage_games_played=np.full(len(team_state), WEEK0_TRUST_GAMES),
     )
     name_rows = conn.execute("SELECT id, team_name FROM teams WHERE season_id = ?", (season,)).fetchall()
     name_by_pk = {r[0]: r[1] for r in name_rows}
