@@ -18,6 +18,7 @@ from fantasy_football.war_room_data import (
     evaluate_trade,
     find_win_win_trades,
     optimal_roster_value,
+    pick_waiver_drop_candidate,
     slot_name_to_id,
 )
 
@@ -193,6 +194,42 @@ def test_reasoning_flags_bid_exceeding_remaining_budget():
 def test_reasoning_falls_back_to_generic_when_nothing_else_applies():
     text = build_waiver_suggestion_reasoning("K", 20.0, 60.0, 2, 5.0, 50.0)
     assert text == "best available K on waivers right now"
+
+
+# --- pick_waiver_drop_candidate ---------------------------------------------
+
+
+def _bench_df(rows):
+    # value_score ascending, matching get_my_waiver_suggestions' own sort
+    df = pd.DataFrame(rows, columns=["player_id", "player_name", "position", "value_score"])
+    return df.sort_values("value_score").reset_index(drop=True)
+
+
+def test_drop_candidate_never_suggests_a_bench_player_worth_more_than_the_add():
+    """Real bug report (2026-09-16): "how are you possibly suggesting i
+    drop brock bowers? he has a value of 100?" - an elite player who
+    happens to be someone's ONLY bench TE must never be suggested as a
+    drop for a replacement-level TE add."""
+    bench = _bench_df([(1, "Brock Bowers", "TE", 100.0)])
+    candidate = pick_waiver_drop_candidate(bench, "TE", fa_value=20.0)
+    assert candidate is None
+
+
+def test_drop_candidate_prefers_same_position_when_it_is_a_real_downgrade():
+    bench = _bench_df([(1, "Worst Bench RB", "RB", 10.0), (2, "Mediocre Bench TE", "TE", 15.0)])
+    candidate = pick_waiver_drop_candidate(bench, "TE", fa_value=25.0)
+    assert candidate["player_id"] == 2
+
+
+def test_drop_candidate_falls_back_to_any_position_when_same_position_too_valuable():
+    bench = _bench_df([(1, "Worst Bench RB", "RB", 10.0), (2, "Elite Bench TE", "TE", 100.0)])
+    candidate = pick_waiver_drop_candidate(bench, "TE", fa_value=25.0)
+    assert candidate["player_id"] == 1
+
+
+def test_drop_candidate_none_when_bench_is_empty():
+    bench = _bench_df([])
+    assert pick_waiver_drop_candidate(bench, "TE", fa_value=25.0) is None
 
 
 # --- _waiver_claim_payload -------------------------------------------------

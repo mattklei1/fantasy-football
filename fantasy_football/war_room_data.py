@@ -613,8 +613,35 @@ def build_waiver_suggestion_reasoning(
     return "; ".join(reasons)
 
 
+def pick_waiver_drop_candidate(droppable_bench: pd.DataFrame, position: str, fa_value: float):
+    """The drop candidate for adding a free agent worth `fa_value` at
+    `position`, from `droppable_bench` (bench players, excluding any
+    protected ones, sorted ascending by value_score - see
+    get_my_waiver_suggestions). Returns a pandas Series (one row) or
+    None. A real drop suggestion must be an actual downgrade-for-upgrade:
+    only ever suggests dropping a bench player whose OWN value_score is
+    LESS than the free agent being added - same position preferred among
+    those, any position otherwise. If nothing on the bench is worth less
+    than the add, there's no sensible drop at all - correctly None, not
+    "whatever's technically cheapest at that position."
+
+    BUG fixed 2026-09-16 (user: "how are you possibly suggesting i drop
+    brock bowers? he has a value of 100?"): the old version picked the
+    worst-value SAME-POSITION bench player unconditionally - correct
+    when there's real bench depth to choose from, but with only one
+    bench player at a position, "worst of one" is also "the only one,"
+    regardless of how good they actually are."""
+    affordable_drops = droppable_bench[droppable_bench["value_score"] < fa_value]
+    if affordable_drops.empty:
+        return None
+    same_position_affordable = affordable_drops[affordable_drops["position"] == position]
+    return same_position_affordable.iloc[0] if not same_position_affordable.empty else affordable_drops.iloc[0]
+
+
 @st.cache_data(ttl=300)
-def get_my_waiver_suggestions(season: int, my_team_pk: int, top_n: int = 10) -> list[dict]:
+def get_my_waiver_suggestions(
+    season: int, my_team_pk: int, top_n: int = 10, exclude_positions: tuple[str, ...] = ()
+) -> list[dict]:
     """Top-N suggested waiver adds for ONE team (the admin's own), each
     with a specific suggested drop from that team's own roster and
     plain-language reasoning (position need, value gap, remaining FAAB
@@ -623,6 +650,16 @@ def get_my_waiver_suggestions(season: int, my_team_pk: int, top_n: int = 10) -> 
     ESPN's own per-team `acquisitionBudgetSpent` tracker for the real
     remaining budget) - no LLM involved anywhere in this function.
 
+    `exclude_positions` drops any free agent at those positions from
+    consideration entirely, before ranking - not just a post-hoc filter,
+    so an excluded position never crowds out a real suggestion at another
+    position via MAX_SUGGESTIONS_PER_POSITION math it was never going to
+    use anyway (user, 2026-09-16: "give me an option to filter out
+    suggested positions for pickups. a lot of these are QBs and i dont
+    want to pick up a QB, even if they have a higher value than a WR" -
+    a scarcity-boosted position like QB in a superflex league can easily
+    out-rank a WR on suggested_bid alone).
+
     Reuses get_waiver_board() (live free agents) and get_trade_rosters()
     (this team's current roster + value_score) - no extra ESPN/FantasyPros
     calls beyond what those two already make."""
@@ -630,6 +667,10 @@ def get_my_waiver_suggestions(season: int, my_team_pk: int, top_n: int = 10) -> 
     rosters = get_trade_rosters(season)
     if board.empty or rosters.empty:
         return []
+    if exclude_positions:
+        board = board[~board["position"].isin(exclude_positions)]
+        if board.empty:
+            return []
 
     my_roster = rosters[rosters["team_pk"] == my_team_pk]
     if my_roster.empty:
@@ -672,13 +713,7 @@ def get_my_waiver_suggestions(season: int, my_team_pk: int, top_n: int = 10) -> 
         if per_position_count.get(position, 0) >= MAX_SUGGESTIONS_PER_POSITION:
             continue
 
-        same_position_bench = droppable_bench[droppable_bench["position"] == position]
-        if not same_position_bench.empty:
-            drop_candidate = same_position_bench.iloc[0]
-        elif not droppable_bench.empty:
-            drop_candidate = droppable_bench.iloc[0]
-        else:
-            drop_candidate = None
+        drop_candidate = pick_waiver_drop_candidate(droppable_bench, position, float(fa["value_equivalent"]))
 
         bench_depth = int(bench_depth_by_position.get(position, 0))
         my_best_here = best_by_position.get(position)

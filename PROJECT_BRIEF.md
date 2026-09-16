@@ -4697,3 +4697,56 @@ scored 196 that isn't on here."**
   the user's own remembered score) / 192.4 (2025 wk7, Nick
   McGillivray), in genuine descending raw-score order.
 400/400 tests passing.
+
+**Bug: War Room's "My Waiver Bids" could suggest dropping an ELITE
+player just because he was the only bench player at his position, plus
+3 requested features.** User (with a real screenshot): "how are you
+possibly suggesting i drop brock bowers? he has a value of 100?" -
+Brock Bowers, an elite TE with a genuinely high value_score, was the
+admin's ONLY bench TE, and `get_my_waiver_suggestions()`'s drop-
+candidate logic picked the worst-value SAME-POSITION bench player
+unconditionally - correct when there's real depth to choose from, but
+"worst of one" is also "the only one," regardless of how good he
+actually is.
+- New `war_room_data.pick_waiver_drop_candidate(droppable_bench,
+  position, fa_value)` - extracted as its own pure/testable function
+  (this file's tests are pure-logic-only per its own module docstring,
+  live-data functions aren't unit tested - extracting this piece let it
+  join the tested pool instead of staying live-only). Only ever
+  suggests dropping a bench player whose OWN value_score is LESS than
+  the free agent being added - same position preferred among those,
+  any position otherwise - never "whatever's technically cheapest at
+  that position" when that's also the only option. 4 new tests,
+  including the exact Bowers scenario (an elite lone bench player must
+  never be suggested as a drop for a replacement-level add).
+- Live-verified against the real primary league: drop suggestions now
+  consistently show a genuinely lower-value bench player (e.g.
+  suggesting a 19.2-value bench WR as the drop for a 25-value QB add),
+  and a position with no affordable drop (every bench player there
+  outvalues the add) correctly shows "no sensible drop" instead of
+  forcing one. 404/404 tests passing.
+
+Same message, 3 more requests: "also for all of these waiver bids,
+give me an option to overwrite the suggested bid and then approve it.
+also give me an option to overwrite the drop. also, give me an option
+to filter out suggested positions for pickups. a lot of these are QBs
+and i dont want to pick up a QB, even if they have a higher value than
+a WR."
+- `get_my_waiver_suggestions()`: new `exclude_positions: tuple[str,
+  ...]` param - filters free agents at those positions out of
+  consideration BEFORE ranking (not a post-hoc row filter), so an
+  excluded position never crowds out a real suggestion at another
+  position via `MAX_SUGGESTIONS_PER_POSITION`'s per-position cap.
+  Live-verified: excluding QB correctly leaves zero QB rows among the
+  suggestions, every other position's slots still filled.
+- `pages/9_War_Room.py` (My Waiver Bids tab): new "Exclude positions
+  from suggestions" multiselect above the suggestions list, passed
+  straight through. Each suggestion row now also has a Bid override
+  number input (defaults to the suggested bid, capped at
+  `FAAB_BUDGET_TOTAL`) and a Drop override selectbox (defaults to the
+  suggested drop, options are the team's real droppable roster plus
+  "No drop") - both override the suggestion's own numbers at submit
+  time (`wr.submit_waiver_claim`), the suggestion's original numbers
+  are otherwise untouched (still shown correctly at every rerun since
+  overrides live in local dicts, not mutated onto the cached
+  suggestion objects).

@@ -211,8 +211,18 @@ with tab_mine:
                         _set_flash("protect", "warning", save_result["commit_message"])
                     st.rerun()
 
+        exclude_positions = st.multiselect(
+            "Exclude positions from suggestions", wr.ESPN_POSITIONS, key=f"wr_exclude_positions_{my_team_name}",
+            help="A scarcity-boosted position (QB in a superflex league, say) can out-rank a WR on "
+            "suggested bid alone - exclude it here rather than just ignoring those rows (user, "
+            "2026-09-16: \"a lot of these are QBs and i dont want to pick up a QB, even if they "
+            "have a higher value than a WR\"). Excluded positions never take one of the 10 slots.",
+        )
+
         with st.spinner("Building suggestions..."):
-            suggestions = wr.get_my_waiver_suggestions(season, my_team_pk, top_n=10)
+            suggestions = wr.get_my_waiver_suggestions(
+                season, my_team_pk, top_n=10, exclude_positions=tuple(exclude_positions)
+            )
 
         real_submit = st.checkbox(
             "⚠️ Actually submit approved claims to ESPN (real transactions, real FAAB budget)",
@@ -226,7 +236,15 @@ with tab_mine:
         if not suggestions:
             st.info("No suggestions available right now - check FANTASYPROS_API_KEY, or try again later.")
         else:
+            droppable_for_overrides = wr.get_droppable_roster(season, my_team_pk)
+            drop_name_to_id = (
+                dict(zip(droppable_for_overrides["player_name"], droppable_for_overrides["player_id"]))
+                if not droppable_for_overrides.empty else {}
+            )
+            drop_options = ["No drop"] + list(drop_name_to_id.keys())
+
             approved_indices = []
+            overrides_by_index: dict[int, dict] = {}
             for i, s in enumerate(suggestions, start=1):
                 with st.container(border=True):
                     cols = st.columns([1, 3, 2, 2])
@@ -248,7 +266,33 @@ with tab_mine:
                         if s["suggested_drop"]:
                             st.metric("Suggested drop", s["suggested_drop"], f"{s['suggested_drop_value']:.0f} val")
                         else:
-                            st.caption("No clear drop candidate (empty bench)")
+                            st.caption("No sensible drop candidate (your whole bench outvalues this add, or it's empty)")
+
+                    # Overrides (user, 2026-09-16: "give me an option to
+                    # overwrite the suggested bid and then approve it.
+                    # also give me an option to overwrite the drop") -
+                    # default to the suggested values, but the admin's
+                    # own judgment always wins; used instead of the
+                    # suggestion's own numbers at submit time below.
+                    ocols = st.columns([1, 2, 3])
+                    with ocols[1]:
+                        bid_override = st.number_input(
+                            "Bid override ($)", min_value=0, max_value=int(wr.FAAB_BUDGET_TOTAL),
+                            value=int(round(s["suggested_bid"])), step=1,
+                            key=f"wr_bid_override_{my_team_name}_{s['player_id']}",
+                        )
+                    with ocols[2]:
+                        default_drop_name = s["suggested_drop"] if s["suggested_drop"] in drop_options else "No drop"
+                        drop_override_name = st.selectbox(
+                            "Drop override", drop_options, index=drop_options.index(default_drop_name),
+                            key=f"wr_drop_override_{my_team_name}_{s['player_id']}",
+                        )
+                    override_drop_id = drop_name_to_id.get(drop_override_name)
+                    overrides_by_index[i - 1] = {
+                        "bid": float(bid_override),
+                        "drop_id": int(override_drop_id) if override_drop_id is not None else None,
+                        "drop_name": drop_override_name if drop_override_name != "No drop" else None,
+                    }
 
             submit_label = (
                 "Submit approved claims to ESPN" if real_submit else "Preview approved claims (dry run)"
@@ -257,11 +301,12 @@ with tab_mine:
                 results = []
                 for idx in approved_indices:
                     s = suggestions[idx]
+                    override = overrides_by_index[idx]
                     result = wr.submit_waiver_claim(
-                        season, my_team_pk, s["player_id"], s["suggested_drop_id"], s["suggested_bid"],
+                        season, my_team_pk, s["player_id"], override["drop_id"], override["bid"],
                         dry_run=not real_submit,
                     )
-                    results.append((s, result))
+                    results.append(({**s, "suggested_drop": override["drop_name"]}, result))
                 st.session_state["wr_claim_results"] = results
 
             if st.session_state.get("wr_claim_results"):
