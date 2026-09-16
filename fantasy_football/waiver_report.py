@@ -89,11 +89,21 @@ def fetch_week_claims(league, scoring_period: int) -> list[PlayerClaimResult]:
 
 
 def enrich_with_suggested_bids(
-    claims: list[PlayerClaimResult], league, fp_api_key: str, season: int, position_slot_counts: dict, budget: float = 200.0
+    claims: list[PlayerClaimResult], league, fp_api_key: str, season: int, position_slot_counts: dict, budget: float = 100.0
 ) -> None:
     """Fills in .position and .suggested_bid on each claim, in place -
     live ESPN player_info() for position/percent_owned (one batched call,
-    not one per player) + FantasyPros ROS rank (one call per position)."""
+    not one per player) + FantasyPros ROS rank (one call per position).
+
+    `budget` should always be the caller's real live `league.settings.
+    acquisition_budget`, not this default - this league's real budget
+    has been $100 every season 2024-2026 (confirmed live 2026-09-16,
+    see war_room_data.FAAB_BUDGET_TOTAL's own correction note - the
+    caller here, scripts/post_waiver_recap.py, was passing the same
+    wrong $200 this default used to be, which would have started
+    suggesting DOUBLE the correct bid the moment metrics/waiver_value.
+    py's POSITION_CEILINGS were doubled to fix that same bug elsewhere,
+    if this call site hadn't been fixed alongside it)."""
     from . import fantasypros_client, player_matching
 
     player_ids = [c.player_id for c in claims]

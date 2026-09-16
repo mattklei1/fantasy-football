@@ -4818,3 +4818,33 @@ Two real, independent bugs found:
   still pass unmodified - they reference `POSITION_CEILINGS` /
   `DEFAULT_CEILING` symbolically rather than hardcoding the old
   values, so they mechanically still hold after the doubling).
+
+**Caught one more $200-budget call site the same fix missed, while
+investigating why the shared public GroupMe Waiver Recap "didn't fire
+this morning."** `scripts/post_waiver_recap.py` (the Wednesday-morning
+recap of executed claims, posted to the SHARED league bot - different
+from the private My Waiver Bids/waiver-recommendations tools already
+fixed) called `waiver_report.enrich_with_suggested_bids(..., budget=
+200.0)` - the exact same wrong hardcoded budget, in a module the
+earlier fix never touched. Left unfixed, this would have started
+suggesting DOUBLE the correct bid the moment `metrics/waiver_value.py`'s
+`POSITION_CEILINGS` got doubled (that fix corrected the ceiling
+fractions assuming every caller would also switch to the real $100
+budget - this one caller hadn't). Fixed the call site to use the real
+live `league.settings.acquisition_budget` (same pattern as `war_room_
+data.py`/`post_waiver_recommendations.py`) and corrected `enrich_with_
+suggested_bids`'s own default from 200.0 to 100.0. Live-verified: built
+the real Week 2 recap against real live data - suggested-bid comparisons
+now read sane (e.g. "$4 paid, we'd have suggested ~$23" for a real
+startable QB, not double that). 404/404 tests passing (no test covered
+this call site directly).
+
+Investigated the actual "didn't fire" report separately: `waiver-
+recap.yml` had ZERO recorded runs at all (not even a self-gated skip),
+same pattern as an earlier same-session report about `waiver-
+recommendations.yml`'s scheduler not firing - GitHub's cron scheduler
+appears not to have invoked the workflow, not a script-logic bug (real
+Week 2 waiver activity existed and the script's own logic built a
+correct message once run directly). Generated a live preview for the
+user to review before manually sending, per their explicit request not
+to send without a preview first.

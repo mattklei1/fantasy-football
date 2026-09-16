@@ -50,8 +50,14 @@ def main() -> int:
 
     fp_api_key = config.fantasypros_api_key()
     if fp_api_key:
+        # Real live budget, not a hardcoded assumption - this league's
+        # real budget has been $100 every season 2024-2026, not the
+        # $200 this used to pass (see war_room_data.FAAB_BUDGET_TOTAL's
+        # correction note - same bug, this call site was fixed alongside
+        # it 2026-09-16).
+        budget = float(league.settings.acquisition_budget or 100.0)
         enrich_with_suggested_bids(
-            claims, league, fp_api_key, season, league.settings.position_slot_counts, budget=200.0
+            claims, league, fp_api_key, season, league.settings.position_slot_counts, budget=budget
         )
 
     message = build_message(claims, week)
