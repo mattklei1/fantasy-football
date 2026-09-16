@@ -57,7 +57,7 @@ def main() -> int:
         # it 2026-09-16).
         budget = float(league.settings.acquisition_budget or 100.0)
         enrich_with_suggested_bids(
-            claims, league, fp_api_key, season, league.settings.position_slot_counts, budget=budget
+            claims, league, fp_api_key, season, league.settings.position_slot_counts, budget=budget, week=week
         )
 
     message = build_message(claims, week)

@@ -129,3 +129,20 @@ def test_build_message_highlights_contested_and_overspent():
     # **bold** markup is intentional - groupme_client.send_long_message
     # converts it to real Unicode bold before posting.
     assert "**Daniel Jones**" in msg
+
+
+def test_build_message_contested_claim_does_not_repeat_the_winning_bid():
+    # user, 2026-09-16: "when recapping the contested bids, don't repeat
+    # the winning bid. You already said it before the parentheses" - the
+    # winner's own bid ($12) is stated once up front; the parenthetical
+    # list should only show the OTHER (losing) bidders, not restate it.
+    contested = PlayerClaimResult(
+        1, "Daniel Jones", "QB", "Doody Guac Boys", 12.0,
+        all_bids=[("Doody Guac Boys", 12.0), ("Team B", 5.0), ("Team C", 2.0)], suggested_bid=8.0,
+    )
+    msg = build_message([contested], week=5)
+    contested_line = next(line for line in msg.splitlines() if "Daniel Jones" in line)
+    assert contested_line.count("$12") == 1
+    assert "Team B $5" in contested_line
+    assert "Team C $2" in contested_line
+    assert "Doody Guac Boys $12" not in contested_line

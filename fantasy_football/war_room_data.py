@@ -236,7 +236,7 @@ def get_waiver_board(season: int, pool_size_per_position: int = 25) -> pd.DataFr
     league = get_active_espn_client().get_league(season)
     is_faab = bool(league.settings.faab)
     budget = float(league.settings.acquisition_budget or 0)
-    scarcity = position_scarcity_multipliers(_slot_counts(season))
+    scarcity = position_scarcity_multipliers(_slot_counts(season), week=league.current_week)
     fp_by_position = get_fp_rankings_by_position(season)
     espn_id_map = get_fp_espn_id_map()
     overall_rank_by_fp_id = get_fp_overall_rank_by_fp_id(season)
@@ -344,7 +344,7 @@ def get_trade_rosters(season: int) -> pd.DataFrame:
     if df.empty:
         return df
 
-    scarcity = position_scarcity_multipliers(_slot_counts(season))
+    scarcity = position_scarcity_multipliers(_slot_counts(season), week=get_current_week(season))
     df["fp_score"] = df["fp_pos_rank"].apply(rank_to_score)
     df["espn_score"] = df["espn_pos_rank"].apply(rank_to_score)
     df["value_score"] = (
@@ -597,7 +597,7 @@ def get_free_agent_value_ceiling(season: int) -> dict[str, float]:
     board = get_waiver_board(season)
     if board.empty:
         return {}
-    scarcity = position_scarcity_multipliers(_slot_counts(season))
+    scarcity = position_scarcity_multipliers(_slot_counts(season), week=get_current_week(season))
     equivalent = _free_agent_value_equivalent_column(board, scarcity)
     return board.assign(value_equivalent=equivalent).groupby("position")["value_equivalent"].max().to_dict()
 
@@ -723,7 +723,7 @@ def get_my_waiver_suggestions(
         except Exception:  # noqa: BLE001 - a live ESPN hiccup shouldn't block suggestions, just skip the budget check
             pass
 
-    scarcity = position_scarcity_multipliers(_slot_counts(season))
+    scarcity = position_scarcity_multipliers(_slot_counts(season), week=get_current_week(season))
     board = board.assign(value_equivalent=_free_agent_value_equivalent_column(board, scarcity))
 
     best_by_position = my_roster.groupby("position")["value_score"].max().to_dict()

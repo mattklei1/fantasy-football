@@ -89,7 +89,13 @@ def fetch_week_claims(league, scoring_period: int) -> list[PlayerClaimResult]:
 
 
 def enrich_with_suggested_bids(
-    claims: list[PlayerClaimResult], league, fp_api_key: str, season: int, position_slot_counts: dict, budget: float = 100.0
+    claims: list[PlayerClaimResult],
+    league,
+    fp_api_key: str,
+    season: int,
+    position_slot_counts: dict,
+    budget: float = 100.0,
+    week: int | None = None,
 ) -> None:
     """Fills in .position and .suggested_bid on each claim, in place -
     live ESPN player_info() for position/percent_owned (one batched call,
@@ -103,7 +109,12 @@ def enrich_with_suggested_bids(
     wrong $200 this default used to be, which would have started
     suggesting DOUBLE the correct bid the moment metrics/waiver_value.
     py's POSITION_CEILINGS were doubled to fix that same bug elsewhere,
-    if this call site hadn't been fixed alongside it)."""
+    if this call site hadn't been fixed alongside it).
+
+    `week` should be the caller's real live `league.current_week` -
+    passed through to position_scarcity_multipliers() so the QB
+    superflex premium is damped early in the season (see that
+    function's docstring, 2026-09-16)."""
     from . import fantasypros_client, player_matching
 
     player_ids = [c.player_id for c in claims]
@@ -119,7 +130,7 @@ def enrich_with_suggested_bids(
         if p is not None:
             c.position = getattr(p, "position", None)
 
-    scarcity = position_scarcity_multipliers(position_slot_counts)
+    scarcity = position_scarcity_multipliers(position_slot_counts, week=week)
     try:
         fp_by_position = fantasypros_client.fetch_all_ros_rankings(fp_api_key, season)
         espn_id_map = fantasypros_client.fetch_player_espn_id_map(fp_api_key)
@@ -159,8 +170,17 @@ def build_message(claims: list[PlayerClaimResult], week: int) -> str:
     if contested:
         lines.append("⚔️ **CONTESTED CLAIMS**:")
         for c in contested:
-            bids = ", ".join(f"{team} ${bid:.0f}" for team, bid in sorted(c.all_bids, key=lambda x: -x[1]))
-            lines.append(f"- **{c.player_name}**: {c.winner_team} won at **${c.winning_bid:.0f}** ({len(c.all_bids)} bidders: {bids})")
+            # all_bids includes the winner's own bid - don't restate it a
+            # second time inside the parens (user, 2026-09-16: "when
+            # recapping the contested bids, don't repeat the winning bid.
+            # You already said it before the parentheses"), only the
+            # OTHER bidders belong in the list here.
+            other_bids = [(team, bid) for team, bid in c.all_bids if team != c.winner_team]
+            others = ", ".join(f"{team} ${bid:.0f}" for team, bid in sorted(other_bids, key=lambda x: -x[1]))
+            lines.append(
+                f"- **{c.player_name}**: {c.winner_team} won at **${c.winning_bid:.0f}** "
+                f"({len(c.all_bids)} bidders, also bid: {others})"
+            )
         lines.append("")
 
     overspent = [c for c in executed if c.overspent]

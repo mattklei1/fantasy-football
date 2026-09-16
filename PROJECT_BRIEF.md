@@ -4848,3 +4848,50 @@ Week 2 waiver activity existed and the script's own logic built a
 correct message once run directly). Generated a live preview for the
 user to review before manually sending, per their explicit request not
 to send without a preview first.
+
+**Feedback on that same Week 2 preview: QB waiver values too high this
+early, and the contested-claims line repeats the winning bid
+(2026-09-16, same session).** User: "I think we're valuing qbs too
+highly on the waiver wire this early in the season without byes and
+injuries. I think they need to be valued higher later but right now
+there is not a huge need. Also when recapping the contested bids,
+don't repeat the winning bid. You already said it before the
+parentheses." Two independent fixes:
+1. **`position_scarcity_multipliers()` (metrics/waiver_value.py) is now
+   time-aware.** The superflex QB premium it computes was a flat
+   function of OP-slot count alone, with no notion of how far into the
+   season it is - so a Week 2 QB got the exact same premium as a
+   Week 14 QB, even though the real driver of 2-QB roster need (bye
+   weeks, which never start before week 5 and run through ~week 14,
+   plus accumulating injuries) genuinely hasn't happened yet that
+   early. Added an optional `week` param: below `QB_PREMIUM_RAMP_START_
+   WEEK` (4, the last week before any team's bye is even possible) the
+   premium is damped to `QB_PREMIUM_MIN_FRACTION` (0.4) of its full
+   strength; it ramps linearly up to full strength by `QB_PREMIUM_RAMP_
+   END_WEEK` (9, roughly when most of the league has hit its bye) and
+   stays full from there on. `week=None` (no caller-supplied week)
+   keeps the old unscaled full-premium behavior, so this can't silently
+   change anything for a caller that hasn't been updated. Threaded the
+   real live current week through every real call site: `war_room_
+   data.py`'s `get_waiver_board`/`get_trade_rosters`/`get_free_agent_
+   value_ceiling`/`get_my_waiver_suggestions` (via `league.current_
+   week` or the already-cached `get_current_week()`), and `waiver_
+   report.enrich_with_suggested_bids` (new `week` param, passed by
+   `scripts/post_waiver_recap.py` from `league.current_week`).
+2. **`waiver_report.build_message()`'s CONTESTED CLAIMS section
+   restated the winner's own bid twice per line** - once explicitly
+   ("won at **$X**") and again inside the parenthetical bidder list,
+   since `all_bids` includes every team that bid, winner included.
+   Fixed to filter the winner out of the parenthetical list, so it now
+   only shows the OTHER (losing) bids.
+- Live-verified both fixes together against the same real Week 2 data
+  used for the original preview (Mack Hollins, Carson Wentz, Buccaneers
+  D/ST, Emmett Johnson, 49ers D/ST contested claims): every contested
+  line's winning bid now appears exactly once, e.g. "**Carson Wentz**:
+  Gary Had a Little Lamb won at **$4** (2 bidders, also bid: Jerusalem
+  Price Fixers $1)" - no more "$4 ... Gary Had a Little Lamb $4" repeat.
+  409/409 tests passing (5 new: `test_waiver_value.py` covers the ramp
+  floor/monotonic-increase/full-strength-past-week-9 behavior;
+  `test_waiver_report.py` asserts a contested line's winning-bid dollar
+  amount appears exactly once and the winner is absent from the "also
+  bid" list).

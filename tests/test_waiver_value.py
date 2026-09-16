@@ -25,6 +25,34 @@ def test_scarcity_missing_op_key_treated_as_zero():
     assert mult["QB"] == pytest.approx(1.0)
 
 
+def test_scarcity_no_week_defaults_to_full_premium():
+    mult = position_scarcity_multipliers({"QB": 1, "OP": 1})
+    assert mult["QB"] == pytest.approx(1.5)
+
+
+def test_scarcity_early_week_dampens_qb_premium():
+    early = position_scarcity_multipliers({"QB": 1, "OP": 1}, week=1)
+    full = position_scarcity_multipliers({"QB": 1, "OP": 1}, week=9)
+    assert early["QB"] < full["QB"]
+    assert full["QB"] == pytest.approx(1.5)
+    # floor still applies before byes are even possible (week <= 4)
+    assert early["QB"] == pytest.approx(1.0 + 0.5 * 0.4)
+
+
+def test_scarcity_ramps_monotonically_from_week_4_to_9():
+    weeks = [4, 5, 6, 7, 8, 9]
+    values = [position_scarcity_multipliers({"QB": 1, "OP": 1}, week=w)["QB"] for w in weeks]
+    assert values == sorted(values)
+    assert values[0] < values[-1]
+
+
+def test_scarcity_week_past_ramp_end_stays_at_full_premium():
+    at_end = position_scarcity_multipliers({"QB": 1, "OP": 1}, week=9)
+    late = position_scarcity_multipliers({"QB": 1, "OP": 1}, week=17)
+    assert at_end["QB"] == pytest.approx(late["QB"])
+    assert late["QB"] == pytest.approx(1.5)
+
+
 def test_suggested_bid_none_without_a_rank():
     result = suggested_bid(None, 50.0, "WR", {}, budget=200.0)
     assert result is None

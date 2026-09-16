@@ -78,6 +78,14 @@ chased further with more formula tuning based on one season's noisy,
 partially-mismatched data - revisit once a live season's real
 transactions can be compared against that same season's live rankings,
 a genuinely apples-to-apples check this backtest can't fully deliver.
+
+TIME-AWARE QB PREMIUM (2026-09-16): the superflex QB premium in
+position_scarcity_multipliers() now scales down early in the season and
+ramps to full strength by week 9 (user: "I think we're valuing qbs too
+highly on the waiver wire this early in the season without byes and
+injuries. I think they need to be valued higher later but right now
+there is not a huge need") - see that function's docstring and the
+QB_PREMIUM_* constants above it for the actual ramp.
 """
 from __future__ import annotations
 
@@ -104,7 +112,23 @@ RANK_WEIGHT = 0.7
 DEMAND_WEIGHT = 0.3
 
 
-def position_scarcity_multipliers(position_slot_counts: dict) -> dict[str, float]:
+# Early-season QB premium damping (user, 2026-09-16: "I think we're
+# valuing qbs too highly on the waiver wire this early in the season
+# without byes and injuries. I think they need to be valued higher later
+# but right now there is not a huge need"). The full superflex premium
+# below assumes real pressure to roster a 2nd startable QB - that
+# pressure is mostly a bye-week/injury-attrition story, not a week-1
+# fact. NFL bye weeks never start before week 5 and run through ~week
+# 14, so there is genuinely zero bye-driven 2-QB need before that and it
+# builds steadily as more teams hit their bye. QB_PREMIUM_MIN_FRACTION
+# is a floor, not zero, since injuries can strike any week even before
+# byes start.
+QB_PREMIUM_MIN_FRACTION = 0.4
+QB_PREMIUM_RAMP_START_WEEK = 4  # last week before any team's bye can occur
+QB_PREMIUM_RAMP_END_WEEK = 9  # most of the league has hit its bye by here
+
+
+def position_scarcity_multipliers(position_slot_counts: dict, week: int | None = None) -> dict[str, float]:
     """Superflex-aware QB premium, derived from THIS season's real
     position_slot_counts rather than assumed. An OP ("offensive player")
     slot overwhelmingly gets filled by a 2nd startable QB in practice -
@@ -115,10 +139,27 @@ def position_scarcity_multipliers(position_slot_counts: dict) -> dict[str, float
     a neutral 1.0x. Each additional OP slot is modeled as roughly
     doubling per-team startable-QB demand (a 0.5x step per slot) - a
     reasonable, commonly-cited superflex premium range, not a precise
-    market simulation."""
+    market simulation.
+
+    `week` scales that full premium down early in the season and ramps
+    it back up to full strength by QB_PREMIUM_RAMP_END_WEEK (see the
+    module-level constants above) - real 2-QB roster need is driven by
+    byes/injuries piling up over the season, not a week-1 fact. `week`
+    is optional and defaults to the full premium (unscaled) for any
+    caller that doesn't have a real current week handy."""
     qb_slots = position_slot_counts.get("QB", 1) or 1
     op_slots = position_slot_counts.get("OP", 0) or 0
-    return {"QB": 1.0 + 0.5 * (op_slots / qb_slots)}
+    full_premium = 0.5 * (op_slots / qb_slots)
+
+    if week is None:
+        fraction = 1.0
+    else:
+        ramp_span = QB_PREMIUM_RAMP_END_WEEK - QB_PREMIUM_RAMP_START_WEEK
+        ramp_progress = (week - QB_PREMIUM_RAMP_START_WEEK) / ramp_span
+        ramp_progress = min(1.0, max(0.0, ramp_progress))
+        fraction = QB_PREMIUM_MIN_FRACTION + (1.0 - QB_PREMIUM_MIN_FRACTION) * ramp_progress
+
+    return {"QB": 1.0 + full_premium * fraction}
 
 
 def suggested_bid(
