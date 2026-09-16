@@ -4750,3 +4750,71 @@ a WR."
   are otherwise untouched (still shown correctly at every rerun since
   overrides live in local dicts, not mutated onto the cached
   suggestion objects).
+
+**Bug: Waiver Board/My Waiver Bids fabricated a dollar bid for leagues
+that don't use FAAB at all, AND the two FAAB leagues' real budget was
+wrong.** User: "only bir league and usc pike league are waiver bids.
+the others are just normal claims based on waiver order. no bid
+needed." Checked live against every registered league's real ESPN
+settings (`league.settings.faab`/`.acquisition_budget`, both directly
+exposed by espn_api, previously never read anywhere in this project):
+- Salted by Quincy (primary) and BIR and Friends: `faab=True`, real
+  budget **$100**.
+- KleHaBe Champions League and The Worst League of All Time:
+  `faab=False` - standard waiver-priority claims, confirming exactly
+  what the user said.
+
+Two real, independent bugs found:
+1. **`get_waiver_board()`/`get_my_waiver_suggestions()` had no FAAB
+   awareness at all** - every league got a fabricated "$X suggested
+   bid" regardless of whether that league's real format even has a
+   concept of a bid. Worse, `get_my_waiver_suggestions()`'s ranking
+   line (`board[board["suggested_bid"].notna()]`) meant a non-FAAB
+   league's suggestions list came back completely EMPTY (every row's
+   suggested_bid was fabricated but at least computed - once bid
+   computation is correctly skipped for non-FAAB, that filter zeroes
+   out every row) - live-verified against KleHaBe Champions League:
+   0 suggestions before this fix's ranking-column change, 10 real ones
+   (ranked by `value_equivalent` instead) after.
+2. **The two real FAAB leagues' own suggested-bid dollar amounts and
+   "budget remaining" were wrong anyway** - `war_room_data.
+   FAAB_BUDGET_TOTAL` and `metrics/waiver_value.py`'s whole calibration
+   (`POSITION_CEILINGS`, docstring) assumed a $200 budget; the real
+   `league.settings.acquisition_budget` has been $100 every season
+   2024-2026. `budget_remaining` (and the "afford this bid" check) was
+   silently overstating every team's real leftover budget by $100.
+   `POSITION_CEILINGS`/`DEFAULT_CEILING` doubled (0.40->0.80 for QB,
+   etc.) so the real calibrated DOLLAR ceilings from the original 2025
+   backtest ($80 QB max, $51 RB max, ...) stay exactly what they were -
+   only the fraction expressing them against the correct $100 (not the
+   wrong $200) changes; `suggested_bid()`'s own default corrected to
+   100.0. `get_waiver_board()`/`get_my_waiver_suggestions()` now read
+   the REAL live budget from `league.settings.acquisition_budget`
+   (never a hardcoded assumption) for both the ceiling scaling and the
+   remaining-budget math; `scripts/post_waiver_recommendations.py`
+   (primary-league-only, already confirmed FAAB) updated the same way.
+- `get_waiver_board()`: `suggested_bid` is None for every row on a
+  non-FAAB league (never fabricated); final sort falls back to
+  `overall_rank` ascending instead of the now-all-None `suggested_bid`.
+- `pages/9_War_Room.py`: Waiver Board and My Waiver Bids tabs both
+  detect FAAB live (from whether any row actually has a `suggested_bid`)
+  and hide every dollar-specific control for a non-FAAB league (bid
+  metric, bid override input, Suggested Bid table column, the FAAB-
+  specific Methodology section) - replaced with a plain "standard
+  waiver claim, no bid" caption. Real-submit on a non-FAAB league shows
+  an explicit caution: the ESPN payload shape (`_waiver_claim_payload`)
+  has only ever been live-verified against a FAAB league, so a real
+  submission there should be double-checked (or done via ESPN's own
+  app) rather than trusted blind - not blocked outright, since dry-run
+  preview is equally useful either way and blocking would be a bigger,
+  unrequested restriction.
+- Live-verified end to end against KleHaBe Champions League (real
+  `faab=False`): Waiver Board's 147 free agents all correctly show no
+  suggested_bid; My Waiver Bids correctly returns 10 real suggestions
+  (previously 0) ranked by value with no dollar figures, drop
+  candidates still correctly respecting the same-day Brock-Bowers-style
+  safety check (never suggesting a drop worth more than the add).
+  404/404 tests passing (existing `test_waiver_value.py` tests all
+  still pass unmodified - they reference `POSITION_CEILINGS` /
+  `DEFAULT_CEILING` symbolically rather than hardcoding the old
+  values, so they mechanically still hold after the doubling).

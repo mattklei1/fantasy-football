@@ -216,11 +216,27 @@ def get_waiver_board(season: int, pool_size_per_position: int = 25) -> pd.DataFr
     FAAB-value heuristic (metrics/waiver_value.py) - the same model the
     public GroupMe waiver report applies only after the fact to claims
     that already happened, run instead over the live free-agent pool so
-    the commissioner can see who's worth a bid before Tuesday's claims lock."""
+    the commissioner can see who's worth a bid before Tuesday's claims lock.
+
+    `suggested_bid` is a real dollar amount only for a league that
+    actually uses FAAB (`league.settings.faab`) - some registered
+    leagues use plain waiver-PRIORITY claims instead (user, 2026-09-16:
+    "only bir league and usc pike league are waiver bids. the others
+    are just normal claims based on waiver order. no bid needed"), where
+    a dollar figure would be pure fiction. For those, every row's
+    `suggested_bid` is None - callers show a priority-based suggestion
+    instead, not a fabricated price. Also fixed the same day: the
+    dollar scale itself was wrong for FAAB leagues too - hardcoded to a
+    $200 budget (see metrics/waiver_value.py's calibration note) when
+    this league's REAL `league.settings.acquisition_budget` has always
+    been $100 (confirmed live, every season 2024-2026) - now reads the
+    real live budget instead of assuming one."""
     from .league_context import get_active_espn_client
 
-    scarcity = position_scarcity_multipliers(_slot_counts(season))
     league = get_active_espn_client().get_league(season)
+    is_faab = bool(league.settings.faab)
+    budget = float(league.settings.acquisition_budget or 0)
+    scarcity = position_scarcity_multipliers(_slot_counts(season))
     fp_by_position = get_fp_rankings_by_position(season)
     espn_id_map = get_fp_espn_id_map()
     overall_rank_by_fp_id = get_fp_overall_rank_by_fp_id(season)
@@ -274,14 +290,22 @@ def get_waiver_board(season: int, pool_size_per_position: int = 25) -> pd.DataFr
                     "fp_pos_rank": pos_rank,
                     "overall_rank": fp_overall_rank_by_espn_id.get(p.playerId),
                     "ros_points": fp_ros_points_by_espn_id.get(p.playerId),
-                    "suggested_bid": suggested_bid(pos_rank, percent_owned, position, scarcity),
+                    "suggested_bid": (
+                        suggested_bid(pos_rank, percent_owned, position, scarcity, budget=budget)
+                        if is_faab else None
+                    ),
                 }
             )
 
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
-    return df.sort_values("suggested_bid", ascending=False, na_position="last").reset_index(drop=True)
+    # Non-FAAB leagues have no suggested_bid at all (every row None) -
+    # rank by FantasyPros' own cross-position rest-of-season rank
+    # instead (ascending - lower is better), the same "best available"
+    # ordering the board's own browsing table below already uses.
+    sort_col, ascending = ("suggested_bid", False) if is_faab else ("overall_rank", True)
+    return df.sort_values(sort_col, ascending=ascending, na_position="last").reset_index(drop=True)
 
 
 @st.cache_data(ttl=300)
@@ -579,7 +603,7 @@ def get_free_agent_value_ceiling(season: int) -> dict[str, float]:
 
 
 MAX_SUGGESTIONS_PER_POSITION = 3  # keep the top-10 diversified across positions, not e.g. all QBs in a superflex league
-FAAB_BUDGET_TOTAL = 200.0  # this league's real budget - see metrics/waiver_value.py's calibration note
+FAAB_BUDGET_TOTAL = 100.0  # fallback only if a live league.settings.acquisition_budget lookup fails - real budget confirmed 2026-09-16 (was wrongly 200 before)
 
 
 def build_waiver_suggestion_reasoning(
@@ -680,13 +704,22 @@ def get_my_waiver_suggestions(
 
     conn = dd.get_connection()
     espn_team_id_row = conn.execute("SELECT espn_team_id FROM teams WHERE id = ?", (my_team_pk,)).fetchone()
+    # is_faab/budget_remaining only mean anything for a league that
+    # actually uses FAAB (see get_waiver_board's docstring) - a plain
+    # waiver-PRIORITY league has no dollar budget to track at all.
+    is_faab = True
     budget_remaining = FAAB_BUDGET_TOTAL
     if espn_team_id_row:
         try:
             league = get_active_espn_client().get_league(season)
-            espn_team = next((t for t in league.teams if t.team_id == espn_team_id_row["espn_team_id"]), None)
-            if espn_team is not None:
-                budget_remaining = FAAB_BUDGET_TOTAL - (espn_team.acquisition_budget_spent or 0)
+            is_faab = bool(league.settings.faab)
+            if is_faab:
+                budget_total = float(league.settings.acquisition_budget or FAAB_BUDGET_TOTAL)
+                espn_team = next((t for t in league.teams if t.team_id == espn_team_id_row["espn_team_id"]), None)
+                if espn_team is not None:
+                    budget_remaining = budget_total - (espn_team.acquisition_budget_spent or 0)
+                else:
+                    budget_remaining = budget_total
         except Exception:  # noqa: BLE001 - a live ESPN hiccup shouldn't block suggestions, just skip the budget check
             pass
 
@@ -707,7 +740,11 @@ def get_my_waiver_suggestions(
 
     suggestions: list[dict] = []
     per_position_count: dict[str, int] = {}
-    ranked = board[board["suggested_bid"].notna()].sort_values("suggested_bid", ascending=False)
+    # Non-FAAB: suggested_bid is None for every row (get_waiver_board),
+    # so rank by value_equivalent instead - still a real, meaningful
+    # "how good is this player" score, just not a dollar figure.
+    rank_col = "suggested_bid" if is_faab else "value_equivalent"
+    ranked = board[board[rank_col].notna()].sort_values(rank_col, ascending=False)
     for _, fa in ranked.iterrows():
         position = fa["position"]
         if per_position_count.get(position, 0) >= MAX_SUGGESTIONS_PER_POSITION:
@@ -717,8 +754,9 @@ def get_my_waiver_suggestions(
 
         bench_depth = int(bench_depth_by_position.get(position, 0))
         my_best_here = best_by_position.get(position)
+        fa_bid = fa["suggested_bid"] if is_faab else None
         reasoning = build_waiver_suggestion_reasoning(
-            position, float(fa["value_equivalent"]), my_best_here, bench_depth, fa["suggested_bid"], budget_remaining
+            position, float(fa["value_equivalent"]), my_best_here, bench_depth, fa_bid, budget_remaining
         )
 
         suggestions.append(
@@ -727,12 +765,12 @@ def get_my_waiver_suggestions(
                 "player_name": fa["player_name"],
                 "position": position,
                 "pro_team": fa["pro_team"],
-                "suggested_bid": float(fa["suggested_bid"]),
+                "suggested_bid": float(fa_bid) if fa_bid is not None else None,
                 "suggested_drop": drop_candidate["player_name"] if drop_candidate is not None else None,
                 "suggested_drop_id": int(drop_candidate["player_id"]) if drop_candidate is not None else None,
                 "suggested_drop_value": float(drop_candidate["value_score"]) if drop_candidate is not None else None,
                 "reasoning": reasoning,
-                "affordable": bool(fa["suggested_bid"] <= budget_remaining),
+                "affordable": bool(fa_bid <= budget_remaining) if fa_bid is not None else True,
             }
         )
         per_position_count[position] = per_position_count.get(position, 0) + 1

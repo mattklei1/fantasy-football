@@ -103,14 +103,27 @@ with tab_rankings:
         st.caption(f"{len(filtered)} of {len(rankings_df)} ranked players shown. Click a column header to sort.")
 
 with tab_waiver:
-    st.caption(
-        "Every currently available free agent, ranked by our own suggested-FAAB heuristic "
-        "(the same model behind the weekly GroupMe waiver report - see Methodology below), "
-        "applied here to the live pool instead of only after the fact to claims that already "
-        "happened."
-    )
     with st.spinner("Pulling live free agents..."):
         waiver_df = wr.get_waiver_board(season)
+    # This league might use plain waiver-PRIORITY claims instead of FAAB
+    # bidding (user, 2026-09-16: "only bir league and usc pike league
+    # are waiver bids. the others are just normal claims based on
+    # waiver order. no bid needed") - suggested_bid is None for every
+    # row in that case (see get_waiver_board), never a fabricated price.
+    league_is_faab = bool(waiver_df["suggested_bid"].notna().any()) if not waiver_df.empty else True
+    if league_is_faab:
+        st.caption(
+            "Every currently available free agent, ranked by our own suggested-FAAB heuristic "
+            "(the same model behind the weekly GroupMe waiver report - see Methodology below), "
+            "applied here to the live pool instead of only after the fact to claims that already "
+            "happened."
+        )
+    else:
+        st.caption(
+            "This league uses standard waiver-PRIORITY claims, not FAAB bidding - no dollar "
+            "amount applies. Ranked by FantasyPros' cross-position rest-of-season rank instead, "
+            "best available first."
+        )
     if waiver_df.empty:
         st.info("No free agent data available right now.")
     else:
@@ -125,8 +138,11 @@ with tab_waiver:
                 "overall_rank": "Overall Rank", "fp_pos_rank": "FP Pos Rank", "suggested_bid": "Suggested Bid",
             }
         )
+        display_cols = ["Player", "Pos", "Team", "Status", "Owned %", "Started %", "Overall Rank", "FP Pos Rank"]
+        if league_is_faab:
+            display_cols.append("Suggested Bid")
         st.dataframe(
-            display[["Player", "Pos", "Team", "Status", "Owned %", "Started %", "Overall Rank", "FP Pos Rank", "Suggested Bid"]],
+            display[display_cols],
             hide_index=True,
             use_container_width=True,
             column_config={
@@ -138,30 +154,33 @@ with tab_waiver:
         )
         st.caption(f"{len(filtered)} of {len(waiver_df)} free agents shown.")
 
-        with st.expander("Methodology"):
-            st.markdown(
-                """
+        if league_is_faab:
+            with st.expander("Methodology"):
+                st.markdown(
+                    """
 **Suggested Bid** is our own heuristic - nobody publishes a real FAAB price (checked FantasyPros'
 full API, ESPN's Player object, and Yahoo - none expose one). It blends FantasyPros' rest-of-season
 positional rank (70%) with ESPN's league-wide `percent_owned` as a demand signal (30%), scaled to
-this league's real $200 budget and real per-position ceilings calibrated against this league's own
-2025 waiver history (see `metrics/waiver_value.py`), with a superflex-aware QB premium (this
-league's `OP` slot count inflates real QB demand). Explicitly a rough estimate, not a market price -
-useful for sanity-checking a bid, not gospel.
+this league's real budget (pulled live from `league.settings.acquisition_budget`, never assumed)
+and real per-position ceilings calibrated against this league's own 2025 waiver history (see
+`metrics/waiver_value.py`), with a superflex-aware QB premium (this league's `OP` slot count
+inflates real QB demand). Explicitly a rough estimate, not a market price - useful for
+sanity-checking a bid, not gospel.
 
 Free agents with no FantasyPros match (deep bench players, or anyone FantasyPros doesn't rank at
 that position) show no suggested bid rather than a fabricated one.
-                """
-            )
+                    """
+                )
 
 with tab_mine:
     st.caption(
         "Your top waiver targets, ranked and diversified across positions (max 3 per position so a "
         "superflex QB run doesn't crowd out everything else), each with a specific suggested drop "
         "from your own roster and plain-language reasoning - position need, whether it's a real "
-        "starter upgrade or just bench insurance, and your real remaining FAAB budget (pulled "
-        "straight from ESPN's own per-team spend tracker). Every number is a real computed fact - "
-        "nothing here is LLM-generated."
+        "starter upgrade or just bench insurance, and (for a league that uses FAAB) your real "
+        "remaining budget, pulled straight from ESPN's own per-team spend tracker. A league that "
+        "uses standard waiver-PRIORITY claims instead shows no dollar figures at all - there's no "
+        "budget to track. Every number is a real computed fact - nothing here is LLM-generated."
     )
     trade_rosters_for_teams = wr.get_trade_rosters(season)
     if trade_rosters_for_teams.empty:
@@ -225,7 +244,7 @@ with tab_mine:
             )
 
         real_submit = st.checkbox(
-            "⚠️ Actually submit approved claims to ESPN (real transactions, real FAAB budget)",
+            "⚠️ Actually submit approved claims to ESPN (real transactions)",
             value=False, key="wr_real_submit",
             help="Unchecked = dry run only (shows exactly what would be sent, sends nothing). This "
             "resets to unchecked every time you load this page - it's never left on by accident.",
@@ -236,6 +255,14 @@ with tab_mine:
         if not suggestions:
             st.info("No suggestions available right now - check FANTASYPROS_API_KEY, or try again later.")
         else:
+            league_is_faab = any(s["suggested_bid"] is not None for s in suggestions)
+            if not league_is_faab and real_submit:
+                st.warning(
+                    "This league uses standard waiver-priority claims, not FAAB - the real-submit "
+                    "payload shape below has only ever been live-verified against a FAAB league. "
+                    "Review the exact payload carefully (or use ESPN's own app) before trusting a "
+                    "real submission here."
+                )
             droppable_for_overrides = wr.get_droppable_roster(season, my_team_pk)
             drop_name_to_id = (
                 dict(zip(droppable_for_overrides["player_name"], droppable_for_overrides["player_id"]))
@@ -258,10 +285,13 @@ with tab_mine:
                         st.markdown(f"**#{i}. {s['player_name']}** ({s['position']}, {s['pro_team']})")
                         st.caption(s["reasoning"])
                     with cols[2]:
-                        bid_label = f"${s['suggested_bid']:.0f}"
-                        if not s["affordable"]:
-                            bid_label += " ⚠️"
-                        st.metric("Suggested bid", bid_label)
+                        if s["suggested_bid"] is not None:
+                            bid_label = f"${s['suggested_bid']:.0f}"
+                            if not s["affordable"]:
+                                bid_label += " ⚠️"
+                            st.metric("Suggested bid", bid_label)
+                        else:
+                            st.caption("Standard waiver claim - no bid, priority order decides it.")
                     with cols[3]:
                         if s["suggested_drop"]:
                             st.metric("Suggested drop", s["suggested_drop"], f"{s['suggested_drop_value']:.0f} val")
@@ -273,14 +303,20 @@ with tab_mine:
                     # also give me an option to overwrite the drop") -
                     # default to the suggested values, but the admin's
                     # own judgment always wins; used instead of the
-                    # suggestion's own numbers at submit time below.
+                    # suggestion's own numbers at submit time below. No
+                    # bid override at all for a non-FAAB league - there's
+                    # no dollar amount to override, ESPN just processes
+                    # standard claims in real waiver-priority order.
                     ocols = st.columns([1, 2, 3])
-                    with ocols[1]:
-                        bid_override = st.number_input(
-                            "Bid override ($)", min_value=0, max_value=int(wr.FAAB_BUDGET_TOTAL),
-                            value=int(round(s["suggested_bid"])), step=1,
-                            key=f"wr_bid_override_{my_team_name}_{s['player_id']}",
-                        )
+                    if s["suggested_bid"] is not None:
+                        with ocols[1]:
+                            bid_override = st.number_input(
+                                "Bid override ($)", min_value=0, max_value=int(wr.FAAB_BUDGET_TOTAL),
+                                value=int(round(s["suggested_bid"])), step=1,
+                                key=f"wr_bid_override_{my_team_name}_{s['player_id']}",
+                            )
+                    else:
+                        bid_override = 0
                     with ocols[2]:
                         default_drop_name = s["suggested_drop"] if s["suggested_drop"] in drop_options else "No drop"
                         drop_override_name = st.selectbox(
@@ -347,8 +383,11 @@ with tab_mine:
                 "overall_rank": "Overall Rank", "suggested_bid": "Suggested Bid",
             }
         )
+        browse_cols = ["Player", "Pos", "Team", "Overall Rank"]
+        if bool(board_for_browsing["suggested_bid"].notna().any()):
+            browse_cols.append("Suggested Bid")
         st.dataframe(
-            display_board[["Player", "Pos", "Team", "Overall Rank", "Suggested Bid"]],
+            display_board[browse_cols],
             hide_index=True, use_container_width=True,
             column_config={
                 "Overall Rank": st.column_config.NumberColumn(format="%d"),

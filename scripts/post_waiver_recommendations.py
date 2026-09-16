@@ -89,9 +89,15 @@ def main() -> int:
 
         suggestions = wr.get_my_waiver_suggestions(season, my_team_pk, top_n=10)
 
-        budget_remaining = wr.FAAB_BUDGET_TOTAL
+        # Real live budget, not the wrong-was-hardcoded-$200 fallback
+        # (fixed 2026-09-16 - see war_room_data.FAAB_BUDGET_TOTAL) - this
+        # league is confirmed FAAB (league.settings.faab), but read it
+        # from settings rather than assume, same as get_my_waiver_
+        # suggestions() now does internally.
+        budget_total = float(league.settings.acquisition_budget or wr.FAAB_BUDGET_TOTAL)
+        budget_remaining = budget_total
         if my_team.acquisition_budget_spent is not None:
-            budget_remaining = wr.FAAB_BUDGET_TOTAL - my_team.acquisition_budget_spent
+            budget_remaining = budget_total - my_team.acquisition_budget_spent
 
         overlooked: list[dict] = []
         api_key = config.anthropic_api_key()

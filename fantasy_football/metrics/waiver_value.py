@@ -6,9 +6,12 @@ their ToS same as everywhere else in this project), ESPN's Player object
 earlier). So this is OUR OWN heuristic, built from data already
 available (FantasyPros ROS positional rank + ESPN's percent_owned as a
 platform-wide demand signal) - not a borrowed number, and explicitly
-normalized to THIS league's real $200 budget and real superflex slot
-counts rather than assuming a generic $100/non-superflex baseline the
-way any external tool would.
+normalized to THIS league's real superflex slot counts rather than
+assuming a generic non-superflex baseline the way any external tool
+would. Only applies at all to a league that actually uses FAAB
+(`league.settings.faab`) - some registered leagues use plain waiver-
+PRIORITY claims instead, where a dollar figure is meaningless (see
+war_room_data.get_waiver_board's docstring).
 
 Deliberately transparent about being a heuristic, not a fact - every
 message this feeds into should read as "here's roughly what this was
@@ -17,19 +20,30 @@ worth," not "the correct price."
 CALIBRATED against this league's own real 2025 waiver history (2026-09-
 13), not just assumed - pulled every executed, nonzero WAIVER bid for
 the full season (108 real claims) and looked at the max bid actually
-paid per position, as a % of the $200 budget:
+paid per position, as a % of budget:
 
     QB 40% ($80 max) | RB 25.5% ($51) | WR 12% ($24)
     TE 7.5% ($15)    | D/ST 3% ($6)   | K 0.5% ($1, n=1 - thin sample)
 
-Before this calibration, every position shared ONE flat 40%-of-budget
-ceiling (POSITION_CEILINGS below) - fine for QB, since that happens to
-match the real QB max almost exactly, but it meant D/ST could suggest
-$30-40 when real managers never paid more than $6 for one all season -
-an order of magnitude too high. POSITION_CEILINGS fixes this with a
-per-position ceiling instead of one shared number, each set at the real
-observed max with modest headroom (one season's max is a real number,
-not a hard limit - a truly special player could exceed it).
+CORRECTION (2026-09-16): the percentages above, and POSITION_CEILINGS
+below, were originally computed against an assumed $200 budget - this
+league's REAL `league.settings.acquisition_budget` has always actually
+been $100 (confirmed live, every season 2024-2026; found while
+investigating a separate report that non-FAAB leagues were being shown
+a fabricated $ bid at all). Every ceiling below is DOUBLED from its
+originally-published value so the real calibrated DOLLAR amounts above
+($80 QB max, $51 RB max, etc. - the actual real-world facts this was
+calibrated against) stay exactly what they were; only the fraction
+that expresses them as a fraction of the correct $100, not the wrong
+$200, changes. Before this whole calibration, every position shared
+ONE flat 40%-of-budget ceiling (POSITION_CEILINGS below) - fine for QB,
+since that happens to match the real QB max almost exactly, but it
+meant D/ST could suggest $30-40 when real managers never paid more than
+$6 for one all season - an order of magnitude too high. POSITION_
+CEILINGS fixes this with a per-position ceiling instead of one shared
+number, each set at the real observed max with modest headroom (one
+season's max is a real number, not a hard limit - a truly special
+player could exceed it).
 
 Re-ran the full 2025 season through the RECALIBRATED formula afterward
 to check the fix actually worked, not just assumed it did (99/108 real
@@ -71,18 +85,21 @@ from .roster_strength import rank_to_score
 
 # Per-position ceiling (max suggested bid as a fraction of the total
 # budget) - see the calibration note above for where these numbers come
-# from. K has only 1 real data point (n=1, $1) - treated as a weak
-# signal, so its ceiling gets more headroom than the sample alone would
-# suggest, not a literal 0.5%+epsilon.
+# from, and the 2026-09-16 correction note for why these are double
+# their originally-published values (real budget is $100, not the $200
+# these were first computed against - doubled to keep the same real
+# calibrated DOLLAR ceilings, not to raise them). K has only 1 real data
+# point (n=1, $1) - treated as a weak signal, so its ceiling gets more
+# headroom than the sample alone would suggest, not a literal 1%+epsilon.
 POSITION_CEILINGS = {
-    "QB": 0.40,
-    "RB": 0.28,
-    "WR": 0.15,
-    "TE": 0.10,
-    "D/ST": 0.05,
-    "K": 0.03,
+    "QB": 0.80,
+    "RB": 0.56,
+    "WR": 0.30,
+    "TE": 0.20,
+    "D/ST": 0.10,
+    "K": 0.06,
 }
-DEFAULT_CEILING = 0.15  # fallback for any position not in the table above
+DEFAULT_CEILING = 0.30  # fallback for any position not in the table above
 RANK_WEIGHT = 0.7
 DEMAND_WEIGHT = 0.3
 
@@ -109,10 +126,14 @@ def suggested_bid(
     percent_owned: float | None,
     position: str,
     scarcity_multipliers: dict[str, float],
-    budget: float = 200.0,
+    budget: float = 100.0,
 ) -> float | None:
     """Suggested FAAB bid in dollars for one free agent, or None if there's
-    not enough signal to say anything (no FantasyPros rank at all)."""
+    not enough signal to say anything (no FantasyPros rank at all). This
+    default is only a fallback for a caller that can't look up the real
+    per-league budget - always prefer passing the live
+    `league.settings.acquisition_budget` instead (see war_room_data.
+    get_waiver_board)."""
     rank_score = rank_to_score(pos_rank)
     if rank_score is None:
         return None
