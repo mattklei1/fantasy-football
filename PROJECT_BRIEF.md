@@ -4894,4 +4894,36 @@ parentheses." Two independent fixes:
   floor/monotonic-increase/full-strength-past-week-9 behavior;
   `test_waiver_report.py` asserts a contested line's winning-bid dollar
   amount appears exactly once and the winner is absent from the "also
-  bid" list).
+  bid" list). Sent this fixed Week 2 recap to the shared GroupMe bot at
+  the user's explicit go-ahead ("Send it with the updates").
+
+**Follow-up trim on that same recap format (2026-09-16, same session).**
+User: "For next time, remove the summary of all claims. Also for the
+contested bids. Remove '2 bids:'. It's clear by listing what the other
+bids were how many bids there were." Two more `build_message()` cuts:
+1. Removed the always-on "ALL EXECUTED CLAIMS" list entirely (it just
+   restated every winning claim a second time, redundant with the
+   CONTESTED/PAID TOO MUCH/STEALS sections above it). A week where a
+   real claim exists but doesn't land in any of those three sections
+   used to only show up in that removed list - added a one-line
+   fallback ("N claim(s) processed - nothing notably contested,
+   overpaid, or underpaid.") so such a week still posts real content
+   instead of a bare header, rather than silently going empty-bodied.
+2. Removed the "(N bidders, ...)" count prefix from each contested
+   line - the "also bid: ..." list itself already makes the bidder
+   count obvious, the number was pure redundancy.
+Also fixed a cosmetic double-blank-line bug this same edit would have
+otherwise introduced: the trailing "(suggested values are our own
+rough estimate...)" footer used to always prepend its own blank line,
+which was fine when "ALL EXECUTED CLAIMS" sat between it and the last
+real section (no blank-blank run possible) but would have produced a
+literal blank-blank gap now that a section's own already-blank trailing
+line can sit directly before it - guarded with `if lines[-1] != ""`.
+Live-verified against the same real Week 2 data: contested lines now
+read "**Carson Wentz**: Gary Had a Little Lamb won at **$4** (also bid:
+Jerusalem Price Fixers $1)" with no bidder count, and the message ends
+right after STEALS with no claims list. 412/412 tests passing (3 new:
+asserts "ALL EXECUTED CLAIMS" and a quiet claim's name are both absent
+from a message with other real sections present; asserts "bidder"
+never appears in a contested line; asserts no `\n\n\n` run anywhere in
+the rendered message).

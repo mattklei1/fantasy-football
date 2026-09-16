@@ -178,8 +178,7 @@ def build_message(claims: list[PlayerClaimResult], week: int) -> str:
             other_bids = [(team, bid) for team, bid in c.all_bids if team != c.winner_team]
             others = ", ".join(f"{team} ${bid:.0f}" for team, bid in sorted(other_bids, key=lambda x: -x[1]))
             lines.append(
-                f"- **{c.player_name}**: {c.winner_team} won at **${c.winning_bid:.0f}** "
-                f"({len(c.all_bids)} bidders, also bid: {others})"
+                f"- **{c.player_name}**: {c.winner_team} won at **${c.winning_bid:.0f}** (also bid: {others})"
             )
         lines.append("")
 
@@ -203,12 +202,15 @@ def build_message(claims: list[PlayerClaimResult], week: int) -> str:
             )
         lines.append("")
 
-    lines.append("📋 **ALL EXECUTED CLAIMS**:")
-    for c in executed:
-        lines.append(f"- {c.winner_team}: {c.player_name} for ${c.winning_bid:.0f}")
-
-    if any(c.suggested_bid is not None for c in executed):
-        lines.append("")
+    if len(lines) == 2:
+        # Nothing contested/overpaid/underpaid enough to call out - still
+        # say something rather than post a bare header (user, 2026-09-16
+        # asked to drop the always-on "ALL EXECUTED CLAIMS" list, but a
+        # genuinely quiet-but-not-empty week still deserves a real line).
+        lines.append(f"{len(executed)} claim(s) processed - nothing notably contested, overpaid, or underpaid.")
+    elif any(c.suggested_bid is not None for c in executed):
+        if lines[-1] != "":
+            lines.append("")
         lines.append("(suggested values are our own rough estimate, not gospel)")
 
     return "\n".join(lines).strip()

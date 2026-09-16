@@ -125,7 +125,11 @@ def test_build_message_highlights_contested_and_overspent():
     assert "Panic Pickup" in msg
     assert "STEALS" in msg
     assert "Bargain Bin Bijan" in msg
-    assert "Nobody Cares" in msg  # still listed under all executed claims
+    # "ALL EXECUTED CLAIMS" summary removed (user, 2026-09-16: "remove the
+    # summary of all claims") - a quiet claim not flagged in any section
+    # above no longer appears anywhere in the message at all.
+    assert "ALL EXECUTED CLAIMS" not in msg
+    assert "Nobody Cares" not in msg
     # **bold** markup is intentional - groupme_client.send_long_message
     # converts it to real Unicode bold before posting.
     assert "**Daniel Jones**" in msg
@@ -146,3 +150,33 @@ def test_build_message_contested_claim_does_not_repeat_the_winning_bid():
     assert "Team B $5" in contested_line
     assert "Team C $2" in contested_line
     assert "Doody Guac Boys $12" not in contested_line
+
+
+def test_build_message_contested_claim_omits_bidder_count():
+    # user, 2026-09-16: "remove '2 bids:' It's clear by listing what the
+    # other bids were how many bids there were" - no bidder-count prefix
+    # at all, just the winner and the other bids.
+    contested = PlayerClaimResult(
+        1, "Daniel Jones", "QB", "Doody Guac Boys", 12.0,
+        all_bids=[("Doody Guac Boys", 12.0), ("Team B", 5.0)], suggested_bid=8.0,
+    )
+    msg = build_message([contested], week=5)
+    contested_line = next(line for line in msg.splitlines() if "Daniel Jones" in line)
+    assert "bidder" not in contested_line.lower()
+    assert "also bid: Team B $5" in contested_line
+
+
+def test_build_message_no_double_blank_line_before_footer():
+    steal = PlayerClaimResult(1, "Bargain Bin Bijan", "RB", "Roses to Flowers", 2.0, suggested_bid=25.0)
+    msg = build_message([steal], week=5)
+    assert "\n\n\n" not in msg
+
+
+def test_build_message_quiet_but_not_empty_week_still_says_something():
+    # a claim processed with nothing contested/overpaid/underpaid used to
+    # only show up in the now-removed "ALL EXECUTED CLAIMS" list - must
+    # still surface SOME real content, not a bare header.
+    quiet = PlayerClaimResult(1, "Nobody Cares", "K", "Roses to Flowers", 1.0, suggested_bid=1.0)
+    msg = build_message([quiet], week=5)
+    assert "WEEK 5 WAIVER WIRE REPORT" in msg
+    assert "1 claim" in msg
