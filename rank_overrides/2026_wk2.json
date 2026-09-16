@@ -1,0 +1,616 @@
+{
+  "season": 2026,
+  "week": 2,
+  "source_filename": "Justin Boone's Fantasy Football FLEX Rankings for Week 2 - Yahoo Sports.pdf",
+  "uploaded_at": "2026-09-16T03:04:21.036122+00:00",
+  "ranks": [
+    {
+      "rank": 1,
+      "player_name": "Jahmyr Gibbs"
+    },
+    {
+      "rank": 2,
+      "player_name": "Bijan Robinson"
+    },
+    {
+      "rank": 3,
+      "player_name": "Kenneth Walker III"
+    },
+    {
+      "rank": 4,
+      "player_name": "Puka Nacua"
+    },
+    {
+      "rank": 5,
+      "player_name": "Derrick Henry"
+    },
+    {
+      "rank": 6,
+      "player_name": "Ashton Jeanty"
+    },
+    {
+      "rank": 7,
+      "player_name": "Amon-Ra St. Brown"
+    },
+    {
+      "rank": 8,
+      "player_name": "Ja'Marr Chase"
+    },
+    {
+      "rank": 9,
+      "player_name": "Jaxon Smith-Njigba"
+    },
+    {
+      "rank": 10,
+      "player_name": "Jonathan Taylor"
+    },
+    {
+      "rank": 11,
+      "player_name": "Christian McCaffrey"
+    },
+    {
+      "rank": 12,
+      "player_name": "James Cook III"
+    },
+    {
+      "rank": 13,
+      "player_name": "Saquon Barkley"
+    },
+    {
+      "rank": 14,
+      "player_name": "Javonte Williams"
+    },
+    {
+      "rank": 15,
+      "player_name": "Justin Jefferson"
+    },
+    {
+      "rank": 16,
+      "player_name": "Chris Olave"
+    },
+    {
+      "rank": 17,
+      "player_name": "Nico Collins"
+    },
+    {
+      "rank": 18,
+      "player_name": "Omarion Hampton"
+    },
+    {
+      "rank": 19,
+      "player_name": "CeeDee Lamb"
+    },
+    {
+      "rank": 20,
+      "player_name": "George Pickens"
+    },
+    {
+      "rank": 21,
+      "player_name": "De'Von Achane"
+    },
+    {
+      "rank": 22,
+      "player_name": "Kyren Williams"
+    },
+    {
+      "rank": 23,
+      "player_name": "D'Andre Swift"
+    },
+    {
+      "rank": 24,
+      "player_name": "Chase Brown"
+    },
+    {
+      "rank": 25,
+      "player_name": "David Montgomery"
+    },
+    {
+      "rank": 26,
+      "player_name": "Christian Watson"
+    },
+    {
+      "rank": 27,
+      "player_name": "DeVonta Smith"
+    },
+    {
+      "rank": 28,
+      "player_name": "DJ Moore"
+    },
+    {
+      "rank": 29,
+      "player_name": "Bucky Irving"
+    },
+    {
+      "rank": 30,
+      "player_name": "Garrett Wilson"
+    },
+    {
+      "rank": 31,
+      "player_name": "Breece Hall"
+    },
+    {
+      "rank": 32,
+      "player_name": "Cam Skattebo"
+    },
+    {
+      "rank": 33,
+      "player_name": "Mike Evans"
+    },
+    {
+      "rank": 34,
+      "player_name": "Malik Nabers"
+    },
+    {
+      "rank": 35,
+      "player_name": "Parker Washington"
+    },
+    {
+      "rank": 36,
+      "player_name": "Trey McBride"
+    },
+    {
+      "rank": 37,
+      "player_name": "Jeremiyah Love"
+    },
+    {
+      "rank": 38,
+      "player_name": "Chuba Hubbard"
+    },
+    {
+      "rank": 39,
+      "player_name": "Rhamondre Stevenson"
+    },
+    {
+      "rank": 40,
+      "player_name": "Travis Etienne Jr."
+    },
+    {
+      "rank": 41,
+      "player_name": "Zay Flowers"
+    },
+    {
+      "rank": 42,
+      "player_name": "Rashee Rice"
+    },
+    {
+      "rank": 43,
+      "player_name": "Tee Higgins"
+    },
+    {
+      "rank": 44,
+      "player_name": "Jadarian Price"
+    },
+    {
+      "rank": 45,
+      "player_name": "Emeka Egbuka"
+    },
+    {
+      "rank": 46,
+      "player_name": "Tetairoa McMillan"
+    },
+    {
+      "rank": 47,
+      "player_name": "Bhayshul Tuten"
+    },
+    {
+      "rank": 48,
+      "player_name": "Colston Loveland"
+    },
+    {
+      "rank": 49,
+      "player_name": "Drake London"
+    },
+    {
+      "rank": 50,
+      "player_name": "Luther Burden III"
+    },
+    {
+      "rank": 51,
+      "player_name": "Quinshon Judkins"
+    },
+    {
+      "rank": 52,
+      "player_name": "Jameson Williams"
+    },
+    {
+      "rank": 53,
+      "player_name": "Jaylen Waddle"
+    },
+    {
+      "rank": 54,
+      "player_name": "Ladd McConkey"
+    },
+    {
+      "rank": 55,
+      "player_name": "Jalen Coker"
+    },
+    {
+      "rank": 56,
+      "player_name": "Jordan Mason"
+    },
+    {
+      "rank": 57,
+      "player_name": "Davante Adams"
+    },
+    {
+      "rank": 58,
+      "player_name": "Rome Odunze"
+    },
+    {
+      "rank": 59,
+      "player_name": "Tyler Warren"
+    },
+    {
+      "rank": 60,
+      "player_name": "Matthew Golden"
+    },
+    {
+      "rank": 61,
+      "player_name": "Jaylen Warren"
+    },
+    {
+      "rank": 62,
+      "player_name": "Stefon Diggs"
+    },
+    {
+      "rank": 63,
+      "player_name": "Dalton Kincaid"
+    },
+    {
+      "rank": 64,
+      "player_name": "MarShawn Lloyd"
+    },
+    {
+      "rank": 65,
+      "player_name": "Terry McLaurin"
+    },
+    {
+      "rank": 66,
+      "player_name": "Rico Dowdle"
+    },
+    {
+      "rank": 67,
+      "player_name": "Sam LaPorta"
+    },
+    {
+      "rank": 68,
+      "player_name": "Dallas Goedert"
+    },
+    {
+      "rank": 69,
+      "player_name": "Isaiah Likely"
+    },
+    {
+      "rank": 70,
+      "player_name": "DK Metcalf"
+    },
+    {
+      "rank": 71,
+      "player_name": "Tucker Kraft"
+    },
+    {
+      "rank": 72,
+      "player_name": "George Kittle"
+    },
+    {
+      "rank": 73,
+      "player_name": "Quentin Johnston"
+    },
+    {
+      "rank": 74,
+      "player_name": "Jacory Croskey-Merritt"
+    },
+    {
+      "rank": 75,
+      "player_name": "Mark Andrews"
+    },
+    {
+      "rank": 76,
+      "player_name": "Chris Godwin Jr."
+    },
+    {
+      "rank": 77,
+      "player_name": "Kaelon Black"
+    },
+    {
+      "rank": 78,
+      "player_name": "Deebo Samuel Sr."
+    },
+    {
+      "rank": 79,
+      "player_name": "Kyle Monangai"
+    },
+    {
+      "rank": 80,
+      "player_name": "Michael Wilson"
+    },
+    {
+      "rank": 81,
+      "player_name": "Courtland Sutton"
+    },
+    {
+      "rank": 82,
+      "player_name": "Blake Corum"
+    },
+    {
+      "rank": 83,
+      "player_name": "Marvin Harrison Jr."
+    },
+    {
+      "rank": 84,
+      "player_name": "Travis Kelce"
+    },
+    {
+      "rank": 85,
+      "player_name": "Michael Pittman Jr."
+    },
+    {
+      "rank": 86,
+      "player_name": "TreVeyon Henderson"
+    },
+    {
+      "rank": 87,
+      "player_name": "Juwan Johnson"
+    },
+    {
+      "rank": 88,
+      "player_name": "Jakobi Meyers"
+    },
+    {
+      "rank": 89,
+      "player_name": "Alec Pierce"
+    },
+    {
+      "rank": 90,
+      "player_name": "Aaron Jones Sr."
+    },
+    {
+      "rank": 91,
+      "player_name": "Harold Fannin Jr."
+    },
+    {
+      "rank": 92,
+      "player_name": "J.K. Dobbins"
+    },
+    {
+      "rank": 93,
+      "player_name": "Kyle Pitts Sr."
+    },
+    {
+      "rank": 94,
+      "player_name": "Jayden Reed"
+    },
+    {
+      "rank": 95,
+      "player_name": "Tony Pollard"
+    },
+    {
+      "rank": 96,
+      "player_name": "Jordan Addison"
+    },
+    {
+      "rank": 97,
+      "player_name": "Josh Downs"
+    },
+    {
+      "rank": 98,
+      "player_name": "Hunter Henry"
+    },
+    {
+      "rank": 99,
+      "player_name": "Dalton Schultz"
+    },
+    {
+      "rank": 100,
+      "player_name": "Michael Mayer"
+    },
+    {
+      "rank": 101,
+      "player_name": "Carnell Tate"
+    },
+    {
+      "rank": 102,
+      "player_name": "Jonathon Brooks"
+    },
+    {
+      "rank": 103,
+      "player_name": "Denzel Boston"
+    },
+    {
+      "rank": 104,
+      "player_name": "Romeo Doubs"
+    },
+    {
+      "rank": 105,
+      "player_name": "KC Concepcion Jr."
+    },
+    {
+      "rank": 106,
+      "player_name": "Brian Thomas Jr."
+    },
+    {
+      "rank": 107,
+      "player_name": "Caleb Douglas"
+    },
+    {
+      "rank": 108,
+      "player_name": "Brenton Strange"
+    },
+    {
+      "rank": 109,
+      "player_name": "Woody Marks"
+    },
+    {
+      "rank": 110,
+      "player_name": "Devaughn Vele"
+    },
+    {
+      "rank": 111,
+      "player_name": "Kenny Gainwell"
+    },
+    {
+      "rank": 112,
+      "player_name": "Dontayvion Wicks"
+    },
+    {
+      "rank": 113,
+      "player_name": "Jake Ferguson"
+    },
+    {
+      "rank": 114,
+      "player_name": "Rachaad White"
+    },
+    {
+      "rank": 115,
+      "player_name": "Khalil Shakir"
+    },
+    {
+      "rank": 116,
+      "player_name": "Tre Tucker"
+    },
+    {
+      "rank": 117,
+      "player_name": "Wan'Dale Robinson"
+    },
+    {
+      "rank": 118,
+      "player_name": "Pat Freiermuth"
+    },
+    {
+      "rank": 119,
+      "player_name": "Tyler Allgeier"
+    },
+    {
+      "rank": 120,
+      "player_name": "Xavier Worthy"
+    },
+    {
+      "rank": 121,
+      "player_name": "Adonai Mitchell"
+    },
+    {
+      "rank": 122,
+      "player_name": "Rashod Bateman"
+    },
+    {
+      "rank": 123,
+      "player_name": "Malik Washington"
+    },
+    {
+      "rank": 124,
+      "player_name": "RJ Harvey"
+    },
+    {
+      "rank": 125,
+      "player_name": "Chris Rodriguez Jr."
+    },
+    {
+      "rank": 126,
+      "player_name": "Keaton Mitchell"
+    },
+    {
+      "rank": 127,
+      "player_name": "Pat Bryant"
+    },
+    {
+      "rank": 128,
+      "player_name": "Mack Hollins"
+    },
+    {
+      "rank": 129,
+      "player_name": "Makai Lemon"
+    },
+    {
+      "rank": 130,
+      "player_name": "T.J. Hockenson"
+    },
+    {
+      "rank": 131,
+      "player_name": "Tyjae Spears"
+    },
+    {
+      "rank": 132,
+      "player_name": "Keenan Allen"
+    },
+    {
+      "rank": 133,
+      "player_name": "Jalen Nailor"
+    },
+    {
+      "rank": 134,
+      "player_name": "Tre' Harris"
+    },
+    {
+      "rank": 135,
+      "player_name": "AJ Barner"
+    },
+    {
+      "rank": 136,
+      "player_name": "Rashid Shaheed"
+    },
+    {
+      "rank": 137,
+      "player_name": "Cade Otton"
+    },
+    {
+      "rank": 138,
+      "player_name": "DeMario Douglas"
+    },
+    {
+      "rank": 139,
+      "player_name": "Kayshon Boutte"
+    },
+    {
+      "rank": 140,
+      "player_name": "Malachi Fields"
+    },
+    {
+      "rank": 141,
+      "player_name": "Kendrick Bourne"
+    },
+    {
+      "rank": 142,
+      "player_name": "Kenyon Sadiq"
+    },
+    {
+      "rank": 143,
+      "player_name": "Cooper Kupp"
+    },
+    {
+      "rank": 144,
+      "player_name": "Ryan Flournoy"
+    },
+    {
+      "rank": 145,
+      "player_name": "Mike Gesicki"
+    },
+    {
+      "rank": 146,
+      "player_name": "Antonio Williams"
+    },
+    {
+      "rank": 147,
+      "player_name": "Greg Dulcich"
+    },
+    {
+      "rank": 148,
+      "player_name": "Braelon Allen"
+    },
+    {
+      "rank": 149,
+      "player_name": "Jerry Jeudy"
+    },
+    {
+      "rank": 150,
+      "player_name": "Emmett Johnson"
+    },
+    {
+      "rank": 151,
+      "player_name": "George Holani"
+    },
+    {
+      "rank": 152,
+      "player_name": "David Njoku"
+    }
+  ]
+}
