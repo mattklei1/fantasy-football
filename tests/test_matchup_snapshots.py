@@ -161,16 +161,29 @@ def test_multiple_dead_time_gaps_each_get_their_own_rangebreak():
 
 # --- capture_snapshot_if_due (page-load backstop for the unreliable cron) --
 
-def test_capture_if_due_skips_outside_live_window(monkeypatch):
+def test_capture_if_due_skips_outside_live_window_when_a_snapshot_already_exists(monkeypatch):
     monkeypatch.setattr(ms, "is_within_live_window", lambda: False)
+    old_ts = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)).isoformat()
     called = {"capture": False}
     monkeypatch.setattr(ms, "capture_snapshot", lambda *a, **k: called.update(capture=True))
-    assert capture_snapshot_if_due(2026, 2, []) is None
+    assert capture_snapshot_if_due(2026, 2, [_snap(old_ts)]) is None
     assert called["capture"] is False
 
 
 def test_capture_if_due_captures_when_live_and_no_prior_snapshots(monkeypatch):
     monkeypatch.setattr(ms, "is_within_live_window", lambda: True)
+    monkeypatch.setattr(ms, "capture_snapshot", lambda season, week: {"timestamp": "t", "teams": {}})
+    monkeypatch.setattr(ms, "append_snapshot", lambda season, week, snap: {"success": True, "message": "ok"})
+    result = capture_snapshot_if_due(2026, 2, [])
+    assert result == {"success": True, "message": "ok"}
+
+
+def test_capture_if_due_captures_pregame_anchor_even_outside_live_window(monkeypatch):
+    # user, 2026-09-20: "Shouldn't the first data point be pre-Thursday
+    # night football games?" - the week's very first snapshot must not
+    # depend on someone visiting during the narrow live-window-open-to-
+    # kickoff gap, so it ignores is_within_live_window() entirely.
+    monkeypatch.setattr(ms, "is_within_live_window", lambda: False)
     monkeypatch.setattr(ms, "capture_snapshot", lambda season, week: {"timestamp": "t", "teams": {}})
     monkeypatch.setattr(ms, "append_snapshot", lambda season, week, snap: {"success": True, "message": "ok"})
     result = capture_snapshot_if_due(2026, 2, [])

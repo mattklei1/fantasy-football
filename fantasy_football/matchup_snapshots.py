@@ -183,10 +183,24 @@ def capture_snapshot_if_due(season: int, week: int, existing_snapshots: list[dic
     for it (the cron still helps when nobody's visiting). Returns the
     append result dict, or None if nothing was due (outside a live
     window, or the last snapshot is still fresh) - callers should treat
-    None as "nothing changed," not an error."""
-    if not is_within_live_window():
-        return None
+    None as "nothing changed," not an error.
+
+    The WEEK'S VERY FIRST snapshot is a special case, captured
+    regardless of is_within_live_window() (user, 2026-09-20: "Shouldn't
+    the first data point be pre-Thursday night football games?") - the
+    chart's whole point is showing movement FROM a pregame baseline, so
+    that baseline can't be allowed to depend on someone happening to
+    visit the page in the narrow window between a live window opening
+    and actual kickoff. Capturing pregame works fine any time after the
+    week's matchups are set (ESPN box_scores() returns real 0-0 pairings
+    with real projections well before Thursday) - so the first visitor
+    of the week, whenever that happens to be, locks in the true pregame
+    read. Every capture AFTER that first one stays live-window-gated, so
+    a Tuesday page visit doesn't also start peppering in pointless
+    duplicate pregame snapshots all week."""
     if existing_snapshots:
+        if not is_within_live_window():
+            return None
         last_ts = datetime.datetime.fromisoformat(existing_snapshots[-1]["timestamp"])
         if datetime.datetime.now(datetime.timezone.utc) - last_ts < MIN_CAPTURE_INTERVAL:
             return None

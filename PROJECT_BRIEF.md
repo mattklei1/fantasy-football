@@ -5037,3 +5037,26 @@ captures immediately with no prior snapshots; skips when the last
 snapshot is still fresh; captures when it's stale; never calls
 `append_snapshot` when `capture_snapshot` itself returns None, e.g. a
 bye week with nothing live to capture).
+
+**Follow-up same session: the pregame anchor point still wasn't
+guaranteed.** User: "Shouldn't the first data point be pre-Thursday
+night football games?" Correct catch - the page-load backstop above
+only captures during `is_within_live_window()` (Thu 4:30-9pm PT, chosen
+specifically to open ~45min before TNF's typical ~5:15pm PT kickoff so
+an early visit lands pregame), but if nobody happens to visit the
+Matchups page in that narrow open-to-kickoff gap, the WEEK'S FIRST
+captured point would land after kickoff instead - a real gap the fix
+didn't fully close. `capture_snapshot_if_due()` now treats the week's
+very first snapshot as a special case: captured regardless of
+is_within_live_window() the moment ANY page visit happens once the
+week's matchups exist (ESPN's box_scores() returns valid 0-0 pairings
+with real projections as soon as the week begins, confirmed - no need
+to wait for a live window), so a Tuesday or Wednesday visit locks in
+the true pregame baseline instead of leaving it to chance. Every
+snapshot AFTER that first one stays live-window-gated as before, so an
+early-week visit doesn't also start capturing pointless duplicate
+pregame points all week. 419/419 tests passing (rewrote the "skips
+outside live window" test to use a non-empty existing-snapshots list,
+since that's no longer true for an empty week; added a new test
+confirming an empty week captures even with is_within_live_window()
+False).
