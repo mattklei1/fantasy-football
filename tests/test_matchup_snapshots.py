@@ -2,14 +2,21 @@
 (snapshots_to_rows, biggest_mover, benchmark_ticks). capture_snapshot/
 append_snapshot/load_snapshots are live-data functions (ESPN + GitHub
 API calls), validated via AppTest/live checks instead, per PROJECT_BRIEF
-testing convention."""
+testing convention. capture_snapshot_if_due's THROTTLE DECISION (live
+window? last snapshot stale enough?) is pure branching worth covering
+directly, same as ui_common.ensure_data_bootstrapped() - the live calls
+inside it (capture_snapshot/append_snapshot) are monkeypatched out."""
+import datetime
+
 import pytest
 
+import fantasy_football.matchup_snapshots as ms
 from fantasy_football.matchup_snapshots import (
     DEAD_TIME_GAP_THRESHOLD_MINUTES,
     _dead_time_rangebreaks,
     benchmark_ticks,
     biggest_mover,
+    capture_snapshot_if_due,
     snapshots_to_rows,
 )
 
@@ -150,3 +157,51 @@ def test_multiple_dead_time_gaps_each_get_their_own_rangebreak():
     ]
     breaks = _dead_time_rangebreaks(snapshots)
     assert len(breaks) == 2
+
+
+# --- capture_snapshot_if_due (page-load backstop for the unreliable cron) --
+
+def test_capture_if_due_skips_outside_live_window(monkeypatch):
+    monkeypatch.setattr(ms, "is_within_live_window", lambda: False)
+    called = {"capture": False}
+    monkeypatch.setattr(ms, "capture_snapshot", lambda *a, **k: called.update(capture=True))
+    assert capture_snapshot_if_due(2026, 2, []) is None
+    assert called["capture"] is False
+
+
+def test_capture_if_due_captures_when_live_and_no_prior_snapshots(monkeypatch):
+    monkeypatch.setattr(ms, "is_within_live_window", lambda: True)
+    monkeypatch.setattr(ms, "capture_snapshot", lambda season, week: {"timestamp": "t", "teams": {}})
+    monkeypatch.setattr(ms, "append_snapshot", lambda season, week, snap: {"success": True, "message": "ok"})
+    result = capture_snapshot_if_due(2026, 2, [])
+    assert result == {"success": True, "message": "ok"}
+
+
+def test_capture_if_due_skips_when_last_snapshot_still_fresh(monkeypatch):
+    monkeypatch.setattr(ms, "is_within_live_window", lambda: True)
+    recent_ts = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=2)).isoformat()
+    called = {"capture": False}
+    monkeypatch.setattr(ms, "capture_snapshot", lambda *a, **k: called.update(capture=True))
+    result = capture_snapshot_if_due(2026, 2, [_snap(recent_ts)])
+    assert result is None
+    assert called["capture"] is False
+
+
+def test_capture_if_due_captures_when_last_snapshot_is_stale(monkeypatch):
+    monkeypatch.setattr(ms, "is_within_live_window", lambda: True)
+    stale_ts = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=30)).isoformat()
+    monkeypatch.setattr(ms, "capture_snapshot", lambda season, week: {"timestamp": "t", "teams": {}})
+    monkeypatch.setattr(ms, "append_snapshot", lambda season, week, snap: {"success": True, "message": "ok"})
+    result = capture_snapshot_if_due(2026, 2, [_snap(stale_ts)])
+    assert result == {"success": True, "message": "ok"}
+
+
+def test_capture_if_due_returns_none_when_nothing_live_to_capture(monkeypatch):
+    # e.g. a bye week with no real matchups - capture_snapshot() itself
+    # returns None; append_snapshot must never be called with nothing.
+    monkeypatch.setattr(ms, "is_within_live_window", lambda: True)
+    monkeypatch.setattr(ms, "capture_snapshot", lambda season, week: None)
+    called = {"append": False}
+    monkeypatch.setattr(ms, "append_snapshot", lambda *a, **k: called.update(append=True))
+    assert capture_snapshot_if_due(2026, 2, []) is None
+    assert called["append"] is False

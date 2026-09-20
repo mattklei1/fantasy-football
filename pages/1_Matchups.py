@@ -245,6 +245,13 @@ if not is_final_week and not is_future_week and not live_error:
     # every 10 minutes). Degrades to a plain explanatory caption, never a
     # crash, if no token is configured or nothing's collected yet.
     snapshots = matchup_snapshots.load_snapshots(season, week)
+    # Backstop for the GitHub Actions collector's cron not reliably
+    # firing every 10 minutes (see capture_snapshot_if_due's docstring) -
+    # a real visit to this page during a live window captures a fresh
+    # snapshot itself if the last one on record is stale.
+    capture_result = matchup_snapshots.capture_snapshot_if_due(season, week, snapshots)
+    if capture_result and capture_result.get("success"):
+        snapshots = matchup_snapshots.load_snapshots(season, week)
     with st.container(border=True):
         st.markdown("#### Win Probability Over Time")
         if not snapshots:

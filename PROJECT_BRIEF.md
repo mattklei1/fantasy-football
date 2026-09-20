@@ -4995,3 +4995,45 @@ triggers (see the earlier same-session GROUPME_BOT_ID investigation), so
 often enough to never go idle long enough to actually sleep. `|| true`
 on the curl so a single transient failure doesn't paint the workflow red
 - the next tick 15 minutes later is the real safety net.
+
+**Bug: Matchups page's Win Probability Over Time chart showed almost no
+movement (2026-09-20).** User: "Are the win probability over time charts
+on the matchups page working? I don't see any movement." Pulled the
+real snapshot manifests off the `matchup-snapshots` branch directly to
+check: week 1 has exactly ONE point for the entire week (Monday night,
+8:12pm PT), week 2 has exactly TWO (both within ~2 hours of each other,
+right at the start of Thursday's TNF window) - nothing at all through
+hours of real Thursday/Sunday/Monday game time. Root cause: the
+collector (`scripts/post_matchup_snapshot.py`, cron `*/10 * * * *`) is
+hit by the SAME GitHub Actions scheduler-reliability problem already
+diagnosed this session for waiver-recap.yml/weekly-recap.yml (see the
+GROUPME_BOT_ID investigation above) - at a 10-minute frequency, GitHub
+is apparently dropping the vast majority of ticks rather than just
+delaying them (matchup-snapshot.yml showed only 11 total recorded runs
+across several days of "every 10 minutes," and even fewer of those
+landed both inside a real live window AND had matchups to capture).
+Confirmed the underlying capture logic itself is fine (ran
+`capture_snapshot()` live against real ESPN data - a correct 12-team
+result), so this was purely "the cron that's supposed to call it isn't
+firing," not a data or chart-rendering bug.
+
+Rather than trying to make GitHub's own scheduler more reliable (not
+something this repo controls), applied the SAME fix pattern already
+proven for Roster Strength going stale (`ui_common.
+ensure_daily_data_fresh()`, added 2026-09-13): let a real page load
+trigger the capture itself. New `matchup_snapshots.
+capture_snapshot_if_due(season, week, existing_snapshots)` - checks
+`is_within_live_window()` and whether the last recorded snapshot is
+older than `MIN_CAPTURE_INTERVAL` (8 minutes, deliberately shorter than
+the cron's own 10-minute cadence since this is a backstop for it, not a
+competing schedule), and if so captures+commits one right then. Wired
+into `pages/1_Matchups.py` right after `load_snapshots()` - a real visit
+to the page during a live window now self-heals a stale chart instead
+of silently sitting flat, and the cron collector still helps on top of
+it when it does happen to fire. 418/418 tests passing (5 new in
+test_matchup_snapshots.py, monkeypatching `is_within_live_window`/
+`capture_snapshot`/`append_snapshot`: skips outside a live window;
+captures immediately with no prior snapshots; skips when the last
+snapshot is still fresh; captures when it's stale; never calls
+`append_snapshot` when `capture_snapshot` itself returns None, e.g. a
+bye week with nothing live to capture).

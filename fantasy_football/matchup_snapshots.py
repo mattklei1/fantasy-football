@@ -34,9 +34,16 @@ import datetime
 import json
 
 from . import config
-from .schedule_guard import PACIFIC
+from .schedule_guard import PACIFIC, is_within_live_window
 
 SNAPSHOT_BRANCH = "matchup-snapshots"
+
+# How stale the last snapshot has to be before a real page load captures
+# a fresh one itself (see capture_snapshot_if_due). Shorter than the
+# collector's declared 10-minute cron interval on purpose - this is a
+# backstop for when that cron doesn't actually fire on time, not a
+# competing cadence to tune independently.
+MIN_CAPTURE_INTERVAL = datetime.timedelta(minutes=8)
 
 # (weekday [Mon=0..Sun=6], hour, minute) in Pacific time - the chart's
 # x-axis tick labels. Approximate real NFL broadcast-window END times;
@@ -150,6 +157,43 @@ def append_snapshot(season: int, week: int, snapshot: dict) -> dict:
         message=f"Matchup snapshot {snapshot['timestamp']}", branch=SNAPSHOT_BRANCH,
     )
     return {"success": result["success"], "message": result["message"]}
+
+
+def capture_snapshot_if_due(season: int, week: int, existing_snapshots: list[dict]) -> dict | None:
+    """Page-load-triggered fallback to the GitHub Actions collector
+    (scripts/post_matchup_snapshot.py's "*/10 * * * *" cron). Added
+    2026-09-20 after the chart showed almost no movement across two full
+    weeks - checked the real snapshot manifests on SNAPSHOT_BRANCH and
+    found only 1 point for week 1 and 2 for week 2, all clustered right
+    at the START of a live window, none spread through hours of real
+    Sunday/Thursday/Monday game time. GitHub's own `schedule:` trigger
+    just isn't reliably firing every 10 minutes for this repo (same
+    scheduler-reliability issue diagnosed the same session for
+    waiver-recap.yml/weekly-recap.yml, see PROJECT_BRIEF) - at that
+    frequency, most ticks are apparently dropped rather than delayed.
+
+    Rather than trying to make GitHub's scheduler more reliable (not
+    something this repo can control), this applies the same fix already
+    proven for Roster Strength staleness (ui_common.
+    ensure_daily_data_fresh()): let real traffic on the page that needs
+    the data trigger the capture itself. Every real visit to the
+    Matchups page during a live window checks whether the last snapshot
+    is older than MIN_CAPTURE_INTERVAL and, if so, captures and commits
+    one - a safety net alongside the cron collector, not a replacement
+    for it (the cron still helps when nobody's visiting). Returns the
+    append result dict, or None if nothing was due (outside a live
+    window, or the last snapshot is still fresh) - callers should treat
+    None as "nothing changed," not an error."""
+    if not is_within_live_window():
+        return None
+    if existing_snapshots:
+        last_ts = datetime.datetime.fromisoformat(existing_snapshots[-1]["timestamp"])
+        if datetime.datetime.now(datetime.timezone.utc) - last_ts < MIN_CAPTURE_INTERVAL:
+            return None
+    snapshot = capture_snapshot(season, week)
+    if snapshot is None:
+        return None
+    return append_snapshot(season, week, snapshot)
 
 
 def load_snapshots(season: int, week: int) -> list[dict]:
