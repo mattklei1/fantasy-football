@@ -64,15 +64,15 @@ def test_admin_email_lowercased(monkeypatch):
     assert config.admin_email() == "mattklei1@gmail.com"
 
 
-def test_ensure_data_bootstrapped_skips_refresh_when_data_exists(monkeypatch, tmp_path):
+def test_ensure_data_bootstrapped_skips_refresh_when_a_run_has_completed(monkeypatch, tmp_path):
     db_path = tmp_path / "league.db"
     conn = sqlite3.connect(db_path)
     from fantasy_football import db as db_module
 
     db_module.init_db(conn)
     conn.execute(
-        "INSERT INTO seasons (season_id, league_id, reg_season_count, playoff_team_count) "
-        "VALUES (2025, 1, 14, 6)"
+        "INSERT INTO refresh_log (started_at, finished_at, status, seasons_refreshed, detail) "
+        "VALUES ('2026-01-01T00:00:00', '2026-01-01T00:05:00', 'success', '2025', 'ok')"
     )
     conn.commit()
     conn.close()
@@ -89,6 +89,41 @@ def test_ensure_data_bootstrapped_skips_refresh_when_data_exists(monkeypatch, tm
 
     ui_common.ensure_data_bootstrapped()
     assert called["refresh"] is False
+
+
+def test_ensure_data_bootstrapped_retries_when_a_prior_run_was_interrupted(monkeypatch, tmp_path):
+    # BUG fixed 2026-09-20: a `seasons` row can land (and commit) from an
+    # earlier season in a multi-season refresh_all() that never finished
+    # (e.g. the Streamlit script got interrupted partway through) - that
+    # must NOT be mistaken for "already bootstrapped", since refresh_log
+    # (only written once refresh_all() actually completes) is still empty.
+    db_path = tmp_path / "league.db"
+    conn = sqlite3.connect(db_path)
+    from fantasy_football import db as db_module
+
+    db_module.init_db(conn)
+    conn.execute(
+        "INSERT INTO seasons (season_id, league_id, reg_season_count, playoff_team_count) "
+        "VALUES (2025, 1, 14, 6)"
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(config, "DB_PATH", db_path)
+    monkeypatch.setattr(ui_common.dd, "get_connection", lambda: sqlite3.connect(db_path))
+    monkeypatch.setattr(ui_common.dd, "clear_all_caches", lambda: None)
+
+    called = {"refresh": False}
+
+    def fake_refresh_all(*args, **kwargs):
+        called["refresh"] = True
+
+    monkeypatch.setattr("fantasy_football.ingest.refresh_all", fake_refresh_all)
+    monkeypatch.setattr("fantasy_football.metrics.pipeline.compute_and_store_all_seasons", lambda *a, **k: None)
+    monkeypatch.setattr("fantasy_football.espn_client.ESPNClient", lambda **kwargs: object())
+
+    ui_common.ensure_data_bootstrapped()
+    assert called["refresh"] is True
 
 
 def test_ensure_data_bootstrapped_triggers_refresh_when_empty(monkeypatch, tmp_path):

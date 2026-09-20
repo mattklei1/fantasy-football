@@ -463,11 +463,32 @@ def ensure_data_bootstrapped() -> None:
     "Refresh ESPN Data" button already runs, just triggered
     automatically on the first page load after a restart. The presence
     check itself is one cheap COUNT query on every other page load, not
-    a repeated cost."""
+    a repeated cost.
+
+    BUG fixed 2026-09-20 (user: "every day that I open the app... it
+    says it needs to reboot. Then I need to refresh all of my league
+    data from ESPN"): this used to check `seasons` for any row at all,
+    but ingest_season() commits ONE season at a time (see ingest.py) -
+    the `seasons` row for season N lands (and commits) long before the
+    rest of that season's weeks/rosters, and well before any LATER
+    season even starts. A cold-start refresh_all() covering 7+ seasons
+    of real ESPN calls is exactly the kind of multi-minute operation a
+    Streamlit script rerun (triggered by literally any stray widget
+    interaction while the spinner is up) can abort partway through -
+    which left `seasons` non-empty from whichever seasons happened to
+    finish first, so this check silently treated the DB as "already
+    bootstrapped" forever after, even with the current season (or most
+    of the history) never actually ingested. Nothing in the UI ever
+    explained why data was stale/missing - the fix just looked like "I
+    have to hit Refresh ESPN Data every time" to the user. Now keyed off
+    refresh_log instead, which only gets a row once refresh_all() runs
+    to completion (success OR partial-but-finished) - an interrupted run
+    leaves it empty, so the NEXT page load correctly retries the whole
+    bootstrap instead of getting stuck half-populated."""
     conn = dd.get_connection()
     db.init_db(conn)
-    has_data = conn.execute("SELECT COUNT(*) FROM seasons").fetchone()[0] > 0
-    if has_data:
+    has_completed_refresh = conn.execute("SELECT COUNT(*) FROM refresh_log").fetchone()[0] > 0
+    if has_completed_refresh:
         return
 
     from .ingest import refresh_all

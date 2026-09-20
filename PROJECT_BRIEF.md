@@ -4927,3 +4927,55 @@ asserts "ALL EXECUTED CLAIMS" and a quiet claim's name are both absent
 from a message with other real sections present; asserts "bidder"
 never appears in a contested line; asserts no `\n\n\n` run anywhere in
 the rendered message).
+
+**Bug: the app's own "reboot -> then I still have to manually Refresh
+ESPN Data" cycle, happening every day (2026-09-20).** User: "Every day
+that I open the app in streamlit it says it needs to reboot the app (I
+have to click a button). Then I need to refresh all of my league data
+from ESPN. How do I workaround this?" Two genuinely separate problems
+bundled in one symptom:
+1. The "needs to reboot" click itself is Streamlit Community Cloud's
+   OWN platform-level sleep/wake screen - it runs before any of this
+   app's Python even starts, so nothing in this repo can skip that
+   click. The only real lever is to stop the app from going idle
+   enough to sleep in the first place (a periodic external ping to keep
+   it warm) - not yet built; needs the deployed app's real public URL,
+   which isn't recorded anywhere in this repo (asked the user for it).
+2. The SECOND manual step (re-running "Refresh ESPN Data" by hand
+   even after a reboot) should never have been necessary at all -
+   `ui_common.ensure_data_bootstrapped()` already exists specifically
+   to auto-rebuild an empty DB from ESPN on first page load after a
+   restart (added 2026-09-13, see its own docstring), with zero button
+   click required. Found the real bug by reading `ingest.ingest_season()`
+   closely: it calls `conn.commit()` ONCE PER SEASON (line ~688), and
+   within a season, the `seasons` table row itself is written (via
+   `ingest_season_row`) before that season's weeks/rosters/draft are
+   ingested. `ensure_data_bootstrapped()`'s own "has data" check was
+   `SELECT COUNT(*) FROM seasons` - which goes non-empty as soon as
+   just the FIRST season of a multi-season backfill finishes committing,
+   long before the whole `refresh_all()` (7+ seasons, each a real
+   multi-week ESPN call sequence - genuinely a multi-minute operation on
+   a cold, just-woken free-tier container) actually completes. Streamlit
+   reruns the WHOLE script on any stray widget interaction during that
+   spinner, which ABORTS the in-flight bootstrap - leaving `seasons`
+   non-empty (from whichever seasons happened to finish first) but the
+   rest of the backfill (very possibly including the CURRENT season)
+   never done. Every later page load then saw "has_data = True" and
+   silently skipped ever retrying - permanently "half-bootstrapped"
+   until a human noticed and clicked the manual button themselves, which
+   (run to completion by an attentive human who doesn't touch anything
+   else mid-spinner) actually finishes. This is exactly what made the
+   auto-bootstrap that exists specifically to prevent manual refreshes
+   look like it was doing nothing.
+   Fix: `ensure_data_bootstrapped()` now checks `refresh_log` instead of
+   `seasons` - that table only gets a row once `refresh_all()` runs all
+   the way to its own final `conn.commit()`+INSERT (success OR partial-
+   but-finished), so an interrupted run leaves it empty and the very
+   next page load correctly retries the WHOLE bootstrap from scratch
+   (safe/idempotent - the same ingest functions the manual button
+   already re-runs repeatedly in production) instead of getting stuck.
+   413/413 tests passing (2 new/rewritten in test_ui_common.py: a
+   completed refresh_log row still correctly skips re-running; a
+   `seasons` row with NO matching refresh_log row - the interrupted-run
+   state - correctly triggers a retry, which the old test setup would
+   have wrongly treated as "already bootstrapped").
