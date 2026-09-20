@@ -4979,3 +4979,19 @@ bundled in one symptom:
    `seasons` row with NO matching refresh_log row - the interrupted-run
    state - correctly triggers a retry, which the old test setup would
    have wrongly treated as "already bootstrapped").
+
+**Part 2 of the same fix: a keep-alive ping to stop the reboot click
+itself.** The "needs to reboot" screen is Streamlit Community Cloud's
+own platform sleep/wake behavior, entirely outside this app's Python -
+no code fix can skip it, only staying awake in the first place can. New
+`.github/workflows/keep-app-awake.yml`: a plain `curl` to the app's real
+public URL (https://fantasy-football-home.streamlit.app/, provided by
+the user) every 15 minutes, no secrets/repo checkout needed - enough to
+register as real traffic and reset Streamlit's idle clock. Deliberately
+frequent (not a once-daily ping): this repo's other scheduled workflows
+have shown GitHub's own cron scheduler missing/delaying infrequent
+triggers (see the earlier same-session GROUPME_BOT_ID investigation), so
+15-minute spacing means a few missed ticks still leave the app pinged
+often enough to never go idle long enough to actually sleep. `|| true`
+on the curl so a single transient failure doesn't paint the workflow red
+- the next tick 15 minutes later is the real safety net.
