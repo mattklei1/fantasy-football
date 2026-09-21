@@ -5060,3 +5060,37 @@ outside live window" test to use a non-empty existing-snapshots list,
 since that's no longer true for an empty week; added a new test
 confirming an empty week captures even with is_within_live_window()
 False).
+
+**Follow-up same session, one day later (2026-09-21): the chart was
+fragmenting into disconnected islands.** User sent a real screenshot -
+solid connected lines for two small clusters, then scattered isolated
+unconnected dots for the rest, captioned "The chart lines should all be
+connected even if snapshots every so often." Root cause was
+`_dead_time_rangebreaks()`'s `DEAD_TIME_GAP_THRESHOLD_MINUTES = 25` - a
+fixed threshold calibrated back when the ONLY collector was a
+(seemingly) reliable 10-minute cron, where any gap over 25 minutes
+really did mean "between broadcast windows." Once the previous two
+fixes let real, irregular page visits trigger captures too, a perfectly
+normal gap between two visits DURING THE SAME live window (an hour
+between Sunday check-ins) routinely exceeded 25 minutes and got treated
+as dead time - wrongly fragmenting each team's line. Verified directly
+against the real week-2 manifest (16 real snapshots by this point,
+pulled from the `matchup-snapshots` branch): the OLD threshold logic
+produces 9 rangebreaks over that data (even splitting Thursday's own 2
+points apart, 1h47m gap), matching the screenshot's fragmentation
+exactly.
+
+Fixed by replacing the fixed-minute threshold with PACIFIC CALENDAR DATE
+grouping: a rangebreak now only goes between two snapshots that fall on
+DIFFERENT Pacific dates - every gap within a single day's own data stays
+connected no matter how large, since no LIVE_GAME_WINDOWS_BY_WEEKDAY
+window crosses midnight Pacific. Re-ran the same real 16-snapshot
+manifest through the fixed function: exactly 1 rangebreak (the real
+Thursday-night-to-Sunday-morning gap), all 14 Sunday points now one
+connected line. Removed `DEAD_TIME_GAP_THRESHOLD_MINUTES` entirely (no
+longer meaningful). 420/420 tests passing (replaced the old fixed-
+threshold-boundary test with two new ones: a large SAME-day gap produces
+no rangebreak; a UTC-day-boundary-crossing timestamp that's still the
+same Pacific day - 01:34 UTC being 6:34pm PDT the day before - also
+produces no rangebreak, guarding against a naive UTC-date comparison
+reintroducing the same class of bug).

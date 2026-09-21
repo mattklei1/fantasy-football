@@ -301,37 +301,47 @@ def _line_colors():
     return _LINE_COLORS
 
 
-#: Comfortably above the normal ~10-minute collection cadence, safely
-#: below the multi-hour dead time between real game windows (Thursday
-#: night through Sunday morning, Sunday night through Monday evening) -
-#: see _dead_time_rangebreaks().
-DEAD_TIME_GAP_THRESHOLD_MINUTES = 25
-
-
 def _dead_time_rangebreaks(snapshots: list[dict]) -> list[dict]:
-    """Plotly x-axis rangebreaks compressing out any real gap between
-    consecutive snapshots wider than DEAD_TIME_GAP_THRESHOLD_MINUTES -
-    the same technique real stock charts use to skip weekends/after-
-    hours on an otherwise-continuous time axis. Without this, Plotly
-    draws a straight line directly connecting the last Thursday-night
-    reading to the first Sunday-morning one, which VISUALLY implies a
-    smooth multi-hour drift that never actually happened (nothing was
-    live to change) - confirmed by rendering it (see PROJECT_BRIEF).
-    Compressing each dead gap down to near-zero width on the axis both
-    removes that misleading diagonal (it collapses to a near-vertical
-    jump instead) and stops the chart wasting most of its width on dead
-    time between game windows - directly answers "set the zoom to a
-    good spot" without hardcoding what a "good spot" is: it's derived
-    from the actual gaps in the collected data, not assumed NFL times."""
+    """Plotly x-axis rangebreaks compressing out the real dead time
+    BETWEEN broadcast days (Thursday night through Sunday morning,
+    Sunday night through Monday evening) - the same technique real stock
+    charts use to skip weekends/after-hours on an otherwise-continuous
+    time axis. Without this, Plotly draws a straight line directly
+    connecting the last Thursday-night reading to the first Sunday-
+    morning one, which VISUALLY implies a smooth multi-hour drift that
+    never actually happened (nothing was live to change) - confirmed by
+    rendering it (see PROJECT_BRIEF). Compressing each dead gap down to
+    near-zero width on the axis both removes that misleading diagonal
+    (it collapses to a near-vertical jump instead) and stops the chart
+    wasting most of its width on dead time between game windows.
+
+    BUG fixed 2026-09-21 (user: "The chart lines should all be connected
+    even if snapshots every so often"): this used to break on ANY gap
+    over a fixed 25-minute threshold, calibrated back when the only
+    collector was a reliable-looking 10-minute cron. Once
+    capture_snapshot_if_due() started letting real (irregular) page
+    visits trigger captures too, a perfectly normal gap between two
+    visits DURING THE SAME live window (an hour between Sunday
+    check-ins, say) routinely exceeded 25 minutes and got wrongly
+    treated as dead time - fragmenting each team's line into disconnected
+    islands of isolated dots instead of one connected line per window,
+    exactly what the screenshot showed. A fixed minute threshold can't
+    tell "still the same live window, just sparsely sampled" apart from
+    "genuinely between windows" once sampling isn't on a reliable clock.
+    Grouping by actual PACIFIC CALENDAR DATE instead does: only the gap
+    BETWEEN two different days' snapshots is dead time, so every gap
+    within a single day's own data stays connected no matter how large,
+    while Thu->Sun and Sun->Mon jumps still compress correctly. Safe
+    because no LIVE_GAME_WINDOWS_BY_WEEKDAY window crosses midnight
+    Pacific."""
     timestamps = sorted({s["timestamp"] for s in snapshots if s.get("timestamp")})
     if len(timestamps) < 2:
         return []
     parsed = [datetime.datetime.fromisoformat(t) for t in timestamps]
-    threshold = datetime.timedelta(minutes=DEAD_TIME_GAP_THRESHOLD_MINUTES)
     return [
         {"bounds": [prev.isoformat(), cur.isoformat()]}
         for prev, cur in zip(parsed, parsed[1:])
-        if cur - prev > threshold
+        if prev.astimezone(PACIFIC).date() != cur.astimezone(PACIFIC).date()
     ]
 
 

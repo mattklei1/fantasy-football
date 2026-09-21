@@ -12,7 +12,6 @@ import pytest
 
 import fantasy_football.matchup_snapshots as ms
 from fantasy_football.matchup_snapshots import (
-    DEAD_TIME_GAP_THRESHOLD_MINUTES,
     _dead_time_rangebreaks,
     benchmark_ticks,
     biggest_mover,
@@ -138,15 +137,28 @@ def test_rangebreak_inserted_for_a_real_dead_time_gap():
     assert breaks == [{"bounds": ["2026-09-17T23:00:00+00:00", "2026-09-20T17:00:00+00:00"]}]
 
 
-def test_rangebreak_threshold_boundary():
-    import datetime
+def test_no_rangebreak_for_a_large_gap_within_the_same_pacific_day():
+    # BUG fixed 2026-09-21 (user: "The chart lines should all be
+    # connected even if snapshots every so often"): a wide but SAME-DAY
+    # gap (two sparse page-triggered captures hours apart during one
+    # live window) must stay connected, not get wrongly treated as dead
+    # time the way a fixed minute threshold used to.
+    snapshots = [
+        _snap("2026-09-20T17:00:00+00:00"),  # Sun 10:00am PDT
+        _snap("2026-09-20T23:30:00+00:00"),  # Sun 4:30pm PDT - same Pacific day, 6.5h later
+    ]
+    assert _dead_time_rangebreaks(snapshots) == []
 
-    start = datetime.datetime(2026, 9, 17, 20, 0, tzinfo=datetime.timezone.utc)
-    just_under = start + datetime.timedelta(minutes=DEAD_TIME_GAP_THRESHOLD_MINUTES - 1)
-    just_over = start + datetime.timedelta(minutes=DEAD_TIME_GAP_THRESHOLD_MINUTES + 1)
 
-    assert _dead_time_rangebreaks([_snap(start.isoformat()), _snap(just_under.isoformat())]) == []
-    assert _dead_time_rangebreaks([_snap(start.isoformat()), _snap(just_over.isoformat())]) != []
+def test_rangebreak_uses_pacific_calendar_day_not_utc_day():
+    # 2026-09-18T01:34 UTC is still 2026-09-17 in Pacific (6:34pm PDT) -
+    # must NOT be treated as a day boundary just because the UTC date
+    # ticked over.
+    snapshots = [
+        _snap("2026-09-17T23:47:00+00:00"),  # Thu 4:47pm PDT
+        _snap("2026-09-18T01:34:00+00:00"),  # Thu 6:34pm PDT (still Thursday Pacific)
+    ]
+    assert _dead_time_rangebreaks(snapshots) == []
 
 
 def test_multiple_dead_time_gaps_each_get_their_own_rangebreak():
