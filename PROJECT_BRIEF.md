@@ -5191,3 +5191,44 @@ score alone would otherwise collapse everyone to the flat league
 average; a 2-week scenario proving week 2 correctly recomputes from the
 running average seeded by week 1's override-driven outcome, rather than
 staying pinned at the override's raw value).
+
+**Immediate follow-up, same session: calibrated the current-week signal
+down to a slight nudge, and fixed substitutions.** User: "I still want
+roster strength to be the primary indicator. I trust the fantasypros
+rankings a lot. This weeks projected score should only slightly impact
+playoff odds. If possible, factor in substitutions too - people on bye
+or who are injured (0 point projections) would be swapped in an ideal
+lineup." Two changes to the feature just shipped:
+1. **Weight**: `simulate_season()`'s current-week signal (renamed
+   `current_week_live_projection`, was `current_week_expected_override`)
+   no longer REPLACES week 1's expected score - it now NUDGES the
+   normal Roster-Strength-driven estimate by a new `CURRENT_WEEK_LIVE_
+   WEIGHT = 0.15` (deliberately small, deliberately NOT an RMSE-
+   calibrated constant like SHRINKAGE_GAMES since this signal has no
+   historical backtest to calibrate against - a clearly-documented,
+   easily-adjustable fraction instead). `week_expected = 0.85 * normal_
+   estimate + 0.15 * live_projection`.
+2. **Substitutions**: swapped the data source from `get_live_box_scores`
+   (a live ESPN call using each team's ACTUAL, possibly-suboptimal set
+   lineup - a bye/injured starter scoring a real 0) to `metric_loaders.
+   load_optimal_lineup_points()` - the SAME optimal-lineup-respecting-
+   eligible-slots calculation Roster Strength itself already uses as its
+   points scale (roster_strength_to_points()). This correctly swaps a
+   0-projection starter for their best real bench replacement, and as a
+   bonus removes the live ESPN call entirely - `get_playoff_simulation()`
+   is now fully DB-driven again for this signal too, consistent with
+   playoff_sim.py's "pure/DB-free" design.
+Live-verified against the real primary league (week 3): `load_optimal_
+lineup_points()` correctly ranked Jacob Batters highest (145.86,
+substitutions applied) matching its Roster-Strength ranking, and the
+resulting championship odds (20.4%/18.9%/15.0%/...) landed close to the
+Roster-Strength-only baseline (21.1%/18.0%/15.4%/...) - a real but
+genuinely slight shift, not the larger swings the full-override version
+produced. 427/427 tests passing (rewrote the two current-week tests for
+the new param name/weighted-blend semantics instead of a full
+replacement; added a new regression test mirroring the real live
+12-team/week-3/real-Roster-Strength-spread scenario, asserting even a
+maximally extreme single-week live projection - several studs on bye,
+near replacement-level - drops the league's real favorite's title odds
+by less than 5 percentage points, proving Roster Strength still
+dominates).

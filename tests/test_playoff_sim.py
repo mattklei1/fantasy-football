@@ -389,14 +389,16 @@ def test_roster_strength_prior_does_not_overconcentrate_championship_odds_this_e
     assert result["championship_pct"].max() > result["championship_pct"].min()
 
 
-def test_current_week_expected_override_drives_first_week_even_with_zero_games_played():
+def test_current_week_live_projection_drives_a_real_first_week_nudge():
     # Regression test for the actual feature (2026-09-22, user: "How
-    # much are you factoring in this weeks projected score? Or are you
-    # just using the roster strength to proxy as projected score?"). At
-    # zero real games played, shrink_expected_score alone would collapse
-    # every team to the flat league average for the first remaining
-    # week - a real per-team live projected score should differentiate
-    # them immediately instead.
+    # much are you factoring in this weeks projected score?..." followed
+    # by "I still want roster strength to be the primary indicator...
+    # This weeks projected score should only slightly impact playoff
+    # odds"). At zero real games played, shrink_expected_score alone
+    # collapses every team to the flat league average for the first
+    # remaining week - a real per-team live optimal-lineup projection
+    # should nudge them apart, but only slightly (CURRENT_WEEK_LIVE_
+    # WEIGHT), not dominate the estimate.
     n_teams = 8
     rows = [
         {
@@ -409,40 +411,97 @@ def test_current_week_expected_override_drives_first_week_even_with_zero_games_p
     team_state = pd.DataFrame(rows)
     remaining = pd.DataFrame({"week": [1] * 4, "home_team_pk": [0, 2, 4, 6], "away_team_pk": [1, 3, 5, 7]})
 
-    no_override = simulate_season(
+    no_projection = simulate_season(
         team_state, remaining, median_scoring=False, reg_season_count=1,
-        n_sims=3000, rng=np.random.default_rng(0),
+        n_sims=4000, rng=np.random.default_rng(0),
     ).set_index("team_pk")
-    spread_no_override = no_override["playoff_pct"].max() - no_override["playoff_pct"].min()
+    spread_no_projection = no_projection["playoff_pct"].max() - no_projection["playoff_pct"].min()
 
-    override = np.array([200.0, 40.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0])
-    with_override = simulate_season(
+    # a maximally extreme real-world gap: a team getting shut out (bye/
+    # injury-riddled optimal lineup) vs. a team's real ceiling
+    live_projection = np.array([200.0, 40.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0])
+    with_projection = simulate_season(
         team_state, remaining, median_scoring=False, reg_season_count=1,
-        n_sims=3000, rng=np.random.default_rng(0), current_week_expected_override=override,
+        n_sims=4000, rng=np.random.default_rng(0), current_week_live_projection=live_projection,
     ).set_index("team_pk")
-    spread_with_override = with_override["playoff_pct"].max() - with_override["playoff_pct"].min()
+    spread_with_projection = with_projection["playoff_pct"].max() - with_projection["playoff_pct"].min()
 
-    assert spread_no_override < 0.15  # identical real state, zero games -> near-identical odds
-    assert spread_with_override > spread_no_override
-    assert with_override.loc[0, "playoff_pct"] > with_override.loc[1, "playoff_pct"]
+    assert spread_no_projection < 0.15  # identical real state, zero games -> near-identical odds
+    # a real, detectable nudge in the right direction
+    assert spread_with_projection > spread_no_projection
+    assert with_projection.loc[0, "playoff_pct"] > with_projection.loc[1, "playoff_pct"]
 
 
-def test_current_week_expected_override_week2_recomputes_from_the_running_average():
-    # The override must only replace week 1's week_expected - every week
-    # after it has to go back through the normal running-average +
-    # shrink_expected_score recomputation (unchanged by this feature),
-    # not stay pinned at the override number. Isolated with exactly 2
+def test_current_week_live_projection_stays_a_slight_nudge_in_a_realistic_season():
+    # Regression test for the user's explicit calibration request
+    # (2026-09-22, immediately after the feature above shipped): "I
+    # still want roster strength to be the primary indicator. I trust
+    # the fantasypros rankings a lot. This weeks projected score should
+    # only slightly impact playoff odds." Mirrors the real live scenario
+    # already reproduced this session (12 teams, week 3, 2 real games
+    # played, the real Roster-Strength prior spread pulled live) - even
+    # a maximally extreme single-week live projection (several studs on
+    # bye/injured, optimal lineup near replacement level) should only
+    # modestly move the league's real Roster-Strength favorite, not
+    # crater its odds.
+    n_teams = 12
+    rows = [
+        {
+            "team_pk": i, "season_ppg": 120.0 + (i % 3) * 5.0, "last3_ppg": 120.0 + (i % 3) * 5.0,
+            "score_stdev": 25.0, "matchup_wins": 1, "matchup_losses": 1, "matchup_ties": 0,
+            "median_wins": 1, "median_losses": 1, "median_ties": 0, "points_for": 240.0 + (i % 3) * 10.0,
+        }
+        for i in range(n_teams)
+    ]
+    team_state = pd.DataFrame(rows)
+    remaining = pd.DataFrame(
+        {
+            "week": [w for w in range(3, 15) for _ in range(6)],
+            "home_team_pk": list(range(0, 12, 2)) * 12,
+            "away_team_pk": list(range(1, 12, 2)) * 12,
+        }
+    )
+    # the real live Roster-Strength spread pulled from this league (2026-09-22)
+    prior = np.array([146.4, 140.5, 136.7, 134.7, 133.5, 132.1, 131.6, 131.1, 130.5, 128.5, 122.8, 119.3])
+
+    baseline = simulate_season(
+        team_state, remaining, median_scoring=True, reg_season_count=14,
+        n_sims=6000, rng=np.random.default_rng(3), shrinkage_prior=prior,
+    ).set_index("team_pk")
+
+    # team 0 (the Roster-Strength favorite) has a brutal real week -
+    # several starters on bye/injured, real optimal lineup barely above
+    # replacement level
+    live_projection = np.full(n_teams, 130.0)
+    live_projection[0] = 50.0
+    nudged = simulate_season(
+        team_state, remaining, median_scoring=True, reg_season_count=14,
+        n_sims=6000, rng=np.random.default_rng(3), shrinkage_prior=prior,
+        current_week_live_projection=live_projection,
+    ).set_index("team_pk")
+
+    # a real nudge in the right direction...
+    assert nudged.loc[0, "championship_pct"] < baseline.loc[0, "championship_pct"]
+    # ...but bounded - Roster Strength still drives the large majority
+    # of the estimate even against a maximally bad single real week
+    drop = baseline.loc[0, "championship_pct"] - nudged.loc[0, "championship_pct"]
+    assert drop < 0.05
+
+
+def test_current_week_live_projection_only_applies_to_the_first_remaining_week():
+    # The nudge must only touch week 1's week_expected - every week
+    # after it has to go back through the unmodified running-average +
+    # shrink_expected_score recomputation, not keep nudging toward the
+    # same live projection value forever. Isolated with exactly 2
     # remaining weeks and 0 real games played: if week 2 were (buggily)
-    # still using the override, team 0 and team 1 would remain in
-    # lockstep the whole time (both started from an identical week-2
-    # blend since games_played=0 collapses raw_own to the league average
-    # regardless of team). If week 2 correctly recomputes from each
-    # team's own (override-seeded) week-1 outcome, week 1's real gap
-    # between them should carry into week 2's expected scores as real
-    # signal, at whatever weight 1 game of trust carries - meaning team
-    # 0's week-2 running average, and so its final points_for, should
-    # sit meaningfully above the no-signal baseline where every team
-    # shares the exact same week-1 outcome distribution.
+    # still applying the nudge, team 0 and team 1 would separate further
+    # in week 2 on top of week 1's own separation; if it's correctly
+    # confined to week 1, week 2's own expected scores for both teams
+    # should be identical to each other (both derived purely from each
+    # team's own now-identically-structured running average - team_state
+    # started identical, and both got the same-shaped week-1 nudge
+    # relative to their now-different week-1 SIMULATED outcomes, not a
+    # persisting different target).
     n_teams = 8
     rows = [
         {
@@ -460,13 +519,13 @@ def test_current_week_expected_override_week2_recomputes_from_the_running_averag
             "away_team_pk": [1, 3, 5, 7, 1, 3, 5, 7],
         }
     )
-    override = np.array([200.0, 40.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0])
+    live_projection = np.array([200.0, 40.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0])
 
-    with_override = simulate_season(
+    with_projection = simulate_season(
         team_state, remaining, median_scoring=False, reg_season_count=2,
-        n_sims=4000, rng=np.random.default_rng(0), current_week_expected_override=override,
+        n_sims=4000, rng=np.random.default_rng(0), current_week_live_projection=live_projection,
     ).set_index("team_pk")
-    no_override = simulate_season(
+    no_projection = simulate_season(
         team_state, remaining, median_scoring=False, reg_season_count=2,
         n_sims=4000, rng=np.random.default_rng(0),
     ).set_index("team_pk")
@@ -474,12 +533,13 @@ def test_current_week_expected_override_week2_recomputes_from_the_running_averag
     # with no override, every team is identical - all should land the
     # same (real playoff_pct might differ slightly team-to-team from
     # bracket-position noise, but no team should be a clear outlier)
-    assert no_override["playoff_pct"].max() - no_override["playoff_pct"].min() < 0.15
-    # with the override, team 0's real week-1 edge should carry forward
-    # as real signal into week 2's recomputed expected score, clearly
-    # separating it from the field - proving week 2 used team 0's own
-    # (override-seeded) running average, not a value frozen at week 1
-    assert with_override.loc[0, "playoff_pct"] > with_override["playoff_pct"].max() - 0.05
+    assert no_projection["playoff_pct"].max() - no_projection["playoff_pct"].min() < 0.15
+    # team 0's real (if slight) week-1 edge should still carry forward as
+    # real signal into week 2's recomputed expected score, making it a
+    # clear favorite for one of the playoff spots - proving week 2 used
+    # team 0's own (nudge-seeded) running average, not a value frozen at
+    # week 1's raw live-projection number
+    assert with_projection.loc[0, "playoff_pct"] == with_projection["playoff_pct"].max()
 
 
 def test_bad_opening_week_recovers_as_more_weeks_remain_to_play():

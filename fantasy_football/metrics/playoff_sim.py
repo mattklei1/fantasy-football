@@ -75,6 +75,19 @@ DEFAULT_N_SIMS = 10_000
 SUPPORTED_PLAYOFF_TEAM_COUNT = 6
 SHRINKAGE_GAMES = 8  # see module docstring's "Early-season shrinkage" - calibrated via RMSE sweep, not guessed
 
+# How much the current week's real live optimal-lineup projection
+# nudges that one week's expected score, on top of the normal Roster-
+# Strength-driven estimate - see simulate_season()'s current_week_live_
+# projection docstring. User, 2026-09-22: "I still want roster strength
+# to be the primary indicator. I trust the fantasypros rankings a lot.
+# This weeks projected score should only slightly impact playoff odds" -
+# deliberately small and NOT the RMSE-calibrated SHRINKAGE_GAMES-style
+# constant elsewhere in this module, since there's no real historical
+# backtest to calibrate a "correct" value against (this signal didn't
+# exist before 2026-09-22) - a small, clearly-documented, easily-
+# adjustable fraction instead of a false-precision derived number.
+CURRENT_WEEK_LIVE_WEIGHT = 0.15
+
 TEAM_STATE_COLUMNS = [
     "team_pk", "season_ppg", "last3_ppg", "score_stdev",
     "matchup_wins", "matchup_losses", "matchup_ties",
@@ -191,7 +204,7 @@ def simulate_season(
     rng: np.random.Generator | None = None,
     shrinkage_games_played: np.ndarray | None = None,
     shrinkage_prior: np.ndarray | None = None,
-    current_week_expected_override: np.ndarray | None = None,
+    current_week_live_projection: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """team_state columns: see TEAM_STATE_COLUMNS - one row per team, all
     REAL cumulative values as of right now (season_ppg/last3_ppg/points_for/
@@ -236,27 +249,41 @@ def simulate_season(
     season before use (see dampen_prior_spread()) - fixes a real over-
     concentration bug this otherwise caused (2026-09-22).
 
-    current_week_expected_override: optional per-team real LIVE
-    projected score (ESPN's actual-set-lineup projection for the
-    CURRENT in-progress week, e.g. dashboard_data.get_live_box_scores())
-    - same shape as shrinkage_prior. Added 2026-09-22 (user: "How much
-    are you factoring in this weeks projected score? Or are you just
-    using the roster strength to proxy as projected score?" - the honest
-    answer before this was "roster strength, diluted": the in-progress
-    week was simulated through the exact same season-average-blended-
-    with-a-dampened-Roster-Strength-prior mechanism as a distant future
-    week, even though a real, precise, matchup-specific ESPN projection
-    for THIS week already exists elsewhere in this app (the Matchups
-    page's own live win probability). When given, this REPLACES
-    week_expected for the first remaining week only (a real number, not
-    a blend) - every week after that still goes through the normal
-    shrink_expected_score()/dampened-prior mechanism, since no live
-    per-player projection exists yet for a week ESPN hasn't opened. Not
-    blending in each team's already-scored partial points this week
-    remains a deliberate, separate v1 simplification (unchanged) -
-    ESPN's own projected total already folds in real in-game production
-    once a week goes live, so this is still the best single real number
-    available, just not decomposed into "already scored" + "remaining."
+    current_week_live_projection: optional per-team OPTIMAL-lineup real
+    point projection for the CURRENT in-progress week (e.g. dashboard_
+    data's metric_loaders.load_optimal_lineup_points() - the same
+    optimal-lineup-respecting-eligible-slots real ESPN per-player
+    projection Roster Strength itself uses as its points scale, see
+    roster_strength_to_points()) - same shape as shrinkage_prior. Added
+    2026-09-22 (user: "How much are you factoring in this weeks
+    projected score? Or are you just using the roster strength to proxy
+    as projected score?" - the honest answer before this was "roster
+    strength, diluted": the in-progress week was simulated through the
+    exact same season-average-blended-with-a-dampened-Roster-Strength-
+    prior mechanism as a distant future week).
+
+    Deliberately a MINOR blend, not a replacement (same user, immediate
+    follow-up: "I still want roster strength to be the primary
+    indicator. I trust the fantasypros rankings a lot. This weeks
+    projected score should only slightly impact playoff odds") - see
+    CURRENT_WEEK_LIVE_WEIGHT. When given, the first remaining week's
+    week_expected is (1-CURRENT_WEEK_LIVE_WEIGHT) * the normal shrink_
+    expected_score()/dampened-Roster-Strength-prior estimate +
+    CURRENT_WEEK_LIVE_WEIGHT * this real number - Roster Strength/
+    FantasyPros still drive the large majority of even the current
+    week's estimate, this just nudges it with real, this-week-specific
+    information (an actual bye/injury already visible in this week's
+    real per-player projections) that a season-long roster-quality
+    signal structurally can't see. Every week after the first still goes
+    through the unmodified shrink_expected_score()/dampened-prior
+    mechanism, since no live per-player projection exists yet for a week
+    ESPN hasn't opened. Using the OPTIMAL lineup (not each team's actual,
+    possibly-suboptimal set lineup) means a starter on bye or injured
+    (0-point real projection) is correctly modeled as swapped for their
+    best real bench replacement, same as Roster Strength's own
+    methodology - not silently counted as a zero. Not blending in each
+    team's already-scored partial points this week remains a deliberate,
+    separate v1 simplification (unchanged).
 
     Returns team_pk, playoff_pct, bye_pct, seed1_pct, championship_pct.
     """
@@ -349,15 +376,15 @@ def simulate_season(
     # regular-season games remain (updated each iteration) and when none
     # do (e.g. simulating the playoffs alone after the real regular
     # season already finished).
-    if current_week_expected_override is not None:
-        # A real live number for the FIRST remaining (in-progress) week
-        # only - see this function's docstring - replacing the blended
-        # season-average/dampened-Roster-Strength-prior estimate that
-        # would otherwise apply here exactly as it does to every later,
-        # genuinely-future week.
-        week_expected = np.tile(np.asarray(current_week_expected_override, dtype=float)[:, None], n_sims)
-    else:
-        week_expected = shrink_expected_score(raw_expected[:, None], sim_games_played, prior)
+    week_expected = shrink_expected_score(raw_expected[:, None], sim_games_played, prior)
+    if current_week_live_projection is not None:
+        # A small NUDGE toward a real live number for the FIRST
+        # remaining (in-progress) week only - see this function's
+        # docstring. Roster Strength/the normal blended estimate above
+        # still drives the large majority of week 1's own expected
+        # score; every later, genuinely-future week is untouched.
+        live = np.asarray(current_week_live_projection, dtype=float)[:, None]
+        week_expected = (1 - CURRENT_WEEK_LIVE_WEIGHT) * week_expected + CURRENT_WEEK_LIVE_WEIGHT * live
     first_remaining_week = True
 
     for week in sorted(remaining_matchups["week"].unique()):
