@@ -115,6 +115,52 @@ def shrink_expected_score(
     return weight * raw_expected_score + (1 - weight) * prior_score
 
 
+def dampen_prior_spread(
+    prior: np.ndarray, games_played: np.ndarray, shrinkage_games: float = SHRINKAGE_GAMES
+) -> np.ndarray:
+    """Shrinks a TEAM-DIFFERENTIATED prior (e.g. Roster Strength in
+    points) toward the flat LEAGUE AVERAGE of that same prior, using the
+    identical games_played/(games_played+shrinkage_games) curve that
+    already governs how much a team's own raw_expected_score is trusted
+    over its prior in shrink_expected_score(). At games_played=0 this
+    returns the flat average for every team (zero spread); it converges
+    to the full, undampened prior as games_played grows.
+
+    BUG fixed 2026-09-22 (user: "I don't think there is enough
+    variability factored in week to week. No one should have 30+%
+    chance at the championship this early on"). Root cause: SHRINKAGE_
+    GAMES=8 was calibrated (RMSE sweep, see module docstring) for
+    blending a team's own raw number toward a FLAT prior - back then the
+    prior was identical for every team, so the weight given to "prior"
+    never created any SPREAD between teams; only each team's own
+    (shrunk) raw number did. Once simulate_season() started accepting a
+    TEAM-DIFFERENTIATED shrinkage_prior (Roster Strength in points,
+    2026-09-16), that same 8-game curve started controlling something it
+    was never calibrated for: how much of the PRIOR's own team-to-team
+    spread bleeds into the simulation. At 2 real games played, the
+    curve's ~80% weight on "prior" was injecting ~80% of Roster
+    Strength's full spread into every one of the 12 remaining simulated
+    weeks - reproduced live: the real top team's championship_pct was
+    33% with the Roster Strength prior active vs. 19% for the exact same
+    real data run through the OLD flat-average-only prior (same rng
+    seed) - a ~1.8x inflation directly attributable to this gap, not
+    real signal. Dampening the prior's OWN spread on this same curve
+    means "how confident are we in ANY differentiating signal" (a
+    team's own results AND Roster Strength's implied gap) grows together
+    from real evidence, rather than the prior's spread landing at nearly
+    full strength from the very first simulated week. Deliberately reuses
+    `games_played` (not a separate ramp constant) so playoff_odds_
+    snapshots.compute_week0_snapshot_rows()'s Week-0 override
+    (WEEK0_TRUST_GAMES=45, simulating BEFORE any real games exist)
+    keeps working exactly as designed - Week 0 explicitly wants full
+    trust in the Roster-Strength-implied preseason spread, and this
+    dampens on the SAME overridden games_played that already gates the
+    raw_expected_score blend for that case."""
+    league_avg = float(np.mean(prior))
+    weight = games_played / (games_played + shrinkage_games)
+    return league_avg + weight * (prior - league_avg)
+
+
 def rank_teams(team_ids: list, win_pct: dict, points_for: dict) -> list:
     """Seed order (best to worst) - win pct desc, then total points
     scored desc (this league's real playoff_seed_tie_rule)."""
@@ -184,7 +230,10 @@ def simulate_season(
     future weeks though. A higher roster strength for future matchups
     would indicate a higher % chance of winning that matchup." Must be
     the same shape as shrinkage_games_played/team_state (one value per
-    team_pk, in team_state's row order) if given.
+    team_pk, in team_state's row order) if given. Its team-to-team
+    SPREAD is itself dampened toward the flat average early in the
+    season before use (see dampen_prior_spread()) - fixes a real over-
+    concentration bug this otherwise caused (2026-09-22).
 
     Returns team_pk, playoff_pct, bye_pct, seed1_pct, championship_pct.
     """
@@ -212,9 +261,12 @@ def simulate_season(
     else:
         games_played = real_games_played
     if shrinkage_prior is not None:
-        # reshaped to (n_teams, 1) so it broadcasts against the (n_teams,
-        # n_sims) arrays the per-week shrinkage below now uses
-        prior = np.asarray(shrinkage_prior, dtype=float)[:, None]
+        # Dampened toward the flat league average early in the season
+        # (see dampen_prior_spread's docstring) before reshaping to
+        # (n_teams, 1) so it broadcasts against the (n_teams, n_sims)
+        # arrays the per-week shrinkage below now uses.
+        dampened_prior = dampen_prior_spread(np.asarray(shrinkage_prior, dtype=float), games_played)
+        prior = dampened_prior[:, None]
     else:
         prior = float(team_state["season_ppg"].mean())
     stdev = team_state["score_stdev"].to_numpy()

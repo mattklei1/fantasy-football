@@ -13,6 +13,7 @@ from fantasy_football.metrics.playoff_sim import (
     SHRINKAGE_GAMES,
     SUPPORTED_PLAYOFF_TEAM_COUNT,
     compute_score_stdev,
+    dampen_prior_spread,
     rank_teams,
     shrink_expected_score,
     simulate_bracket_once,
@@ -65,6 +66,35 @@ def test_shrink_expected_score_converges_toward_raw_as_games_increase():
     assert mid == pytest.approx(150.0)
     # with a large sample the team's own number should dominate
     assert late > 190.0
+
+
+def test_dampen_prior_spread_at_zero_games_collapses_to_flat_average():
+    prior = np.array([80.0, 100.0, 200.0])
+    result = dampen_prior_spread(prior, np.array([0.0, 0.0, 0.0]))
+    league_avg = prior.mean()
+    assert result == pytest.approx([league_avg, league_avg, league_avg])
+
+
+def test_dampen_prior_spread_converges_to_raw_prior_as_games_increase():
+    prior = np.array([80.0, 200.0])
+    early = dampen_prior_spread(prior, np.array([1.0, 1.0]))
+    mid = dampen_prior_spread(prior, np.array([SHRINKAGE_GAMES, SHRINKAGE_GAMES]))
+    late = dampen_prior_spread(prior, np.array([200.0, 200.0]))
+    league_avg = prior.mean()
+    # each team's own spread from the league average grows monotonically
+    # as more real games accumulate
+    assert abs(early[1] - league_avg) < abs(mid[1] - league_avg) < abs(late[1] - league_avg)
+    # at games_played == shrinkage_games, weight is exactly 0.5
+    assert mid[1] == pytest.approx((league_avg + 200.0) / 2)
+    # with a large sample the raw prior should nearly fully come through
+    assert late[1] > 195.0
+
+
+def test_dampen_prior_spread_preserves_relative_order():
+    # dampening SHRINKS the gap, it must never flip who's ahead
+    prior = np.array([80.0, 120.0, 200.0])
+    result = dampen_prior_spread(prior, np.array([2.0, 2.0, 2.0]))
+    assert result[0] < result[1] < result[2]
 
 
 def test_rank_teams_breaks_ties_by_points_for():
@@ -313,6 +343,50 @@ def test_shrinkage_prior_override_lets_a_team_specific_prior_drive_future_weeks(
     assert spread_with_prior > spread_no_prior
     # team 7's much higher prior should win out over team 0's much lower one
     assert with_prior.loc[7, "playoff_pct"] > with_prior.loc[0, "playoff_pct"]
+
+
+def test_roster_strength_prior_does_not_overconcentrate_championship_odds_this_early():
+    # Regression test for a real bug (2026-09-22, user: "I don't think
+    # there is enough variability factored in week to week. No one
+    # should have 30+% chance at the championship this early on").
+    # Reproduces the actual live shape that triggered it: 12 teams, only
+    # 2 real games played (this league's real week-3 state), a Roster
+    # Strength shrinkage_prior with a real, moderate spread (~119-146,
+    # the real live values pulled from this league's own data) - before
+    # the fix, the top team's championship_pct came back at 33% (vs 19%
+    # for the exact same real data run through the OLD flat-average-only
+    # prior at the same rng seed) because the same games_played=2/(2+8)
+    # weight that lightly trusts a team's OWN 2-game sample was ALSO
+    # putting ~80% weight on the prior's full, undampened team-to-team
+    # spread. dampen_prior_spread() now shrinks that spread the same way.
+    n_teams = 12
+    rows = [
+        {
+            "team_pk": i, "season_ppg": 120.0 + (i % 3) * 5.0, "last3_ppg": 120.0 + (i % 3) * 5.0,
+            "score_stdev": 25.0, "matchup_wins": 1, "matchup_losses": 1, "matchup_ties": 0,
+            "median_wins": 1, "median_losses": 1, "median_ties": 0, "points_for": 240.0 + (i % 3) * 10.0,
+        }
+        for i in range(n_teams)
+    ]
+    team_state = pd.DataFrame(rows)
+    remaining = pd.DataFrame(
+        {
+            "week": [w for w in range(3, 15) for _ in range(6)],
+            "home_team_pk": list(range(0, 12, 2)) * 12,
+            "away_team_pk": list(range(1, 12, 2)) * 12,
+        }
+    )
+    # the real live spread pulled from this league's Roster Strength (2026-09-22)
+    prior = np.array([146.4, 140.5, 136.7, 134.7, 133.5, 132.1, 131.6, 131.1, 130.5, 128.5, 122.8, 119.3])
+
+    result = simulate_season(
+        team_state, remaining, median_scoring=True, reg_season_count=14,
+        n_sims=4000, rng=np.random.default_rng(3), shrinkage_prior=prior,
+    ).set_index("team_pk")
+
+    assert result["championship_pct"].max() < 0.25  # well under the real pre-fix 33%
+    # the fix dampens the spread, it must not erase it entirely
+    assert result["championship_pct"].max() > result["championship_pct"].min()
 
 
 def test_bad_opening_week_recovers_as_more_weeks_remain_to_play():

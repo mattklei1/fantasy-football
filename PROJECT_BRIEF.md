@@ -5094,3 +5094,53 @@ no rangebreak; a UTC-day-boundary-crossing timestamp that's still the
 same Pacific day - 01:34 UTC being 6:34pm PDT the day before - also
 produces no rangebreak, guarding against a naive UTC-date comparison
 reintroducing the same class of bug).
+
+**Bug: Playoff Odds championship_pct over-concentrated this early in
+the season (2026-09-22).** User: "how exactly are these simulations run?
+I don't think there is enough variability factored in week to week. No
+one should have 30+% chance at the championship this early on." Ran the
+real live simulation against the real primary-league DB (week 3, only 2
+real games played per team) to check: confirmed - the top team (Jacob
+Batters) showed **33.4% championship odds** off a real 1-1 record.
+Isolated the cause by re-running the SAME real data with `shrinkage_
+prior=None` (the old flat-average-only behavior, same rng seed): top
+team dropped to 18.9%, with a much more gradual spread across the field
+- proving the Roster-Strength shrinkage_prior (added 2026-09-16) was
+responsible for roughly DOUBLING the leader's title odds this early.
+
+Root cause: `SHRINKAGE_GAMES=8`'s games_played/(games_played+8) curve
+was RMSE-calibrated (see module docstring) for blending a team's own
+raw number toward a FLAT prior - back then "prior" was identical for
+every team, so how much weight it got never created any SPREAD between
+teams. Once shrinkage_prior started accepting a TEAM-DIFFERENTIATED
+Roster-Strength-in-points value, that same curve started controlling
+something it was never calibrated for: how much of the PRIOR's OWN
+team-to-team spread bleeds into the sim. At 2 real games, ~80% weight
+landed on "prior" - injecting ~80% of Roster Strength's full spread
+into all 12 remaining simulated weeks well before real results could
+independently justify it.
+
+Fix: new `dampen_prior_spread()` in metrics/playoff_sim.py - shrinks
+the PRIOR's spread toward the flat league average using the SAME
+games_played/(games_played+SHRINKAGE_GAMES) curve (reused, not a new
+unvalidated constant), applied ONCE before the per-week loop using
+today's real (or Week-0-overridden) games_played - not re-ramped as a
+Monte Carlo trial's hypothetical future weeks play out, since Roster
+Strength's reliability as a predictor is a fact about today's real
+evidence, not something that grows just because a trial is imagining
+week 10. This deliberately reuses the games_played override path so
+playoff_odds_snapshots' Week-0 snapshot (which intentionally treats 0
+real games as 45 games of trust specifically to get FULL confidence in
+the Roster-Strength-implied preseason spread) keeps working exactly as
+designed - confirmed via the existing `test_shrinkage_games_played_
+override_does_not_corrupt_the_running_average` test, which still
+passes unmodified. Re-ran the real live week-3 data through the fix:
+top team's championship_pct dropped from 33.4% to 21.1%, and the
+spread across the top 5 contenders now reads as a gradual staircase (21.1%,
+18.0%, 15.4%, 12.3%, 9.4%) instead of one clear outlier. 424/424 tests
+passing (3 new pure tests for `dampen_prior_spread` itself - zero-games
+collapses to flat average, converges to the raw prior as games
+accumulate, never flips relative team order; 1 new regression test
+reproducing the real live shape - 12 teams, 2 games played, the real
+~119-146 Roster-Strength prior spread pulled live - asserting max
+championship_pct stays under 25%, well below the real pre-fix 33%).
