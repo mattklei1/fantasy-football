@@ -374,12 +374,41 @@ def get_playoff_simulation(season: int) -> pd.DataFrame:
             if not reindexed.isna().any():
                 shrinkage_prior = reindexed.to_numpy()
 
+    # Real live per-team projected score for the CURRENT (in-progress)
+    # week only, replacing the blended season-average/Roster-Strength
+    # estimate for that one week - the same real ESPN actual-set-lineup
+    # projection the Matchups page's own live win probability already
+    # uses (get_live_box_scores) - see simulate_season()'s current_week_
+    # expected_override docstring (user, 2026-09-22: "How much are you
+    # factoring in this weeks projected score? Or are you just using the
+    # roster strength to proxy as projected score?"). Only applied when
+    # the current week is genuinely still the first REMAINING one (skips
+    # cleanly on any mismatch, e.g. metrics/ingest hasn't caught up to a
+    # just-finished week yet) and degrades to None (the normal blended
+    # estimate) on any live-ESPN hiccup - never worth crashing the page
+    # over, same pattern as shrinkage_prior above.
+    current_week_expected_override = None
+    if current_week and not remaining_matchups.empty and remaining_matchups["week"].min() == current_week:
+        try:
+            live_df = get_live_box_scores(season, current_week)
+        except Exception:  # noqa: BLE001
+            live_df = pd.DataFrame()
+        if not live_df.empty:
+            projected_by_team: dict[int, float] = {}
+            for r in live_df.itertuples():
+                projected_by_team[r.home_team_pk] = r.home_projected
+                projected_by_team[r.away_team_pk] = r.away_projected
+            override_series = team_state["team_pk"].map(projected_by_team)
+            if not override_series.isna().any():
+                current_week_expected_override = override_series.to_numpy()
+
     result = simulate_season(
         team_state,
         remaining_matchups,
         median_scoring=bool(meta.get("median_scoring")),
         reg_season_count=meta["reg_season_count"],
         shrinkage_prior=shrinkage_prior,
+        current_week_expected_override=current_week_expected_override,
     )
 
     teams_query = f"""

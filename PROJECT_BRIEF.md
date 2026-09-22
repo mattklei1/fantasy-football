@@ -5144,3 +5144,50 @@ accumulate, never flips relative team order; 1 new regression test
 reproducing the real live shape - 12 teams, 2 games played, the real
 ~119-146 Roster-Strength prior spread pulled live - asserting max
 championship_pct stays under 25%, well below the real pre-fix 33%).
+
+**Follow-up same session: the CURRENT week wasn't using its own real
+live projection at all.** User: "How much are you factoring in this
+weeks projected score? Or are you just using the roster strength to
+proxy as projected score?" Read through the actual mechanism to answer
+precisely: the honest answer was "roster strength, diluted" - the
+in-progress current week was simulated through the EXACT SAME season-
+average-blended-with-a-dampened-Roster-Strength-prior mechanism as a
+distant future week (already documented as "a deliberate v1
+simplification" in simulate_season()'s own docstring), even though a
+real, precise, matchup-specific ESPN projection for THIS week already
+exists elsewhere in this app - the Matchups page's own live win
+probability (dashboard_data.get_live_box_scores(), a live ESPN call).
+Roster Strength itself is only 1/3 "this week's ESPN weekly projection"
+signal (SIGNAL_WEIGHTS in roster_strength.py: weekly_projection=20/60,
+fantasypros_ros=40/60) - the rest is FantasyPros ROS rank, a genuinely
+different (rest-of-season, not this-week-specific) signal - and even
+that 1/3 only entered the sim after being diluted twice (the overall
+raw-vs-prior blend weight, then the new prior-spread dampening from the
+fix above).
+
+Added `simulate_season(current_week_expected_override=...)`: when given
+(one real live projected score per team), it REPLACES week_expected for
+the first remaining week only - a real number, not a blend - with every
+subsequent week still going through the normal shrink_expected_score()/
+dampened-prior mechanism exactly as before (no live per-player
+projection exists yet for a week ESPN hasn't opened). `dashboard_data.
+get_playoff_simulation()` now builds this from `get_live_box_scores()`
+the same way `shrinkage_prior` is built from Roster Strength - degrades
+to `None` (falls back to the prior blended-estimate behavior, unchanged)
+on any live-ESPN hiccup or if the current week doesn't line up cleanly
+with the first remaining matchup week, never worth crashing the page
+over. Live-verified against the real primary league (week 3, pregame):
+`get_live_box_scores` returned real per-matchup projections (e.g.
+McConkey Kong's real week-3 projection of 135.81 vs. Jacob Batters'
+132.09) that visibly shifted the odds from the Roster-Strength-only run
+- McConkey Kong's championship_pct rose to 19.4% (from 17.0%) and Jacob
+Batters' fell slightly to 20.2% (from 21.1%), correctly reflecting real,
+matchup-specific information (this week's actual set lineups, any bye/
+injury already visible in THIS week's projection) that a season-long
+roster-quality proxy structurally can't capture. 426/426 tests passing
+(2 new: the override drives real team-to-team separation in the first
+remaining week even at zero real games played, where shrink_expected_
+score alone would otherwise collapse everyone to the flat league
+average; a 2-week scenario proving week 2 correctly recomputes from the
+running average seeded by week 1's override-driven outcome, rather than
+staying pinned at the override's raw value).

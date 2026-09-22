@@ -389,6 +389,99 @@ def test_roster_strength_prior_does_not_overconcentrate_championship_odds_this_e
     assert result["championship_pct"].max() > result["championship_pct"].min()
 
 
+def test_current_week_expected_override_drives_first_week_even_with_zero_games_played():
+    # Regression test for the actual feature (2026-09-22, user: "How
+    # much are you factoring in this weeks projected score? Or are you
+    # just using the roster strength to proxy as projected score?"). At
+    # zero real games played, shrink_expected_score alone would collapse
+    # every team to the flat league average for the first remaining
+    # week - a real per-team live projected score should differentiate
+    # them immediately instead.
+    n_teams = 8
+    rows = [
+        {
+            "team_pk": i, "season_ppg": 120.0, "last3_ppg": 120.0,
+            "score_stdev": MIN_STDEV, "matchup_wins": 0, "matchup_losses": 0, "matchup_ties": 0,
+            "median_wins": 0, "median_losses": 0, "median_ties": 0, "points_for": 0.0,
+        }
+        for i in range(n_teams)
+    ]
+    team_state = pd.DataFrame(rows)
+    remaining = pd.DataFrame({"week": [1] * 4, "home_team_pk": [0, 2, 4, 6], "away_team_pk": [1, 3, 5, 7]})
+
+    no_override = simulate_season(
+        team_state, remaining, median_scoring=False, reg_season_count=1,
+        n_sims=3000, rng=np.random.default_rng(0),
+    ).set_index("team_pk")
+    spread_no_override = no_override["playoff_pct"].max() - no_override["playoff_pct"].min()
+
+    override = np.array([200.0, 40.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0])
+    with_override = simulate_season(
+        team_state, remaining, median_scoring=False, reg_season_count=1,
+        n_sims=3000, rng=np.random.default_rng(0), current_week_expected_override=override,
+    ).set_index("team_pk")
+    spread_with_override = with_override["playoff_pct"].max() - with_override["playoff_pct"].min()
+
+    assert spread_no_override < 0.15  # identical real state, zero games -> near-identical odds
+    assert spread_with_override > spread_no_override
+    assert with_override.loc[0, "playoff_pct"] > with_override.loc[1, "playoff_pct"]
+
+
+def test_current_week_expected_override_week2_recomputes_from_the_running_average():
+    # The override must only replace week 1's week_expected - every week
+    # after it has to go back through the normal running-average +
+    # shrink_expected_score recomputation (unchanged by this feature),
+    # not stay pinned at the override number. Isolated with exactly 2
+    # remaining weeks and 0 real games played: if week 2 were (buggily)
+    # still using the override, team 0 and team 1 would remain in
+    # lockstep the whole time (both started from an identical week-2
+    # blend since games_played=0 collapses raw_own to the league average
+    # regardless of team). If week 2 correctly recomputes from each
+    # team's own (override-seeded) week-1 outcome, week 1's real gap
+    # between them should carry into week 2's expected scores as real
+    # signal, at whatever weight 1 game of trust carries - meaning team
+    # 0's week-2 running average, and so its final points_for, should
+    # sit meaningfully above the no-signal baseline where every team
+    # shares the exact same week-1 outcome distribution.
+    n_teams = 8
+    rows = [
+        {
+            "team_pk": i, "season_ppg": 120.0, "last3_ppg": 120.0,
+            "score_stdev": MIN_STDEV, "matchup_wins": 0, "matchup_losses": 0, "matchup_ties": 0,
+            "median_wins": 0, "median_losses": 0, "median_ties": 0, "points_for": 0.0,
+        }
+        for i in range(n_teams)
+    ]
+    team_state = pd.DataFrame(rows)
+    remaining = pd.DataFrame(
+        {
+            "week": [1, 1, 1, 1, 2, 2, 2, 2],
+            "home_team_pk": [0, 2, 4, 6, 0, 2, 4, 6],
+            "away_team_pk": [1, 3, 5, 7, 1, 3, 5, 7],
+        }
+    )
+    override = np.array([200.0, 40.0, 120.0, 120.0, 120.0, 120.0, 120.0, 120.0])
+
+    with_override = simulate_season(
+        team_state, remaining, median_scoring=False, reg_season_count=2,
+        n_sims=4000, rng=np.random.default_rng(0), current_week_expected_override=override,
+    ).set_index("team_pk")
+    no_override = simulate_season(
+        team_state, remaining, median_scoring=False, reg_season_count=2,
+        n_sims=4000, rng=np.random.default_rng(0),
+    ).set_index("team_pk")
+
+    # with no override, every team is identical - all should land the
+    # same (real playoff_pct might differ slightly team-to-team from
+    # bracket-position noise, but no team should be a clear outlier)
+    assert no_override["playoff_pct"].max() - no_override["playoff_pct"].min() < 0.15
+    # with the override, team 0's real week-1 edge should carry forward
+    # as real signal into week 2's recomputed expected score, clearly
+    # separating it from the field - proving week 2 used team 0's own
+    # (override-seeded) running average, not a value frozen at week 1
+    assert with_override.loc[0, "playoff_pct"] > with_override["playoff_pct"].max() - 0.05
+
+
 def test_bad_opening_week_recovers_as_more_weeks_remain_to_play():
     # Regression test for a real fix (2026-09-16): previously, a team's
     # expected score for EVERY remaining week was permanently discounted

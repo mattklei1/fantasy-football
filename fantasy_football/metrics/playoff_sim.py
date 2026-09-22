@@ -191,6 +191,7 @@ def simulate_season(
     rng: np.random.Generator | None = None,
     shrinkage_games_played: np.ndarray | None = None,
     shrinkage_prior: np.ndarray | None = None,
+    current_week_expected_override: np.ndarray | None = None,
 ) -> pd.DataFrame:
     """team_state columns: see TEAM_STATE_COLUMNS - one row per team, all
     REAL cumulative values as of right now (season_ppg/last3_ppg/points_for/
@@ -234,6 +235,28 @@ def simulate_season(
     SPREAD is itself dampened toward the flat average early in the
     season before use (see dampen_prior_spread()) - fixes a real over-
     concentration bug this otherwise caused (2026-09-22).
+
+    current_week_expected_override: optional per-team real LIVE
+    projected score (ESPN's actual-set-lineup projection for the
+    CURRENT in-progress week, e.g. dashboard_data.get_live_box_scores())
+    - same shape as shrinkage_prior. Added 2026-09-22 (user: "How much
+    are you factoring in this weeks projected score? Or are you just
+    using the roster strength to proxy as projected score?" - the honest
+    answer before this was "roster strength, diluted": the in-progress
+    week was simulated through the exact same season-average-blended-
+    with-a-dampened-Roster-Strength-prior mechanism as a distant future
+    week, even though a real, precise, matchup-specific ESPN projection
+    for THIS week already exists elsewhere in this app (the Matchups
+    page's own live win probability). When given, this REPLACES
+    week_expected for the first remaining week only (a real number, not
+    a blend) - every week after that still goes through the normal
+    shrink_expected_score()/dampened-prior mechanism, since no live
+    per-player projection exists yet for a week ESPN hasn't opened. Not
+    blending in each team's already-scored partial points this week
+    remains a deliberate, separate v1 simplification (unchanged) -
+    ESPN's own projected total already folds in real in-game production
+    once a week goes live, so this is still the best single real number
+    available, just not decomposed into "already scored" + "remaining."
 
     Returns team_pk, playoff_pct, bye_pct, seed1_pct, championship_pct.
     """
@@ -326,7 +349,15 @@ def simulate_season(
     # regular-season games remain (updated each iteration) and when none
     # do (e.g. simulating the playoffs alone after the real regular
     # season already finished).
-    week_expected = shrink_expected_score(raw_expected[:, None], sim_games_played, prior)
+    if current_week_expected_override is not None:
+        # A real live number for the FIRST remaining (in-progress) week
+        # only - see this function's docstring - replacing the blended
+        # season-average/dampened-Roster-Strength-prior estimate that
+        # would otherwise apply here exactly as it does to every later,
+        # genuinely-future week.
+        week_expected = np.tile(np.asarray(current_week_expected_override, dtype=float)[:, None], n_sims)
+    else:
+        week_expected = shrink_expected_score(raw_expected[:, None], sim_games_played, prior)
     first_remaining_week = True
 
     for week in sorted(remaining_matchups["week"].unique()):
