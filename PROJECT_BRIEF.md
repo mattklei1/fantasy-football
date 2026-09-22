@@ -5289,3 +5289,60 @@ unmodified - that test happens to pass `shrinkage_prior` with an
 IDENTICAL flat value for every team, so diluting one bad real result
 across more evenly-matched future games still produces a narrowing gap
 under the new mechanism, just via a different causal path than before).
+
+**Immediate follow-up, same session: the STORED historical Playoff Odds
+Over Time snapshots still reflected the old, pre-redesign methodology.**
+User: "Did you also correctly restate historical playoff odds using our
+new methodology? So when I look at a season long chart of playoff odds
+it is not the old week 0 or week 1 number in there? While we should use
+the historical roster strength and record at that point, we now run the
+simulations differently." A sharp, correct catch - `playoff_odds_
+snapshots.py`'s manifest (`playoff_odds_snapshots/{season}.json`, one
+JSON file per season, one row-set per week, "computed once and never
+recomputed" by design) stores FINAL COMPUTED percentages, not the raw
+inputs - so every week captured before today's `simulate_season()`
+redesigns permanently baked in whatever the model looked like at capture
+time. Only weeks "0" and "1" existed yet (week 2 hadn't been captured -
+separately explained by the GitHub Actions scheduler-reliability issue
+diagnosed earlier this session), both computed well before any of
+today's three fixes.
+
+Also found a related gap while investigating: `compute_week0_snapshot_
+rows()` never actually passed `shrinkage_prior` to `simulate_season()` -
+it only used `shrinkage_games_played` (WEEK0_TRUST_GAMES=45), meaning
+Week 0 went through the OLD fallback path (shrink toward a flat average,
+evolving over simulated weeks) even after the "primary path" redesign
+shipped. Fixed: Week 0's already-computed Roster-Strength-in-points
+values (`team_state["season_ppg"]`, per compute_week0_team_state()) are
+now ALSO passed as `shrinkage_prior`, putting Week 0 through the same
+fixed-for-the-whole-season primary path as every other week.
+
+Restated all 3 real weeks using the CURRENT methodology, keeping each
+week's HISTORICAL real inputs exactly as they were (per the user's
+explicit instruction) - built a one-off backfill script (not committed,
+scratchpad-only, matches this project's convention of ad-hoc live
+verification rather than a permanent "backfill" feature nobody will run
+twice):
+- Week 0: `compute_week0_snapshot_rows()` (now with the shrinkage_prior
+  fix above) - real Week-1 roster/Week-0 ADP data, unchanged.
+- Week 1: reconstructed team_state from `metrics_weekly WHERE week=1`
+  (real record as of week 1), Roster Strength/optimal-lineup projection
+  computed AS OF week 2 (what would have been "current" the moment this
+  snapshot was originally captured, right after week 1 completed),
+  score_stdev from scores through week 1 only (no lookahead), remaining_
+  matchups = week > 1 - then ran through today's real `simulate_season()`.
+- Week 2 (newly captured, filling the actual gap): just today's live
+  `dashboard_data.get_playoff_simulation()` output, already using the
+  current methodology by construction.
+Real, substantial shifts: Week 1's leader (Jacob Batters, real-then
+28.8% championship / 93.4% playoff) is now Lamar Comeback SZN at 11.9%/
+65.3% - the old number was almost entirely the pre-dampening/pre-
+redesign over-concentration bug baked permanently into stored history.
+Direct GitHub Contents API write was blocked by this sandbox's outbound
+proxy (403, "Write access... not permitted through this proxy") -
+worked around by writing the file directly in the local git checkout
+(confirmed byte-identical to origin/main first) and committing/pushing
+normally, same mechanism as every other change this session, rather
+than the app's own github_sync.commit_file() REST path. 429/429 tests
+passing (unchanged - this was a data restatement plus one small code
+fix already covered by existing Week-0 tests).

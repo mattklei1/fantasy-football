@@ -233,9 +233,20 @@ def compute_week0_snapshot_rows(conn: sqlite3.Connection, season: int, n_sims: i
         conn, params=(season,),
     )
 
+    # season_ppg/last3_ppg here ARE the Roster-Strength-remapped points
+    # (see compute_week0_team_state()) - passed again as shrinkage_prior
+    # so this goes through simulate_season()'s PRIMARY path (fixed for
+    # the whole season, never shifting toward a team's own emerging
+    # record) instead of the fallback shrink-toward-flat-average path.
+    # Without this, Week 0 would drift back toward each team's own
+    # (real-then-simulated) running average as the trial's hypothetical
+    # season played out - exactly the "roster strength fades" behavior
+    # the 2026-09-22 redesign eliminated everywhere else (see playoff_
+    # sim.simulate_season()'s own docstring).
     result = simulate_season(
         team_state, remaining_matchups, bool(median_scoring), reg_season_count, n_sims=n_sims,
         shrinkage_games_played=np.full(len(team_state), WEEK0_TRUST_GAMES),
+        shrinkage_prior=team_state["season_ppg"].to_numpy(),
     )
     name_rows = conn.execute("SELECT id, team_name FROM teams WHERE season_id = ?", (season,)).fetchall()
     name_by_pk = {r[0]: r[1] for r in name_rows}
