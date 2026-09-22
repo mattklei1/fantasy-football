@@ -466,6 +466,81 @@ def test_game_of_the_week_picks_the_matchup_with_the_biggest_real_playoff_swing(
     assert result["swing_direction"] == "down"
 
 
+def test_game_to_watch_picks_the_matchup_with_the_biggest_playoff_odds_swing(conn):
+    # 8-team, 6-playoff-spot scenario, reg_season_count=1: teams 3-7 have
+    # already clinched a top-5 spot (1-0, huge points_for) and team8 is
+    # already hopeless (0-1, worthless points_for) - all mathematically
+    # settled regardless of anything else. Team1 and team2 haven't played
+    # their one game yet (0-0) - it's THE remaining game, contesting the
+    # single open 6th spot: whoever wins it ties the leaders on win_pct
+    # (1-0) and takes the last spot; whoever loses is out. A textbook
+    # "everything is on the line" playoff-odds swing, deterministic (no
+    # games remain once this one is decided) so the swing is exactly 1.0
+    # for both participants - same flip-and-measure technique as
+    # _game_of_the_week's test, just applied to a NOT-YET-decided game.
+    conn.execute(
+        "UPDATE seasons SET reg_season_count = 1, playoff_team_count = 6 WHERE season_id = 2099"
+    )
+    for i in (5, 6, 7, 8):
+        conn.execute(
+            "INSERT INTO managers (manager_id, display_name) VALUES (?, ?)", (f"m{i}", f"Mgr{i}")
+        )
+        conn.execute(
+            "INSERT INTO teams (id, season_id, espn_team_id, team_name) VALUES (?, 2099, ?, ?)",
+            (i, i, f"Team {i}"),
+        )
+        conn.execute("INSERT INTO team_owners (team_pk, manager_id) VALUES (?, ?)", (i, f"m{i}"))
+    # team1/team2's week-1 game (from the base fixture, 150-100) is
+    # replaced with a genuinely undecided one for this test - clear it
+    # and re-seed metrics_weekly to reflect "0 games played yet" for
+    # both, matching the team_state passed in below.
+    conn.execute("DELETE FROM matchups WHERE season_id = 2099 AND week = 1 AND home_team_pk = 1")
+    # drop the base fixture's own week-2 schedule ((1,3) and (2,4)) so
+    # only the one matchup under test is on next week's slate - those
+    # rows aren't reflected in this test's own remaining_matchups/
+    # team_state below and would otherwise bleed in as spurious extra
+    # candidates.
+    conn.execute("DELETE FROM matchups WHERE season_id = 2099 AND week = 2")
+    conn.execute(
+        "INSERT INTO matchups (season_id, week, home_team_pk, away_team_pk, matchup_type, completed) "
+        "VALUES (2099, 2, 1, 2, 'NONE', 0)"
+    )
+    conn.commit()
+
+    team_state = pd.DataFrame(
+        [
+            _ts_row(1, 0, 0, 0, 0, 100.0), _ts_row(2, 0, 0, 0, 0, 90.0),
+            _ts_row(3, 1, 0, 0, 0, 500.0), _ts_row(4, 1, 0, 0, 0, 400.0),
+            _ts_row(5, 1, 0, 0, 0, 300.0), _ts_row(6, 1, 0, 0, 0, 200.0),
+            _ts_row(7, 1, 0, 0, 0, 150.0), _ts_row(8, 0, 1, 0, 0, 1.0),
+        ]
+    )
+    remaining_matchups = pd.DataFrame([{"week": 2, "home_team_pk": 1, "away_team_pk": 2}])
+
+    result = commentary._game_to_watch(
+        conn, 2099, week=1, names=_EIGHT_TEAM_NAMES, position_slot_counts={"QB": 1, "BE": 5},
+        team_state=team_state, remaining_matchups=remaining_matchups,
+        median_scoring=False, reg_season_count=1,
+    )
+    assert result is not None
+    assert {result["home"]["team_pk"], result["away"]["team_pk"]} == {1, 2}
+    assert result["swung_team"]["team_pk"] in (1, 2)
+    assert result["playoff_odds_swing"] == pytest.approx(1.0)
+
+
+def test_game_to_watch_falls_back_to_closest_score_without_a_playoff_sim_baseline(conn):
+    # no team_state/remaining_matchups/etc. supplied (mirrors
+    # build_weekly_facts() when _playoff_sim_baseline returns Nones) -
+    # must fall back to the old closest-projected-score behavior rather
+    # than going blank.
+    result = commentary._game_to_watch(
+        conn, 2099, week=1, names=_EIGHT_TEAM_NAMES, position_slot_counts={"QB": 1, "BE": 5},
+    )
+    assert result is not None
+    assert result["playoff_odds_swing"] is None
+    assert result["swung_team"] is None
+
+
 def test_game_of_the_week_none_without_a_playoff_sim_baseline():
     matchups_week = pd.DataFrame(
         [{"week": 1, "home_team_pk": 1, "away_team_pk": 2, "home_score": 100.0, "away_score": 90.0}]
@@ -564,11 +639,12 @@ def test_playoff_sim_baseline_none_when_not_enough_real_teams(conn):
     # the fixture's own conn only has 4 real teams but declares
     # playoff_team_count=6 - simulate_season can't seed a 6-team bracket
     # from 4 teams, so this must degrade gracefully, not crash
-    team_state, remaining, median_scoring, reg_season_count, actual = commentary._playoff_sim_baseline(
+    team_state, remaining, median_scoring, reg_season_count, actual, sim_kwargs = commentary._playoff_sim_baseline(
         conn, 2099, 1
     )
     assert team_state is None
     assert actual is None
+    assert sim_kwargs is None
 
 
 # --- _power_rank_movers (two-tier: weekly vs. last week, season-long vs. Week 0) ---

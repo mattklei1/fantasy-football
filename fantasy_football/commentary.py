@@ -237,18 +237,32 @@ def _team_next_week_optimal_projection(
 def _game_to_watch(
     conn: sqlite3.Connection, season: int, week: int, names: dict,
     position_slot_counts: dict | None, league=None,
+    team_state: pd.DataFrame | None = None, remaining_matchups: pd.DataFrame | None = None,
+    median_scoring: bool | None = None, reg_season_count: int | None = None,
+    sim_kwargs: dict | None = None,
 ) -> dict | None:
-    """Next week's projected closest game. Each team's projected score
-    assumes OPTIMAL lineup management from their current roster using
-    next week's ESPN projections (see _team_next_week_optimal_projection)
-    rather than a season-PPG blend - deliberately different from the
-    Matchups page's in-season win probability, since nobody's actually
-    set next week's lineup yet. `league` (a live espn_api League, only
-    needed for the free-agent-fallback step) is optional - without it,
-    any zero-projection slot just contributes 0 rather than a live-
-    ESPN-call-dependent estimate; still a real number, just less
-    complete. None if position_slot_counts is unavailable (can't build a
-    legal lineup without it) or no matchups are scheduled next week."""
+    """Next week's matchup with the BIGGEST PLAYOFF-ODDS STAKES - user
+    feedback 2026-09-22: "for next weeks game to watch - identify the
+    matchup with biggest playoff odds swing %" (previously picked the
+    closest projected score/coin-flip game instead - see
+    _game_of_the_week's analogous 2026-09-15 move away from
+    closest-margin selection, for the same reason). For each real
+    next-week matchup, builds two counterfactual team_states off the
+    REAL record through `week` - one where the home team hypothetically
+    wins that game, one where the away team does - with that one
+    matchup excluded from `remaining_matchups` in each sim (every other
+    next-week game is still simulated randomly, same as _game_of_the_
+    week's flip). Re-simulates both and measures |home_wins_playoff_pct
+    - away_wins_playoff_pct| for each participant; the matchup with the
+    single biggest such swing wins. Falls back to the old closest-
+    projected-score selection if the playoff-sim baseline isn't
+    available (team_state/remaining_matchups/... None or empty - see
+    _playoff_sim_baseline) so this section still has *something* rather
+    than going blank. Each team's projected score/win probability (see
+    _team_next_week_optimal_projection) is still reported for color
+    either way, just no longer the selection criterion when a swing is
+    available. None if position_slot_counts is unavailable (can't build
+    a legal lineup without it) or no matchups are scheduled next week."""
     if not position_slot_counts:
         return None
     next_week = week + 1
@@ -275,31 +289,81 @@ def _game_to_watch(
         for tp in team_pks
     }
 
+    have_sim_baseline = (
+        team_state is not None and not team_state.empty and remaining_matchups is not None
+        and median_scoring is not None and reg_season_count is not None
+    )
+    sim_kwargs = sim_kwargs or {}
+    known_team_pks = set(team_state["team_pk"].to_numpy()) if have_sim_baseline else set()
+
     best = None
     for r in next_week_matchups.itertuples():
         if r.home_team_pk not in projected_by_team or r.away_team_pk not in projected_by_team:
             continue
+        home_pk, away_pk = int(r.home_team_pk), int(r.away_team_pk)
         home = TeamProjection(
-            team_pk=r.home_team_pk, expected_score=projected_by_team[r.home_team_pk],
-            stdev=max(stdevs.get(r.home_team_pk, 0.0), MIN_STDEV),
+            team_pk=home_pk, expected_score=projected_by_team[home_pk],
+            stdev=max(stdevs.get(home_pk, 0.0), MIN_STDEV),
         )
         away = TeamProjection(
-            team_pk=r.away_team_pk, expected_score=projected_by_team[r.away_team_pk],
-            stdev=max(stdevs.get(r.away_team_pk, 0.0), MIN_STDEV),
+            team_pk=away_pk, expected_score=projected_by_team[away_pk],
+            stdev=max(stdevs.get(away_pk, 0.0), MIN_STDEV),
         )
         prob = win_probability(home, away)
-        closeness = abs(prob - 0.5)
-        if best is None or closeness < best["closeness"]:
-            best = {
-                "home": _label(names, r.home_team_pk),
-                "away": _label(names, r.away_team_pk),
-                "home_projected_score": round(projected_by_team[r.home_team_pk], 1),
-                "away_projected_score": round(projected_by_team[r.away_team_pk], 1),
-                "home_win_probability": round(prob, 3),
-                "closeness": closeness,
+        base = {
+            "home": _label(names, home_pk),
+            "away": _label(names, away_pk),
+            "home_projected_score": round(projected_by_team[home_pk], 1),
+            "away_projected_score": round(projected_by_team[away_pk], 1),
+            "home_win_probability": round(prob, 3),
+        }
+
+        if have_sim_baseline and home_pk in known_team_pks and away_pk in known_team_pks:
+            other_matchups = remaining_matchups[
+                ~(
+                    (remaining_matchups["week"] == next_week)
+                    & (remaining_matchups["home_team_pk"] == home_pk)
+                    & (remaining_matchups["away_team_pk"] == away_pk)
+                )
+            ]
+            home_wins_state = team_state.copy()
+            away_wins_state = team_state.copy()
+            h_idx = home_wins_state["team_pk"] == home_pk
+            a_idx = home_wins_state["team_pk"] == away_pk
+            home_wins_state.loc[h_idx, "matchup_wins"] += 1
+            home_wins_state.loc[a_idx, "matchup_losses"] += 1
+            away_wins_state.loc[h_idx, "matchup_losses"] += 1
+            away_wins_state.loc[a_idx, "matchup_wins"] += 1
+
+            home_wins_sim = simulate_season(
+                home_wins_state, other_matchups, median_scoring, reg_season_count,
+                n_sims=RECAP_PLAYOFF_SIM_N_SIMS, **sim_kwargs,
+            ).set_index("team_pk")
+            away_wins_sim = simulate_season(
+                away_wins_state, other_matchups, median_scoring, reg_season_count,
+                n_sims=RECAP_PLAYOFF_SIM_N_SIMS, **sim_kwargs,
+            ).set_index("team_pk")
+
+            home_swing = abs(home_wins_sim.loc[home_pk, "playoff_pct"] - away_wins_sim.loc[home_pk, "playoff_pct"])
+            away_swing = abs(home_wins_sim.loc[away_pk, "playoff_pct"] - away_wins_sim.loc[away_pk, "playoff_pct"])
+            swung_pk = home_pk if home_swing >= away_swing else away_pk
+            swing = float(max(home_swing, away_swing))
+
+            candidate = {
+                **base,
+                "playoff_odds_swing": round(swing, 3),
+                "swung_team": _label(names, swung_pk),
+                "_rank": swing,
             }
+            if best is None or candidate["_rank"] > best["_rank"]:
+                best = candidate
+        elif not have_sim_baseline:
+            candidate = {**base, "playoff_odds_swing": None, "swung_team": None, "_rank": -abs(prob - 0.5)}
+            if best is None or candidate["_rank"] > best["_rank"]:
+                best = candidate
+
     if best:
-        best.pop("closeness")
+        best.pop("_rank", None)
     return best
 
 
@@ -310,36 +374,77 @@ def _playoff_sim_baseline(conn: sqlite3.Connection, season: int, week: int):
     result computed from it, at RECAP_PLAYOFF_SIM_N_SIMS trials - both
     real, unmodified inputs used as the baseline every counterfactual
     below compares against. Returns (team_state, remaining_matchups,
-    median_scoring, reg_season_count, actual_df) - all None if this
-    season's format isn't the 6-team/top-2-bye shape playoff_sim
-    supports, there aren't at least that many real teams to seed a
-    bracket from (simulate_season/simulate_bracket_once assume a real
-    6-team field once playoff_team_count says 6 - not expected in a real
-    league, but defensive against a partial/test DB), or there's no
-    playoff-sim state yet (no completed week)."""
+    median_scoring, reg_season_count, actual_df, sim_kwargs) - sim_kwargs
+    is a dict of shrinkage_prior/current_week_live_projection to pass
+    into every OTHER simulate_season() call built off this same baseline
+    (the counterfactuals in _game_of_the_week/_game_to_watch), so they
+    use the identical methodology as `actual` instead of diverging from
+    it. Every return value is None if this season's format isn't the
+    6-team/top-2-bye shape playoff_sim supports, there aren't at least
+    that many real teams to seed a bracket from (simulate_season/
+    simulate_bracket_once assume a real 6-team field once playoff_team_
+    count says 6 - not expected in a real league, but defensive against
+    a partial/test DB), or there's no playoff-sim state yet (no
+    completed week)."""
     meta_row = conn.execute(
-        "SELECT playoff_team_count, median_scoring, reg_season_count FROM seasons WHERE season_id = ?",
+        "SELECT playoff_team_count, median_scoring, reg_season_count, position_slot_counts "
+        "FROM seasons WHERE season_id = ?",
         (season,),
     ).fetchone()
     if not meta_row or meta_row[0] != SUPPORTED_PLAYOFF_TEAM_COUNT:
-        return None, None, None, None, None
-    _, median_scoring_raw, reg_season_count = meta_row
+        return None, None, None, None, None, None
+    _, median_scoring_raw, reg_season_count, position_slot_counts_json = meta_row
     median_scoring = bool(median_scoring_raw)
+    position_slot_counts = json.loads(position_slot_counts_json) if position_slot_counts_json else None
 
     team_state, remaining_matchups = metric_loaders.load_playoff_sim_state(conn, season)
     if team_state.empty or team_state["team_pk"].nunique() < SUPPORTED_PLAYOFF_TEAM_COUNT:
-        return None, None, None, None, None
+        return None, None, None, None, None, None
 
+    # Same Roster Strength shrinkage prior + current-week live-projection
+    # nudge dashboard_data.get_playoff_simulation() uses (user,
+    # 2026-09-16 and 2026-09-22) - found 2026-09-22 that this recap
+    # baseline had silently been using simulate_season()'s older flat-
+    # league-average fallback instead, inconsistent with the rest of the
+    # app's playoff odds. `next_week` (week + 1) stands in for "current
+    # week" here since this baseline is built right after `week` just
+    # completed.
+    shrinkage_prior = None
+    current_week_live_projection = None
+    next_week = week + 1
+    if position_slot_counts:
+        prior_series = metric_loaders.load_roster_strength_shrinkage_prior(
+            conn, season, next_week, position_slot_counts, reg_season_count
+        )
+        if not prior_series.empty:
+            reindexed = prior_series.reindex(team_state["team_pk"])
+            if not reindexed.isna().any():
+                shrinkage_prior = reindexed.to_numpy()
+
+        if not remaining_matchups.empty and remaining_matchups["week"].min() == next_week:
+            optimal_points = metric_loaders.load_optimal_lineup_points(
+                conn, season, next_week, position_slot_counts
+            )
+            if not optimal_points.empty:
+                reindexed_optimal = optimal_points.reindex(team_state["team_pk"])
+                if not reindexed_optimal.isna().any():
+                    current_week_live_projection = reindexed_optimal.to_numpy()
+
+    sim_kwargs = {
+        "shrinkage_prior": shrinkage_prior,
+        "current_week_live_projection": current_week_live_projection,
+    }
     actual = simulate_season(
         team_state, remaining_matchups, median_scoring, reg_season_count, n_sims=RECAP_PLAYOFF_SIM_N_SIMS,
+        **sim_kwargs,
     ).set_index("team_pk")
-    return team_state, remaining_matchups, median_scoring, reg_season_count, actual
+    return team_state, remaining_matchups, median_scoring, reg_season_count, actual, sim_kwargs
 
 
 def _game_of_the_week(
     matchups_week: pd.DataFrame, names: dict, team_state: pd.DataFrame | None,
     remaining_matchups: pd.DataFrame | None, median_scoring: bool | None, reg_season_count: int | None,
-    actual: pd.DataFrame | None,
+    actual: pd.DataFrame | None, sim_kwargs: dict | None = None,
 ) -> dict | None:
     """The week's real matchup that swung a PLAYOFF ODDS outcome the
     MOST for either participant, positively or negatively - deliberately
@@ -362,6 +467,7 @@ def _game_of_the_week(
     available - see _playoff_sim_baseline)."""
     if matchups_week.empty or team_state is None or team_state.empty or actual is None:
         return None
+    sim_kwargs = sim_kwargs or {}
     best = None
     for r in matchups_week.itertuples():
         home_pk, away_pk = int(r.home_team_pk), int(r.away_team_pk)
@@ -380,6 +486,7 @@ def _game_of_the_week(
 
         flipped = simulate_season(
             flipped_state, remaining_matchups, median_scoring, reg_season_count, n_sims=RECAP_PLAYOFF_SIM_N_SIMS,
+            **sim_kwargs,
         ).set_index("team_pk")
 
         home_swing = abs(actual.loc[home_pk, "playoff_pct"] - flipped.loc[home_pk, "playoff_pct"])
@@ -557,11 +664,12 @@ def build_weekly_facts(conn: sqlite3.Connection, season: int, week: int, league=
         r = fraud_rows.iloc[0]
         biggest_fraud = {"team": _label(names, int(r.team_pk)), "fraud_index": round(float(r.fraud_index), 3)}
 
-    team_state, remaining_matchups, median_scoring, reg_season_count, actual_sim = _playoff_sim_baseline(
+    team_state, remaining_matchups, median_scoring, reg_season_count, actual_sim, sim_kwargs = _playoff_sim_baseline(
         conn, season, week
     )
     game_of_the_week = _game_of_the_week(
-        matchups_week, names, team_state, remaining_matchups, median_scoring, reg_season_count, actual_sim
+        matchups_week, names, team_state, remaining_matchups, median_scoring, reg_season_count, actual_sim,
+        sim_kwargs,
     )
     playoff_odds_summary = _playoff_odds_summary(season, week, names, actual_sim)
 
@@ -573,7 +681,11 @@ def build_weekly_facts(conn: sqlite3.Connection, season: int, week: int, league=
         "game_of_the_week": game_of_the_week,
         "playoff_odds_summary": playoff_odds_summary,
         "power_rank_movers": _power_rank_movers(conn, season, week, names),
-        "next_week_game_to_watch": _game_to_watch(conn, season, week, names, position_slot_counts, league=league),
+        "next_week_game_to_watch": _game_to_watch(
+            conn, season, week, names, position_slot_counts, league=league,
+            team_state=team_state, remaining_matchups=remaining_matchups,
+            median_scoring=median_scoring, reg_season_count=reg_season_count, sim_kwargs=sim_kwargs,
+        ),
         "starting_rosters": _starting_rosters(conn, season, week, names),
     }
 
@@ -730,12 +842,20 @@ def generate_placeholder_commentary(facts: dict) -> str:
         section("POWER RANKING MOVERS", "Not enough history yet to track movers.")
 
     gtw = facts.get("next_week_game_to_watch")
-    section(
-        "NEXT WEEK'S GAME TO WATCH",
-        f"{_fmt_team(gtw['home'])} ({gtw['home_projected_score']:.1f} proj) vs {_fmt_team(gtw['away'])} "
-        f"({gtw['away_projected_score']:.1f} proj), assuming each team sets an optimal lineup "
-        f"(home win probability: {gtw['home_win_probability']:.0%})" if gtw else "Schedule not available yet.",
-    )
+    if gtw:
+        gtw_text = (
+            f"{_fmt_team(gtw['home'])} ({gtw['home_projected_score']:.1f} proj) vs {_fmt_team(gtw['away'])} "
+            f"({gtw['away_projected_score']:.1f} proj), assuming each team sets an optimal lineup "
+            f"(home win probability: {gtw['home_win_probability']:.0%})"
+        )
+        if gtw.get("playoff_odds_swing") is not None:
+            gtw_text += (
+                f". Biggest playoff-odds swing on the board: {_fmt_team(gtw['swung_team'])} "
+                f"+/-{gtw['playoff_odds_swing']:.0%} depending on who wins this one."
+            )
+    else:
+        gtw_text = "Schedule not available yet."
+    section("NEXT WEEK'S GAME TO WATCH", gtw_text)
 
     return "\n".join(lines).strip()
 
@@ -757,12 +877,20 @@ def _build_claude_prompt(facts: dict) -> str:
             f"team_pk {bad_beat_team_pk!r}). Already-computed, real fact: projected "
             f"{bad_beat['projected_points']}, scored {bad_beat['actual_points']} - a "
             f"{bad_beat['shortfall']}-point shortfall that BY ITSELF would have flipped {' and '.join(flips)} "
-            "had this one player hit their own projection. Search for the REAL reason they underperformed "
-            "(an injury, a benching, garbage time, a bad call) and use it to explain the beat - never a "
-            "different player's story, never embellish beyond what the search actually supports; if nothing "
-            "turns up, just state the computed fact. KEEP THIS SECTION TIGHT: 3-4 sentences, one player, one "
-            "story - no other teams' stats, records, or 'honorable mentions' folded in. Do not narrate your "
-            "search (no \"I'll search for...\") - output only the final recap text below."
+            "had this one player hit their own projection. Search for the REAL reason they underperformed. "
+            "IMPORTANT - a 'bad beat' is a genuine bad-luck story, not just a player having a quiet day: "
+            "only call it a bad beat if the search actually turns up a real unlucky/external cause - an "
+            "in-game injury (especially one early in the game that ended their day), a benching, a "
+            "questionable coaching decision, garbage time, an overturned/reviewed call, or similar. If the "
+            "search finds one of those, lead with it and lean into the bad-beat framing. If the search finds "
+            "nothing like that - the player was just healthy and played the whole game but simply had a bad "
+            "week statistically - do NOT force 'bad beat' language onto it; instead be straight about it "
+            "(e.g. 'no bad beat here, X just had a stinker') while still reporting the real shortfall number. "
+            "As always: never a different player's story, never embellish beyond what the search actually "
+            "supports. "
+            "KEEP THIS SECTION TIGHT: 3-4 sentences, one player, one story - no other teams' stats, records, "
+            "or 'honorable mentions' folded in. Do not narrate your search (no \"I'll search for...\") - "
+            "output only the final recap text below."
         )
     elif bad_beat:
         bad_beat_instructions = (
@@ -774,10 +902,13 @@ def _build_claude_prompt(facts: dict) -> str:
             "roster/projection data isn't available for this older season). Search only for news connecting "
             "to PLAYERS ON THAT TEAM'S OWN ROSTER (see `starting_rosters`) - never a different team's story, "
             "never an 'honorable mention' about an unrelated team/player, never embellish beyond what the "
-            "search actually supports. If nothing connects, just report the plain fact from `awards.bad_beat` "
-            "(they scored X and still lost). KEEP THIS SECTION TIGHT: 3-4 sentences, one team, no other "
-            "teams' stats or records folded in. Do not narrate your search (no \"I'll search for...\") - "
-            "output only the final recap text below."
+            "search actually supports. IMPORTANT - only call this a bad beat if the search actually turns up "
+            "a real unlucky/external cause (an in-game injury, a benching, garbage time, an overturned call, "
+            "or similar); if nothing like that connects, don't force the 'bad beat' label - just report the "
+            "plain fact from `awards.bad_beat` (they scored X and still lost) without dramatizing it as bad "
+            "luck. KEEP THIS SECTION TIGHT: 3-4 sentences, one team, no other teams' stats or records folded "
+            "in. Do not narrate your search (no \"I'll search for...\") - output only the final recap text "
+            "below."
         )
     else:
         bad_beat_instructions = (
@@ -823,12 +954,18 @@ def _build_claude_prompt(facts: dict) -> str:
         "their PRESEASON draft grade, a different and often more interesting question than 'moved since "
         "last week'). Report whichever tiers are present; skip a tier gracefully if it's null rather than "
         "inventing one.\n\n"
-        "For NEXT WEEK'S GAME TO WATCH: `next_week_game_to_watch.home_projected_score`/"
-        "`away_projected_score` already assume each team sets an OPTIMAL lineup from their current roster "
-        "using next week's real ESPN projections (with a free-agent-average stand-in for any empty slot) "
-        "- NOT each team's actual current lineup, since nobody has set next week's lineup yet. Present it "
-        "that way (e.g. 'if both sides set their best lineup') - don't claim this IS either team's live "
-        "current projection or win probability as of right now."
+        "For NEXT WEEK'S GAME TO WATCH: this is picked as the matchup with the BIGGEST PLAYOFF-ODDS STAKES, "
+        "not the closest projected score - lead with that. `next_week_game_to_watch.playoff_odds_swing` and "
+        "`swung_team` (when not null) are the real, already-computed swing: how much `swung_team`'s playoff "
+        "odds move depending on who wins this specific game, holding everything else in the league equal. "
+        "Frame it as 'this one swings X's playoff odds by N points either way' - the projected score/win "
+        "probability fields are secondary color, not the headline. `home_projected_score`/`away_projected_score` "
+        "already assume each team sets an OPTIMAL lineup from their current roster using next week's real "
+        "ESPN projections (with a free-agent-average stand-in for any empty slot) - NOT each team's actual "
+        "current lineup, since nobody has set next week's lineup yet. Present it that way (e.g. 'if both "
+        "sides set their best lineup') - don't claim this IS either team's live current projection or win "
+        "probability as of right now. If `playoff_odds_swing` is null (playoff-sim baseline unavailable), "
+        "fall back to describing it as next week's closest projected matchup instead."
     )
     return (
         "You are writing a fantasy football weekly recap for a private league of friends who talk serious "
