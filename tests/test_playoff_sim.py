@@ -389,6 +389,79 @@ def test_roster_strength_prior_does_not_overconcentrate_championship_odds_this_e
     assert result["championship_pct"].max() > result["championship_pct"].min()
 
 
+def test_own_season_ppg_has_zero_effect_on_future_weeks_once_a_prior_exists():
+    # Regression test for the actual redesign (2026-09-22, user: "I
+    # don't want roster strength to fade in importance... it's the
+    # current roster strength that impacts odds of winning the next
+    # game. Not your historical performance."). Two identical scenarios
+    # differing ONLY in team 0's own real season_ppg (200 vs 60) - same
+    # real record, same points_for, same rng seed, same shrinkage_prior.
+    # If a team's own historical scoring average still influenced future-
+    # week projections at all, these would differ; since it must not,
+    # the two results should be EXACTLY equal, not just close.
+    n_teams = 8
+
+    def make_team_state(team0_season_ppg: float) -> pd.DataFrame:
+        rows = [
+            {
+                "team_pk": i,
+                "season_ppg": team0_season_ppg if i == 0 else 130.0,
+                "last3_ppg": team0_season_ppg if i == 0 else 130.0,
+                "score_stdev": MIN_STDEV, "matchup_wins": 5, "matchup_losses": 5, "matchup_ties": 0,
+                "median_wins": 0, "median_losses": 0, "median_ties": 0, "points_for": 650.0,
+            }
+            for i in range(n_teams)
+        ]
+        return pd.DataFrame(rows)
+
+    prior = np.full(n_teams, 130.0)  # identical current Roster Strength for every team
+    remaining = pd.DataFrame({"week": [11] * 4, "home_team_pk": [0, 2, 4, 6], "away_team_pk": [1, 3, 5, 7]})
+
+    result_high_ppg = simulate_season(
+        make_team_state(200.0), remaining, median_scoring=False, reg_season_count=11,
+        n_sims=6000, rng=np.random.default_rng(9), shrinkage_prior=prior,
+    ).set_index("team_pk")
+    result_low_ppg = simulate_season(
+        make_team_state(60.0), remaining, median_scoring=False, reg_season_count=11,
+        n_sims=6000, rng=np.random.default_rng(9), shrinkage_prior=prior,
+    ).set_index("team_pk")
+
+    pd.testing.assert_frame_equal(result_high_ppg, result_low_ppg)
+
+
+def test_real_record_still_fully_counts_toward_final_standings():
+    # The redesign above must not throw out real results entirely - a
+    # team's ALREADY-BANKED wins/losses/points still have to count in
+    # full toward final standings, only future-week PROJECTIONS stop
+    # depending on the team's own history. Two teams with IDENTICAL
+    # current Roster Strength but very different REAL records (9-1 vs
+    # 1-9) should land very differently in the standings even though
+    # every remaining game is projected identically between them.
+    n_teams = 8
+    rows = [
+        {
+            "team_pk": i,
+            "season_ppg": 130.0, "last3_ppg": 130.0, "score_stdev": MIN_STDEV,
+            "matchup_wins": 9 if i == 0 else (1 if i == 1 else 5),
+            "matchup_losses": 1 if i == 0 else (9 if i == 1 else 5),
+            "matchup_ties": 0, "median_wins": 0, "median_losses": 0, "median_ties": 0,
+            "points_for": 1170.0 if i == 0 else (130.0 if i == 1 else 650.0),
+        }
+        for i in range(n_teams)
+    ]
+    team_state = pd.DataFrame(rows)
+    prior = np.full(n_teams, 130.0)  # identical current Roster Strength for every team
+    remaining = pd.DataFrame({"week": [11] * 4, "home_team_pk": [0, 2, 4, 6], "away_team_pk": [1, 3, 5, 7]})
+
+    result = simulate_season(
+        team_state, remaining, median_scoring=False, reg_season_count=11,
+        n_sims=6000, rng=np.random.default_rng(9), shrinkage_prior=prior,
+    ).set_index("team_pk")
+
+    assert result.loc[0, "playoff_pct"] > result.loc[1, "playoff_pct"]
+    assert result.loc[0, "playoff_pct"] > 0.9  # a 9-1 record is a near-lock regardless of 1 game left
+
+
 def test_current_week_live_projection_drives_a_real_first_week_nudge():
     # Regression test for the actual feature (2026-09-22, user: "How
     # much are you factoring in this weeks projected score?..." followed

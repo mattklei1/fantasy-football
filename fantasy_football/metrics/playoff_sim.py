@@ -3,25 +3,40 @@ the spec). Pure/DB-free like the rest of metrics/ - dashboard_data.py
 does the DB reads that feed this.
 
 Model: each remaining regular-season game's score is sampled
-Normal(expected_score, team's own weekly stdev), where the RAW
-expected_score for the NEAREST remaining week = 60% season PPG + 40%
-last-3-week PPG - the same formula (and the same win_probability.
-expected_score()/MIN_STDEV) as the Matchups page's single-game win
-probability, so the two features agree with each other. A team's
-STDEV is FROZEN at its current real value for an entire trial - both
-its remaining regular-season games and, if it reaches the playoffs, its
-playoff games. Its expected_score is NOT frozen past the nearest
-remaining week: shrink_expected_score()'s early-season shrinkage is
-recomputed every remaining week using that TRIAL's own running (real-
-then-simulated) season-to-date average and an incrementing games_played,
-so a real early-season outlier's drag on later weeks fades exactly like
-real accumulating evidence would (fixed 2026-09-16 - see simulate_
-season()'s own docstring for the real case that motivated it; last3_ppg
-itself isn't separately tracked per trial, so it's only used for the
-nearest remaining week). Stdev staying frozen (a team's own week-to-week
-volatility is a far more stable property than its mean scoring level) is
-the one simplifying assumption left here, stated rather than silently
-baked in.
+Normal(expected_score, team's own weekly stdev). A team's STDEV is
+FROZEN at its current real value for an entire trial - both its
+remaining regular-season games and, if it reaches the playoffs, its
+playoff games (a team's own week-to-week volatility is a far more
+stable property than its mean scoring level - the one simplifying
+assumption left here, stated rather than silently baked in).
+
+expected_score has TWO different sources depending on whether a live
+Roster-Strength shrinkage_prior is available (see simulate_season()'s
+own docstring for the full story):
+- PRIMARY path (shrinkage_prior given - true for every normal in-season
+  call once this week's rosters/projections are captured): expected_
+  score is the (early-season-dampened, see dampen_prior_spread) Roster
+  Strength prior, held FIXED for the whole simulated season - it never
+  shifts toward a team's own emerging real-then-simulated record
+  (redesigned 2026-09-22, user: "it's the current roster strength that
+  impacts odds of winning the next game. Not your historical
+  performance"). Real record to date still counts in full toward final
+  standings (matchup_wins/losses/points_for), just not toward how
+  future games get PROJECTED. The CURRENT (in-progress) week alone also
+  gets a small nudge from a real live optimal-lineup projection, if
+  given (current_week_live_projection).
+- FALLBACK path (shrinkage_prior not given - rare, e.g. very early in a
+  new week before rosters are captured): the RAW expected_score for the
+  nearest remaining week = 60% season PPG + 40% last-3-week PPG (the
+  same formula, and the same win_probability.expected_score()/MIN_STDEV,
+  as the Matchups page's single-game win probability), shrunk toward a
+  flat league average via shrink_expected_score() - and that shrinkage
+  IS recomputed every remaining week using that trial's own running
+  (real-then-simulated) season-to-date average, so a real early-season
+  outlier's drag on later weeks fades like real accumulating evidence
+  would (fixed 2026-09-16 - see simulate_season()'s own docstring for
+  the real case that motivated it). This path only matters when no
+  team-differentiated prior exists to anchor to at all.
 
 Early-season shrinkage: the raw expected_score above is blended toward
 the LEAGUE-WIDE average PPG, weighted by how many real games a team has
@@ -229,25 +244,31 @@ def simulate_season(
     function's own docstring for the RMSE calibration behind the value
     it passes here.
 
-    shrinkage_prior: optional per-team override for what
-    shrink_expected_score() regresses toward - defaults to the flat
-    league-wide average season_ppg when not given (every normal in-
-    season call before 2026-09-16). Exists so a team's CURRENT Roster
-    Strength (dashboard_data.get_playoff_simulation()) can serve as a
-    team-specific, more informative prior than a flat league average -
-    a team with 1-2 real games played still gets shrunk mostly toward
-    a prior, so that prior being roster-quality-aware (not just "the
-    average team") means the model reflects real roster changes
-    (trades, injuries, waiver moves) immediately, not only once enough
-    games accumulate to outweigh a generic average. User, 2026-09-16:
-    "Playoff odds should be using roster strength in its simulation for
-    future weeks though. A higher roster strength for future matchups
-    would indicate a higher % chance of winning that matchup." Must be
-    the same shape as shrinkage_games_played/team_state (one value per
-    team_pk, in team_state's row order) if given. Its team-to-team
-    SPREAD is itself dampened toward the flat average early in the
-    season before use (see dampen_prior_spread()) - fixes a real over-
-    concentration bug this otherwise caused (2026-09-22).
+    shrinkage_prior: optional per-team Roster Strength (in points) that,
+    when given, becomes the PERMANENT driver of every remaining week's
+    expected_score for the whole simulated season - not just an early-
+    season prior that fades as a team's own real-then-simulated record
+    accumulates. Defaults to None (the flat-league-average/shrink-toward-
+    own-record fallback behavior, unchanged - every normal in-season
+    call before 2026-09-16). User, 2026-09-16: "Playoff odds should be
+    using roster strength in its simulation for future weeks though. A
+    higher roster strength for future matchups would indicate a higher
+    % chance of winning that matchup" - then, 2026-09-22, after
+    confirming the mechanism didn't yet match this intent: "I don't want
+    roster strength to fade in importance... it's the current roster
+    strength that impacts odds of winning the next game. Not your
+    historical performance." A team's real record to date (matchup_wins/
+    losses/points_for) still counts in full toward final standings -
+    this only changes what PROJECTS each remaining week's score, not how
+    real+simulated results get tallied. Must be the same shape as
+    shrinkage_games_played/team_state (one value per team_pk, in
+    team_state's row order) if given. Its team-to-team SPREAD is itself
+    dampened toward the flat average early in the season before use (see
+    dampen_prior_spread()) - fixes a real over-concentration bug this
+    otherwise caused (2026-09-22) - but that dampening is based on real
+    games_played AS OF SIMULATION TIME (fixed, not re-ramped within a
+    trial's hypothetical future), consistent with the prior staying
+    fixed for the whole season once established.
 
     current_week_live_projection: optional per-team OPTIMAL-lineup real
     point projection for the CURRENT in-progress week (e.g. dashboard_
@@ -329,28 +350,21 @@ def simulate_season(
     median_ties = team_state["median_ties"].to_numpy(dtype=float)[:, None]
     points_for = np.tile(team_state["points_for"].to_numpy(dtype=float)[:, None], n_sims)
 
-    # Running per-trial state for expected score: starts at each team's
-    # real season-to-date average, then evolves week by week as THAT
-    # TRIAL's own simulated scores come in - games_played genuinely
-    # increments as the simulated season progresses, so shrink_expected_
-    # score() trusts the team's own (real-then-simulated) average more
-    # with each passing week, same as it would in reality. Previously
-    # `expected`/games_played were computed ONCE and reused unchanged for
-    # every remaining week - a real Week-1 outlier stayed discounted at
-    # the SAME rate through Week 14 in every trial regardless of how that
-    # trial's simulated season actually went (an explicitly documented
-    # simplification - see this function's docstring - that turned out
-    # to matter a lot in practice: fixed 2026-09-16 after a real case, a
-    # team with a historically bad Week 1 but an average Roster Strength
-    # staying discounted the entire season in every trial. User: "1 week
-    # of scores isn't very significant over the course of a full
-    # season... there's a very real chance his points scored recovers to
-    # average or above average"). last3_ppg isn't separately tracked per
-    # trial (would need each team's individual real recent scores, not
-    # just the already-blended real average) - the real season_ppg/
-    # last3_ppg blend is used for the nearest remaining week only (still
-    # the most real-recent-form-sensitive one); the running season-to-
-    # date average takes over from the second remaining week onward.
+    # Running per-trial state, used only by the NO-shrinkage_prior
+    # fallback path below (shrink_expected_score() blending toward a
+    # flat league average) - starts at each team's real season-to-date
+    # average, then evolves week by week as THAT TRIAL's own simulated
+    # scores come in, so the team's own (real-then-simulated) average is
+    # trusted more with each passing week, same as it would in reality.
+    # This is DELIBERATELY NOT how the primary, Roster-Strength-driven
+    # path below works - see that path's own comment just below for why
+    # (2026-09-22 redesign). Prior to that redesign this same evolving-
+    # trust mechanism drove the Roster-Strength path too; the underlying
+    # "trust real evidence more as a trial's hypothetical season plays
+    # out" fix (2026-09-16, a bad Week 1 shouldn't stay discounted at the
+    # same rate through Week 14) is preserved intact for the fallback
+    # path, just no longer reachable when a real Roster-Strength prior
+    # exists (the normal case).
     #
     # sim_games_played (the shrinkage WEIGHT's games_played) and
     # sim_avg_games_played (the running-average DENOMINATOR) are tracked
@@ -370,27 +384,61 @@ def simulate_season(
     sim_games_played = np.tile(games_played[:, None], n_sims).astype(float)
     sim_avg_games_played = np.tile(real_games_played[:, None], n_sims).astype(float)
     sim_points_for = np.tile(team_state["points_for"].to_numpy(dtype=float)[:, None], n_sims)
+
+    # PRIMARY path (shrinkage_prior given - true for every normal in-
+    # season call once this week's rosters/projections are captured):
+    # every remaining week's expected score is FIXED at the (early-
+    # season-dampened, see dampen_prior_spread) Roster Strength prior for
+    # the WHOLE simulated season - it never shifts toward a team's own
+    # emerging (real-then-simulated) record as more weeks get simulated.
+    # User, 2026-09-22: "I don't want roster strength to fade in
+    # importance. The playoff simulation should use roster strength +
+    # projected score to simulate the rest of the weeks. Then add in
+    # record to date and you get full season expected results. But it's
+    # the current roster strength that impacts odds of winning the next
+    # game. Not your historical performance." Real record to date still
+    # counts in full - matchup_wins/losses/points_for above all start
+    # from team_state's REAL values and accumulate every simulated
+    # week's outcome exactly as before (see the loop below); this only
+    # changes what DRIVES each remaining week's simulated score, not how
+    # real+simulated results get tallied into final standings.
+    #
+    # FALLBACK path (shrinkage_prior not given - rare: e.g. very early in
+    # a new week before this week's rosters/projections have been
+    # captured yet) keeps the ORIGINAL behavior: shrink_expected_score()
+    # blending toward a flat league-average prior, trusting a team's own
+    # (real-then-simulated) running average more as games accumulate -
+    # there's no team-differentiated prior to anchor to in this case, so
+    # some real-evidence-based signal has to drive the estimate.
+    if shrinkage_prior is not None:
+        base_week_expected = np.tile(dampened_prior[:, None], n_sims)
+    else:
+        base_week_expected = shrink_expected_score(raw_expected[:, None], sim_games_played, prior)
+
     # (n_teams, n_sims) throughout, even before any remaining-week loop
     # iteration runs, so it's always a valid, correctly-shaped "current
     # expected score" for playoff-bracket sampling below - both when
     # regular-season games remain (updated each iteration) and when none
     # do (e.g. simulating the playoffs alone after the real regular
     # season already finished).
-    week_expected = shrink_expected_score(raw_expected[:, None], sim_games_played, prior)
+    week_expected = base_week_expected
     if current_week_live_projection is not None:
         # A small NUDGE toward a real live number for the FIRST
         # remaining (in-progress) week only - see this function's
-        # docstring. Roster Strength/the normal blended estimate above
-        # still drives the large majority of week 1's own expected
-        # score; every later, genuinely-future week is untouched.
+        # docstring. Roster Strength/the normal estimate above still
+        # drives the large majority of week 1's own expected score;
+        # every later, genuinely-future week is untouched.
         live = np.asarray(current_week_live_projection, dtype=float)[:, None]
         week_expected = (1 - CURRENT_WEEK_LIVE_WEIGHT) * week_expected + CURRENT_WEEK_LIVE_WEIGHT * live
     first_remaining_week = True
 
     for week in sorted(remaining_matchups["week"].unique()):
         if not first_remaining_week:
-            running_season_ppg = sim_points_for / sim_avg_games_played
-            week_expected = shrink_expected_score(running_season_ppg, sim_games_played, prior)
+            if shrinkage_prior is not None:
+                week_expected = base_week_expected  # Roster Strength stays the anchor all season - never fades
+            else:
+                running_season_ppg = sim_points_for / sim_avg_games_played
+                week_expected = shrink_expected_score(running_season_ppg, sim_games_played, prior)
         first_remaining_week = False
 
         week_scores = rng.normal(loc=week_expected, scale=stdev[:, None], size=(n_teams, n_sims))

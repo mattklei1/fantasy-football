@@ -5232,3 +5232,60 @@ maximally extreme single-week live projection - several studs on bye,
 near replacement-level - drops the league's real favorite's title odds
 by less than 5 percentage points, proving Roster Strength still
 dominates).
+
+**Immediate follow-up, same session: a real architecture redesign, not
+a tuning tweak.** User, on being told Roster Strength's relative
+influence would fade as more real games accumulate: "I don't want
+roster strength to fade in importance. The playoff simulation should
+use roster strength + projected score to simulate the rest of the
+weeks. Then add in record to date and you get full season expected
+results. But it's the current roster strength that impacts odds of
+winning the next game. Not your historical performance." This is a
+genuinely different model than what shipped a few commits earlier -
+that version's `shrink_expected_score(running_season_ppg, sim_games_
+played, prior)` deliberately shifted an evolving trial's trust FROM the
+Roster-Strength prior TOWARD each team's own (real-then-simulated)
+running average as more weeks got simulated (the exact mechanism a
+prior fix, 2026-09-16, added on purpose - see "recovers as more weeks
+remain"). The user is explicitly rejecting that dynamic for the Roster-
+Strength-prior case specifically: a team's own historical scoring
+average should NEVER influence how FUTURE games get projected once a
+real Roster Strength prior exists - only real, ALREADY-BANKED results
+(wins/losses/points_for) should count, and only toward final standings
+math, not toward reshaping projections.
+
+`simulate_season()` now branches on whether `shrinkage_prior` is given:
+- PRIMARY path (shrinkage_prior given - true for every normal in-season
+  call once rosters are captured): `week_expected` is computed ONCE
+  (the early-season-dampened Roster Strength prior, per the earlier
+  2026-09-22 fix) and held FIXED (`base_week_expected`) for every
+  remaining week of the simulated season - the per-week loop no longer
+  recomputes it from a running average at all. The small current-week
+  live-projection nudge (15% weight, from the same session's earlier
+  fix) still applies on top, for the current week only.
+- FALLBACK path (shrinkage_prior not given - rare, e.g. rosters not yet
+  captured for a brand-new week): the ORIGINAL evolving-trust mechanism
+  is preserved byte-for-byte, since there's no team-differentiated
+  prior to anchor to in that case.
+
+Real record to date needed NO code change to "still count" - matchup_
+wins/matchup_losses/points_for were already seeded from team_state's
+real values and accumulated every simulated week's outcome; only what
+DROVE each week's simulated score changed. Live-verified against the
+real primary league: championship odds are now MORE evenly spread
+(max 15.6%, down from 20.4% pre-redesign) since real win/loss variance
+no longer amplifies through the old shrink-toward-own-record mechanism.
+429/429 tests passing (2 new: `test_own_season_ppg_has_zero_effect_on_
+future_weeks_once_a_prior_exists` - the sharpest possible proof, two
+runs identical in every way except one team's real season_ppg, same rng
+seed, asserting the resulting DataFrames are EXACTLY equal via `pd.
+testing.assert_frame_equal` rather than a fuzzy statistical threshold;
+`test_real_record_still_fully_counts_toward_final_standings` - two teams
+with identical current Roster Strength but a real 9-1 vs 1-9 record
+must still land very differently, proving real results weren't thrown
+out, just decoupled from future-week projection. All pre-existing tests,
+including the 2026-09-16 "bad opening week recovers" test, still pass
+unmodified - that test happens to pass `shrinkage_prior` with an
+IDENTICAL flat value for every team, so diluting one bad real result
+across more evenly-matched future games still produces a narrowing gap
+under the new mechanism, just via a different causal path than before).
