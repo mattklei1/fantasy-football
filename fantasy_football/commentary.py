@@ -988,6 +988,15 @@ def _build_claude_prompt(facts: dict) -> str:
         "Write exactly these sections, in this order, using these exact headers formatted as Markdown bold "
         "on their own line (e.g. \"**HEADLINE**\"), followed by a blank line before that section's text:\n"
         + "\n".join(SECTION_ORDER)
+        + "\n\n"
+        "LENGTH (user feedback 2026-09-29: a prior recap ran long because every section got the same heavy "
+        "treatment - 'not every section has to be that long'): most sections should be TIGHT, 2-3 sentences "
+        "- one real stat, one line of trash talk, done. Don't pad a section that only has one plain fact "
+        "behind it (e.g. FRAUD WATCH, POWER RANKING MOVERS, PLAYOFF ODDS) with extra filler just to match "
+        "the length of a meatier section. Save the longer, multi-stat treatment for the 1-2 sections each "
+        "week where the facts actually earn it (usually HEADLINE and whichever of GAME OF THE WEEK/BEATDOWN "
+        "OF THE WEEK/COACHING DISASTER has the most dramatic real number behind it) - let the underlying "
+        "data decide which sections get room, don't default to maximum length everywhere."
         + "\n\n" + bad_beat_instructions
         + "\n\n" + other_instructions
         + "\n\nFACTS (JSON):\n"
