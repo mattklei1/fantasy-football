@@ -688,18 +688,58 @@ def ingest_season(conn, client: ESPNClient, season: int, log=print) -> None:
     conn.commit()
 
 
+def _catch_up_completed_weeks(conn, league, season: int, team_pk_by_espn_id: dict, log=print) -> None:
+    """Marks any week ESPN now considers finished (week < league.
+    current_week) but this DB still has sitting at completed=0 (or
+    missing entirely) as genuinely completed, re-ingesting its final box
+    scores. Without this, the lightweight daily refresh (see
+    refresh_daily_data_if_due's docstring - deliberately NOT running the
+    full week-by-week backfill every day, only the current week's
+    projections) never promotes a just-finished week out of "in
+    progress" on its own: only a full refresh_all() (a restart-triggered
+    rebuild, or a manual "Refresh ESPN Data" click) used to do that, so
+    the deployed site could sit showing last week's results for days
+    after real games finished until someone happened to manually refresh
+    it (user, 2026-09-29: "make sure the website reflects data through
+    week 3... looks like it's just through week 2"). Cheap in the common
+    case: the query is one COUNT, and the loop below only touches weeks
+    that are ACTUALLY newly done, not a full-history re-ingest - usually
+    zero or one week's worth of real ESPN calls."""
+    row = conn.execute(
+        "SELECT COALESCE(MAX(week), 0) FROM weekly_team_scores "
+        "WHERE season_id = ? AND completed = 1 AND is_playoff = 0",
+        (season,),
+    ).fetchone()
+    last_completed_in_db = row[0] if row else 0
+
+    for week in range(last_completed_in_db + 1, league.current_week):
+        try:
+            if season >= 2019:
+                ingest_week_boxscores(conn, league, season, week, team_pk_by_espn_id, completed=True)
+            else:
+                ingest_week_scoreboard(conn, league, season, week, team_pk_by_espn_id, completed=True)
+            log(f"[catch-up] season {season} week {week}: now marked completed")
+        except Exception as exc:  # noqa: BLE001 - one bad week shouldn't block the others
+            log(f"[warn] season {season} week {week} catch-up: {exc}")
+
+
 def refresh_daily_data_if_due(conn, league, season: int, log=print) -> bool:
     """Refreshes the 3 inputs behind Roster Strength (ESPN weekly point
     projection, ESPN season-to-date positional rank, FantasyPros ROS
     rank), PLUS team metadata (name, record - cheap, from the
     already-fetched `league` object, no extra ESPN call) so a manager
-    renaming their team in ESPN shows up here too. Gated by
-    schedule_guard.should_refresh_daily so it actually does this work at
-    most once a day no matter how often it's called. Deliberately
-    separate from the rest of ingest_season's week-by-week roster/score
-    backfill (which is comparatively slow) so this can also be called
-    directly from a page load - see ui_common.ensure_daily_data_fresh().
-    Returns True if it actually refreshed.
+    renaming their team in ESPN shows up here too, PLUS (2026-09-29) any
+    week that has genuinely finished since the last refresh (see
+    _catch_up_completed_weeks) and the `seasons` row itself (current_week
+    etc.), so the deployed site's own notion of "current week" advances
+    on its own instead of staying stuck at whatever the last full
+    refresh_all() saw. Gated by schedule_guard.should_refresh_daily so it
+    actually does this work at most once a day no matter how often it's
+    called. Deliberately separate from the rest of ingest_season's
+    week-by-week roster/score backfill (which is comparatively slow) so
+    this can also be called directly from a page load - see
+    ui_common.ensure_daily_data_fresh(). Returns True if it actually
+    refreshed.
 
     The weekly point projection refresh (ingest_week_boxscores for just
     the current week, `completed=False` - same convention as
@@ -729,6 +769,17 @@ def refresh_daily_data_if_due(conn, league, season: int, log=print) -> bool:
         team_pk_by_espn_id = ingest_teams(conn, league, season)
     except Exception as exc:  # noqa: BLE001 - a team-metadata hiccup shouldn't block the rank refresh below
         log(f"[warn] season {season} team info: {exc}")
+
+    if team_pk_by_espn_id:
+        try:
+            _catch_up_completed_weeks(conn, league, season, team_pk_by_espn_id, log=log)
+        except Exception as exc:  # noqa: BLE001 - shouldn't block the rest of the daily refresh
+            log(f"[warn] season {season} completed-week catch-up: {exc}")
+
+    try:
+        ingest_season_row(conn, league, season, current_season=season)
+    except Exception as exc:  # noqa: BLE001
+        log(f"[warn] season {season} season row: {exc}")
 
     last_week = league.current_week
     try:
