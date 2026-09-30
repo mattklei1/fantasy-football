@@ -81,11 +81,7 @@ class PlayerClaimResult:
 #: ever emit; an unrecognized one falls back to printing the raw status
 #: code rather than guessing at a label.
 _FAILURE_LABELS = {
-    "FAILED_PLAYERALREADYDROPPED": (
-        "the player they meant to drop for it was already gone by the time it processed (usually "
-        "because one of their OWN other claims that same run got priority and used up that roster "
-        "spot first)"
-    ),
+    "FAILED_PLAYERALREADYDROPPED": "the player they meant to drop for it was already gone by the time it processed",
     "FAILED_ROSTERFULL": "no open roster spot",
     "FAILED_INSUFFICIENTBUDGET": "not enough FAAB budget left after their other claims",
 }
