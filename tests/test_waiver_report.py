@@ -67,6 +67,78 @@ def test_fetch_week_claims_no_winner_when_all_failed():
     assert claims[0].winning_bid is None
 
 
+def test_fetch_week_claims_prefers_a_failed_status_over_a_stale_pending_retry():
+    # ESPN can log the SAME team's claim for the SAME player twice across
+    # its own processing retries (a PENDING placeholder alongside the
+    # real terminal FAILED_* outcome) - the more informative status
+    # should win, not just whichever transaction happened to come first.
+    txns = [
+        _txn(_team("Team A"), "EXECUTED", 5, [_item(1, "Player X")]),
+        _txn(_team("Team B"), "PENDING", 8, [_item(1, "Player X")]),
+        _txn(_team("Team B"), "FAILED_PLAYERALREADYDROPPED", 8, [_item(1, "Player X")]),
+    ]
+    claims = fetch_week_claims(_FakeLeague(txns), scoring_period=1)
+    c = claims[0]
+    team_b_entry = next(entry for entry in c.all_bids if entry[0] == "Team B")
+    assert team_b_entry == ("Team B", 8, "FAILED_PLAYERALREADYDROPPED")
+
+
+def test_fetch_week_claims_picks_the_highest_bid_among_equally_ranked_retries():
+    # a team can place several real backup claims for the same player at
+    # DIFFERENT price points with different drop targets (seen live
+    # 2026-09-30: McConkey Kong tried Jaylen Wright at $1, $2, and $4
+    # across 3 separate claims, two of them tied at FAILED_
+    # INVALIDPLAYERSOURCE) - the most aggressive real amount should win
+    # the tie, not whichever one happened to be listed first.
+    txns = [
+        _txn(_team("Team A"), "EXECUTED", 6, [_item(1, "Player X")]),
+        _txn(_team("Team B"), "PENDING", 1, [_item(1, "Player X")]),
+        _txn(_team("Team B"), "FAILED_INVALIDPLAYERSOURCE", 4, [_item(1, "Player X")]),
+        _txn(_team("Team B"), "PENDING", 1, [_item(1, "Player X")]),
+        _txn(_team("Team B"), "FAILED_INVALIDPLAYERSOURCE", 2, [_item(1, "Player X")]),
+    ]
+    claims = fetch_week_claims(_FakeLeague(txns), scoring_period=1)
+    team_b_entry = next(entry for entry in claims[0].all_bids if entry[0] == "Team B")
+    assert team_b_entry == ("Team B", 4, "FAILED_INVALIDPLAYERSOURCE")
+
+
+def test_build_message_flags_a_higher_losing_bid_that_failed_for_a_non_amount_reason():
+    # real bug found 2026-09-30 (user: "Kendre miller has a losing bid at
+    # a higher $ amount") - Doody Guac Boys' $8 bid lost to a $5 winner
+    # not because it was outbid, but because their claim's own intended
+    # drop had already been used by an earlier claim of theirs that same
+    # run (FAILED_PLAYERALREADYDROPPED). The report must call this out,
+    # not just silently list the raw dollar amounts.
+    claim = PlayerClaimResult(
+        1, "Kendre Miller", "RB", "Jerusalem Price Fixers", 5.0,
+        all_bids=[
+            ("Jerusalem Price Fixers", 5.0, "EXECUTED"),
+            ("Doody Guac Boys", 8.0, "FAILED_PLAYERALREADYDROPPED"),
+            ("McConkey Kong", 1.0, "FAILED_INVALIDPLAYERSOURCE"),
+        ],
+    )
+    msg = build_message([claim], week=4)
+    assert "Doody Guac Boys's $8 bid was actually higher" in msg
+    assert "already gone by the time it processed" in msg
+    # a normal lower loss (McConkey Kong, plain outbid) gets no footnote
+    assert "McConkey Kong's $1 bid" not in msg
+
+
+def test_build_message_no_footnote_for_a_plain_outbid_loss_even_if_amounts_look_close():
+    # FAILED_INVALIDPLAYERSOURCE is the normal "someone else's claim got
+    # there first" status - a losing bid with this status should never
+    # get the higher-bid footnote, even though it lost.
+    claim = PlayerClaimResult(
+        1, "Ollie Gordon II", "RB", "Doody Guac Boys", 62.0,
+        all_bids=[
+            ("Doody Guac Boys", 62.0, "EXECUTED"),
+            ("Lamar Comeback SZN", 51.0, "FAILED_INVALIDPLAYERSOURCE"),
+        ],
+    )
+    msg = build_message([claim], week=4)
+    assert "↳" not in msg
+
+
 def test_overspent_requires_both_ratio_and_dollar_floor():
     # ratio triggers (2x) but under the $5 floor - should NOT flag
     small = PlayerClaimResult(1, "Cheap Guy", "RB", "Team A", 2.0, suggested_bid=1.0)
@@ -110,7 +182,9 @@ def test_build_message_empty_week():
 def test_build_message_highlights_contested_and_overspent():
     contested = PlayerClaimResult(
         1, "Daniel Jones", "QB", "Doody Guac Boys", 12.0,
-        all_bids=[("Doody Guac Boys", 12.0), ("Team B", 5.0), ("Team C", 2.0)], suggested_bid=8.0,
+        all_bids=[("Doody Guac Boys", 12.0, "EXECUTED"), ("Team B", 5.0, "FAILED_INVALIDPLAYERSOURCE"),
+                  ("Team C", 2.0, "FAILED_INVALIDPLAYERSOURCE")],
+        suggested_bid=8.0,
     )
     overspent = PlayerClaimResult(2, "Panic Pickup", "RB", "Hammer Time", 40.0, suggested_bid=5.0)
     bargain = PlayerClaimResult(3, "Bargain Bin Bijan", "RB", "Roses to Flowers", 2.0, suggested_bid=25.0)
@@ -142,7 +216,9 @@ def test_build_message_contested_claim_does_not_repeat_the_winning_bid():
     # list should only show the OTHER (losing) bidders, not restate it.
     contested = PlayerClaimResult(
         1, "Daniel Jones", "QB", "Doody Guac Boys", 12.0,
-        all_bids=[("Doody Guac Boys", 12.0), ("Team B", 5.0), ("Team C", 2.0)], suggested_bid=8.0,
+        all_bids=[("Doody Guac Boys", 12.0, "EXECUTED"), ("Team B", 5.0, "FAILED_INVALIDPLAYERSOURCE"),
+                  ("Team C", 2.0, "FAILED_INVALIDPLAYERSOURCE")],
+        suggested_bid=8.0,
     )
     msg = build_message([contested], week=5)
     contested_line = next(line for line in msg.splitlines() if "Daniel Jones" in line)
@@ -158,7 +234,8 @@ def test_build_message_contested_claim_omits_bidder_count():
     # at all, just the winner and the other bids.
     contested = PlayerClaimResult(
         1, "Daniel Jones", "QB", "Doody Guac Boys", 12.0,
-        all_bids=[("Doody Guac Boys", 12.0), ("Team B", 5.0)], suggested_bid=8.0,
+        all_bids=[("Doody Guac Boys", 12.0, "EXECUTED"), ("Team B", 5.0, "FAILED_INVALIDPLAYERSOURCE")],
+        suggested_bid=8.0,
     )
     msg = build_message([contested], week=5)
     contested_line = next(line for line in msg.splitlines() if "Daniel Jones" in line)
