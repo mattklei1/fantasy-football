@@ -1,11 +1,12 @@
 name: GroupMe Lineup Suggestions (Wednesday)
 
-# Fires across a DST-safety window targeting 8am Pacific, restricted to
-# Wednesday. 8am PDT = 15:00 UTC, 8am PST = 16:00 UTC, so this window
-# covers both.
+# Scheduled trigger disabled 2026-10-10 (user: "i dont want any of the
+# other automated messages going out anymore. just the weekly recap") -
+# see lineup-alert.yml's comment for the full reasoning (this also
+# contributed to GitHub's Actions scheduler throttling weekly-recap.yml
+# out of its own target window). workflow_dispatch stays so this can
+# still be run manually on demand.
 on:
-  schedule:
-    - cron: "7,22,37,52 15,16 * * 3"
   workflow_dispatch: {}
 
 jobs:

@@ -1,12 +1,17 @@
 name: GroupMe Lineup Alert (Sunday)
 
-# Fires across a DST-safety window targeting 8:45am Pacific, restricted
-# to Sunday. 8:45am PDT = 15:45 UTC, 8:45am PST = 16:45 UTC - the :37/:52
-# firings each hour land within is_target_time_now's tolerance window of
-# both.
+# Scheduled trigger disabled 2026-10-10 (user: "i dont want any of the
+# other automated messages going out anymore. just the weekly recap") -
+# this was also part of why weekly-recap.yml kept firing hours outside
+# its own target window and silently self-skipping: GitHub's Actions
+# scheduler was throttling this whole repo down to roughly 4 actual
+# scheduled executions/day shared across ALL workflows combined,
+# regardless of each one's own declared cron cadence - this repo's
+# other very-high-frequency crons (keep-app-awake every 15min,
+# matchup-snapshot every 10min) were almost certainly crowding out
+# everything else, including weekly-recap's narrow Tuesday window.
+# workflow_dispatch stays so this can still be run manually on demand.
 on:
-  schedule:
-    - cron: "7,22,37,52 15,16 * * 0"
   workflow_dispatch: {}
 
 jobs:

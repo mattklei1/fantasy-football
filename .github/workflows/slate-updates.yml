@@ -1,19 +1,12 @@
 name: GroupMe Slate Updates
 
-# Single Sunday send at ~5:00pm Pacific (the 1:30pm early-slate send was
-# dropped per user request 2026-09-14 - one consolidated update instead
-# of two). Fires several times across a DST-safety window rather than
-# once at a fixed UTC time - GitHub Actions cron has no DST awareness,
-# and the NFL season crosses the November US DST transition. Each firing
-# checks the real Pacific time (fantasy_football/schedule_guard.py) and
-# only the one closest to the actual target does anything - see that
-# module's docstring for the full reasoning. Minutes are offset from
-# :00/:15/:30 on purpose (GitHub recommends not scheduling on the exact
-# hour/half-hour, when many workflows across GitHub fire at once).
+# Scheduled trigger disabled 2026-10-10 (user: "i dont want any of the
+# other automated messages going out anymore. just the weekly recap") -
+# see lineup-alert.yml's comment for the full reasoning (this also
+# contributed to GitHub's Actions scheduler throttling weekly-recap.yml
+# out of its own target window). workflow_dispatch stays so this can
+# still be run manually on demand.
 on:
-  schedule:
-    # ~5:00pm Pacific Sunday: 00:00 UTC Mon (PDT) / 01:00 UTC Mon (PST)
-    - cron: "7,22,37,52 0,1 * * 1"
   workflow_dispatch: {}  # manual "Run workflow" button for testing
 
 jobs:
