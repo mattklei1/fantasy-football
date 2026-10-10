@@ -337,9 +337,30 @@ CREATE TABLE IF NOT EXISTS refresh_log (
 
 
 def get_connection() -> sqlite3.Connection:
+    """Every caller opens its OWN fresh connection to the same on-disk
+    file (see dashboard_data.get_connection's docstring - deliberate,
+    since a cached connection isn't safe across Streamlit's threads) -
+    with the deployed app seeing real concurrent visitors, that means
+    genuinely concurrent connections to one SQLite file, not just one
+    at a time. Two settings matter here (added 2026-10-10 after the
+    live app started hard-crashing with sqlite3.OperationalError on
+    EVERY page load, in init_db's very first write - see PROJECT_BRIEF):
+
+    - WAL journal mode lets readers run alongside a single writer
+      instead of a writer blocking every reader (the default rollback-
+      journal mode locks the whole file for the duration of a write).
+    - A generous busy_timeout makes a writer that DOES have to wait
+      retry for up to this long instead of failing immediately with
+      "database is locked" the moment two writes overlap even briefly -
+      sqlite3's own default timeout is only 5s, easily exceeded by a
+      real multi-call ESPN refresh (ingest.py's refresh_daily_data_if_
+      due/_catch_up_completed_weeks can hold a write transaction open
+      across several sequential network calls before its one commit)."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 
