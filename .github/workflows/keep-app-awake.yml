@@ -12,12 +12,23 @@ name: Keep Streamlit App Awake
 # A plain periodic HTTP request to the app's own public URL is the
 # standard workaround - it's enough to register as real traffic and
 # reset Streamlit's idle clock, no auth or app code involved. Every 15
-# minutes is deliberately frequent: this repo's other scheduled
-# workflows have shown GitHub's own cron scheduler missing or badly
-# delaying infrequent triggers (see PROJECT_BRIEF's GitHub Actions
-# scheduler-reliability notes), so a tight interval means a few missed
-# ticks still leave the app pinged often enough to never go idle long
-# enough to actually sleep.
+# minutes was CHOSEN deliberately frequent on the assumption that a few
+# missed GitHub Actions ticks would still leave the app pinged often
+# enough to never go idle long enough to sleep - that assumption is now
+# disproven (real run history, 2026-10-16): this workflow's declared
+# every-15-minutes schedule is actually firing roughly once every 5-7
+# hours, not "a few missed ticks" but a near-total miss rate. GitHub's
+# Actions scheduler throttles this whole account's total scheduled
+# executions well below what any workflow declares, and that isn't
+# something fixable from inside this repo's own cron expressions (the
+# other, lower-priority scheduled workflows were trimmed the same day
+# to reduce competing load, but that's a mitigation, not a guarantee).
+#
+# The genuinely reliable fix is an external, purpose-built uptime
+# pinger that isn't subject to GitHub's own scheduling limits - e.g.
+# UptimeRobot's free tier (5-minute interval) or cron-job.org, pointed
+# at this same URL. This workflow is kept as a free redundant backup,
+# not the primary mechanism.
 on:
   schedule:
     - cron: "*/15 * * * *"

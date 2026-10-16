@@ -1,16 +1,29 @@
 name: Matchup Win-Probability Snapshot
 
-# Fires every 10 minutes, every day - the script itself decides whether
-# to actually do anything via schedule_guard.is_within_live_window()
-# (real NFL broadcast windows only: Thu/Mon evening, all Sunday), so a
-# firing outside real game time no-ops in a couple seconds with no
-# ESPN/GitHub calls. Simpler than trying to express "every 10 min but
-# only Thu evening/Sunday/Mon evening" as a single cron expression, and
-# the script's own Pacific-time check is what's actually authoritative
-# (see fantasy_football/schedule_guard.py).
+# Fires every 20 minutes, every day (reduced from every 10 minutes
+# 2026-10-16 - see below) - the script itself decides whether to
+# actually do anything via schedule_guard.is_within_live_window() (real
+# NFL broadcast windows only: Thu/Mon evening, all Sunday), so a firing
+# outside real game time no-ops in a couple seconds with no ESPN/GitHub
+# calls. Simpler than trying to express "every 20 min but only Thu
+# evening/Sunday/Mon evening" as a single cron expression, and the
+# script's own Pacific-time check is what's actually authoritative (see
+# fantasy_football/schedule_guard.py).
+#
+# This was the single highest-declared-frequency schedule in the repo
+# (144 slots/day) - GitHub Actions' own scheduler was confirmed
+# unreliable for this account (real run history, 2026-10-16: workflows
+# fire far less often than declared, e.g. keep-app-awake.yml's every-
+# 15-minute schedule was actually landing about once every 5-7 hours),
+# and this entry was almost certainly the biggest single contributor to
+# that account-wide scheduling pressure even though most of its firings
+# do nothing. Halving its declared volume gives the OTHER schedules
+# (especially keep-app-awake.yml, whose job is time-sensitive in a way
+# this isn't) more room - a 20-minute cadence is still plenty of
+# resolution for a win-probability trend line.
 on:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/20 * * * *"
   workflow_dispatch: {}
 
 # Needed so the auto-provided secrets.GITHUB_TOKEN below can push a
