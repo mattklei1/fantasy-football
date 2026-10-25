@@ -133,6 +133,36 @@ def backtest_score_range_and_cutline(conn, season, last_completed_week, position
         verdict = "stdev input looks reasonably well-sized"
     print(f"Verdict: {verdict}")
 
+    # A single symmetric stdev multiplier assumes the two tails miss by
+    # the same amount - user feedback 2026-10-25 (a live p90 in the 200s,
+    # "only achieved a couple times in our league's history") flagged
+    # that this assumption may not hold: widening BOTH tails equally
+    # would make an already-too-high upper bound even less plausible if
+    # the real miss is concentrated on the LOWER side. Check each tail
+    # separately instead of assuming symmetry.
+    below_p10 = df["actual"] < df["p10"]
+    above_p90 = df["actual"] > df["p90"]
+    print(f"\n--- TAIL ASYMMETRY (is the miss on one side only?) ---")
+    print(f"Target per side: 10.0%")
+    print(f"Actual below p10: {below_p10.mean():.1%}  ({below_p10.sum()}/{n})")
+    print(f"Actual above p90: {above_p90.mean():.1%}  ({above_p90.sum()}/{n})")
+    z_skew = df["z"].skew()
+    print(f"Skew of z-distribution: {z_skew:+.3f}  (0 = symmetric; negative = fatter LEFT/downside tail than a Normal model assumes)")
+    # Empirical z-value at the real 10th/90th percentile of actual misses
+    # - directly says what asymmetric offsets (in stdev units) would have
+    # actually hit 10%/90% coverage on EACH side, instead of assuming the
+    # same +/-1.2816 multiplier fits both.
+    empirical_p10_z = df["z"].quantile(0.10)
+    empirical_p90_z = df["z"].quantile(0.90)
+    print(f"\nCurrent symmetric z-multiplier: -1.2816 / +1.2816")
+    print(f"Empirically-implied z-multiplier: {empirical_p10_z:+.3f} / {empirical_p90_z:+.3f}")
+    print(
+        "(i.e. a correctly-calibrated p10 would use a LARGER downside multiplier "
+        f"({empirical_p10_z:+.2f} vs -1.28) while p90 would use "
+        f"{'a SMALLER upside multiplier' if empirical_p90_z < 1.2816 else 'about the same or a larger upside multiplier'} "
+        f"({empirical_p90_z:+.2f} vs +1.28))"
+    )
+
     print(f"\n--- MEDIAN CUTLINE CALIBRATION (p_making_it vs. actually cleared the real weekly median) ---")
     brier = ((df["p_making_it"] - df["actually_made_it"].astype(float)) ** 2).mean()
     print(f"Brier score: {brier:.4f}  (0 = perfect; 0.25 = no better than a flat 50% guess every time)")
