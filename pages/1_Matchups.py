@@ -175,6 +175,7 @@ if meta.get("median_scoring") and not is_final_week and not is_future_week and n
                 "rank": rank,
                 "team": team_name,
                 "manager": mgr.split()[-1] if mgr else mgr,
+                "score": score_by_team.get(pk, 0.0),
                 "projected": proj,
                 "vs_cutline": proj - cutline_score,
                 "make_pct": (analysis.get(pk, {}).get("p_making_it") or 0) * 100,
@@ -182,6 +183,11 @@ if meta.get("median_scoring") and not is_final_week and not is_future_week and n
                 "p90": analysis.get(pk, {}).get("p90") or 0.0,
                 "tone": ui.tone_for_probability(analysis.get(pk, {}).get("p_making_it") or 0),
             }
+            # still ranked/sorted by PROJECTED total (see `ranked` above,
+            # unchanged) - the new current-score column is informational
+            # only, not a re-sort (user, 2026-10-25: "add a column for
+            # current points scored that week. But still sort by
+            # projected").
             for rank, (pk, team_name, mgr, proj) in enumerate(ranked, start=1)
         ]
 

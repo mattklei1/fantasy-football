@@ -217,7 +217,9 @@ def cutline_table_html(rows: list[dict]) -> str:
     be visible with no scrolling), and its grid renders via canvas so
     individual columns can't be responsively hidden with plain CSS. Each
     row dict needs: rank, team, manager (last name only - caller trims
-    it, this function just places it), projected, vs_cutline, make_pct
+    it, this function just places it), score (current live points
+    scored so far this week - informational only, NOT what the table is
+    sorted by, see rank/caller), projected, vs_cutline, make_pct
     (0-100), p10, p90, tone ("win"/"warn"/"loss"). One line per team
     (manager inline to the right of the team name, not stacked
     underneath) keeps row height tight; the manager name is dropped
@@ -234,6 +236,7 @@ def cutline_table_html(rows: list[dict]) -> str:
             f'<span class="cutline-manager" style="font-size:0.72rem; color:var(--text-muted); '
             f'margin-left:6px;">{r["manager"]}</span>'
             '</td>'
+            f'<td style="padding:2px 8px; text-align:right;">{r["score"]:.1f}</td>'
             f'<td style="padding:2px 8px; text-align:right;">{r["projected"]:.1f}</td>'
             f'<td style="padding:2px 8px; text-align:right;">{r["vs_cutline"]:+.1f}</td>'
             f'<td style="padding:2px 8px; text-align:right;">{r["make_pct"]:.0f}%</td>'
@@ -244,6 +247,7 @@ def cutline_table_html(rows: list[dict]) -> str:
         '<tr style="border-bottom:2px solid var(--card-border);">'
         '<th style="padding:2px 8px; text-align:center;">#</th>'
         '<th style="padding:2px 8px; text-align:left;">Team</th>'
+        '<th style="padding:2px 8px; text-align:right;">Score</th>'
         '<th style="padding:2px 8px; text-align:right;">Proj</th>'
         '<th style="padding:2px 8px; text-align:right;">vs Cut</th>'
         '<th style="padding:2px 8px; text-align:right;">Make %</th>'
