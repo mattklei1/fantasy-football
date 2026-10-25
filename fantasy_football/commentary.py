@@ -33,7 +33,7 @@ import sqlite3
 
 import pandas as pd
 
-from . import config, db, playoff_odds_snapshots
+from . import config, db, playoff_odds_snapshots, roster_strength_snapshots
 from .metrics import loaders as metric_loaders
 from .metrics.lineup_optimizer import RosterPlayer, optimal_lineup
 from .metrics.loaders import load_matchups, load_roster_with_projections, load_weekly_scores
@@ -408,12 +408,13 @@ def _playoff_sim_baseline(conn: sqlite3.Connection, season: int, week: int):
     # league-average fallback instead, inconsistent with the rest of the
     # app's playoff odds. `next_week` (week + 1) stands in for "current
     # week" here since this baseline is built right after `week` just
-    # completed.
+    # completed. SMOOTHED (roster_strength_snapshots.get_smoothed_prior),
+    # not the raw day-of value - see that module's docstring.
     shrinkage_prior = None
     current_week_live_projection = None
     next_week = week + 1
     if position_slot_counts:
-        prior_series = metric_loaders.load_roster_strength_shrinkage_prior(
+        prior_series = roster_strength_snapshots.get_smoothed_prior(
             conn, season, next_week, position_slot_counts, reg_season_count
         )
         if not prior_series.empty:

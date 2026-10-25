@@ -4,19 +4,24 @@ import numpy as np
 import pytest
 
 from fantasy_football.metrics.cutline_sim import (
+    Z_10TH_PERCENTILE,
+    Z_90TH_PERCENTILE,
     TeamScoreModel,
     percentile_range,
     simulate_cutline_probabilities,
 )
 
 
-def test_percentile_range_is_symmetric_around_mean():
+def test_percentile_range_uses_the_real_calibrated_asymmetric_multipliers():
+    # deliberately NOT symmetric around the mean (2026-10-25 backtest
+    # against real season results: actual scores missed below p10 far
+    # more than a well-calibrated p10 should, so the downside multiplier
+    # is wider than the upside one - see Z_10TH_PERCENTILE's docstring).
     team = TeamScoreModel(team_pk=1, mean=100.0, stdev=20.0)
     p10, p90 = percentile_range(team)
-    assert p10 == pytest.approx(100.0 - 1.2815515655446004 * 20.0)
-    assert p90 == pytest.approx(100.0 + 1.2815515655446004 * 20.0)
-    # symmetric around the mean
-    assert (100.0 - p10) == pytest.approx(p90 - 100.0)
+    assert p10 == pytest.approx(100.0 + Z_10TH_PERCENTILE * 20.0)
+    assert p90 == pytest.approx(100.0 + Z_90TH_PERCENTILE * 20.0)
+    assert (100.0 - p10) > (p90 - 100.0)  # downside reaches further than upside
 
 
 def test_percentile_range_floors_at_zero_for_low_mean_high_stdev():

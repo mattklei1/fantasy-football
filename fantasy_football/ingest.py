@@ -802,6 +802,31 @@ def refresh_daily_data_if_due(conn, league, season: int, log=print) -> bool:
         except Exception as exc:  # noqa: BLE001
             log(f"[warn] season {season} fantasypros rankings: {exc}")
 
+    # Advance the Roster Strength EMA (see roster_strength_snapshots.py)
+    # once per day, same cadence as the other 3 Roster Strength inputs
+    # just refreshed above - this is what actually dampens single-day
+    # rank/projection churn from flowing straight through to published
+    # playoff odds (2026-10-25 backtest: 67% of real week-to-week
+    # playoff-odds swing came from this kind of drift, not from games).
+    try:
+        meta_row = conn.execute(
+            "SELECT position_slot_counts, reg_season_count FROM seasons WHERE season_id = ?", (season,)
+        ).fetchone()
+        if meta_row and meta_row[0]:
+            from . import roster_strength_snapshots
+            from .metrics import loaders as metric_loaders
+
+            position_slot_counts = json.loads(meta_row[0])
+            raw_prior = metric_loaders.load_roster_strength_shrinkage_prior(
+                conn, season, last_week, position_slot_counts, meta_row[1]
+            )
+            if not raw_prior.empty:
+                result = roster_strength_snapshots.update_stored_ema(season, raw_prior.to_dict())
+                if not result["success"]:
+                    log(f"[warn] season {season} roster-strength EMA not saved: {result['message']}")
+    except Exception as exc:  # noqa: BLE001 - shouldn't block the rest of the daily refresh
+        log(f"[warn] season {season} roster-strength EMA update: {exc}")
+
     db.record_roster_strength_refresh(conn, season)
     conn.commit()
     return True

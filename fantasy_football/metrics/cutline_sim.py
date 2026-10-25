@@ -19,10 +19,30 @@ import numpy as np
 
 DEFAULT_N_SIMS = 10_000
 
-# scipy.stats.norm.ppf(0.10) / ppf(0.90) - hardcoded so this module has no
-# scipy dependency for two constants.
-Z_10TH_PERCENTILE = -1.2815515655446004
+# scipy.stats.norm.ppf(0.90) - hardcoded so this module has no scipy
+# dependency for this constant.
 Z_90TH_PERCENTILE = 1.2815515655446004
+
+# NOT the symmetric Normal match (that would be -1.2815515655446004) -
+# calibrated against this league's real 2026 season results instead
+# (scripts/backtest_projection_calibration.py, run 2026-10-25, 72
+# team-weeks across weeks 1-6): actual scores landed below p10 nearly
+# 2x as often as a well-calibrated p10 should (18.1% vs. the 10%
+# target), while the upside (p90) missed less severely (13.9%) - real
+# fantasy busts (season-ending injuries, bad game scripts, bye-week
+# lineup mistakes) run worse than a symmetric Normal model assumes,
+# with no equivalent-magnitude upside counterpart.
+#
+# Z_90TH_PERCENTILE was deliberately LEFT at the symmetric Normal value
+# despite the same backtest's aggregate stat also implying some
+# widening there (empirical +1.505) - user feedback the same day
+# flagged a real LIVE p90 in the 200s as implausible (hit only a
+# couple times in this league's history), and the upside sample (10
+# observations) is thin and dominated by one team's two outlier
+# blowout weeks. Re-run the backtest periodically as more weeks
+# accumulate and recalibrate both sides together once there's a bigger
+# sample - don't hand-tune this value again without re-running it.
+Z_10TH_PERCENTILE = -1.661
 
 
 @dataclass(frozen=True)

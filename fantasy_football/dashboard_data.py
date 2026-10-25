@@ -362,13 +362,19 @@ def get_playoff_simulation(season: int) -> pd.DataFrame:
     # matchup") - falls back to simulate_season()'s default flat league
     # average when current-week roster/projection data isn't available
     # yet (e.g. very early in a new week before rosters are captured).
+    # SMOOTHED (roster_strength_snapshots.get_smoothed_prior), not the
+    # raw day-of value - see that module's docstring (2026-10-25
+    # backtest: most week-to-week playoff-odds swing was coming from
+    # Roster Strength churn, not from games actually being played).
     shrinkage_prior = None
     current_week_live_projection = None
     current_week = meta.get("current_week")
     position_slot_counts_json = meta.get("position_slot_counts")
     if current_week and position_slot_counts_json:
+        from . import roster_strength_snapshots
+
         position_slot_counts = json.loads(position_slot_counts_json)
-        prior_series = metric_loaders.load_roster_strength_shrinkage_prior(
+        prior_series = roster_strength_snapshots.get_smoothed_prior(
             conn, season, current_week, position_slot_counts, meta["reg_season_count"]
         )
         if not prior_series.empty:
