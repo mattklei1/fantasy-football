@@ -1,0 +1,27 @@
+name: Draft Weekly Recap (no send)
+
+# Manual-only, one-off tool (scripts/draft_weekly_recap.py) - no
+# schedule trigger, never runs unless explicitly dispatched. Generates
+# the real Weekly Recap and prints it to this run's log for review -
+# does NOT post to GroupMe (unlike weekly-recap.yml).
+on:
+  workflow_dispatch: {}
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Draft weekly recap
+        env:
+          LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          SWID: ${{ secrets.SWID }}
+          CURRENT_SEASON: ${{ secrets.CURRENT_SEASON }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/draft_weekly_recap.py
