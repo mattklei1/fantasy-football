@@ -3,7 +3,9 @@ updates, waiver recaps - see scripts/post_*.py). A Bot's bot_id can ONLY
 post messages to the one group it was created for - it has no read
 access, no account access, nothing else it could leak even if it were
 ever exposed, unlike the personal access token used earlier in this
-project for one-off read-only GroupMe research.
+project for one-off read-only GroupMe research, and (as of 2026-10-29)
+for image uploads - see upload_image()'s docstring for why a bot_id
+alone can't post an image.
 
 GroupMe has NO real text-formatting support - confirmed against their
 own API docs (2026-09-14): a message's "attachments" only support
@@ -23,8 +25,10 @@ import re
 import requests
 
 POST_URL = "https://api.groupme.com/v3/bots/post"
+IMAGE_UPLOAD_URL = "https://image.groupme.com/pictures"
 MAX_MESSAGE_LENGTH = 1000  # GroupMe's documented per-message limit
 TIMEOUT_SECONDS = 15
+IMAGE_UPLOAD_TIMEOUT_SECONDS = 30  # a real image upload can take longer than a plain text post
 
 _MARKDOWN_BOLD = re.compile(r"\*\*(.+?)\*\*")
 
@@ -110,3 +114,37 @@ def send_long_message(bot_id: str, text: str, max_length: int = MAX_MESSAGE_LENG
         # as a last resort rather than fail the whole post
         for i in range(0, len(chunk), max_length):
             send_message(bot_id, chunk[i : i + max_length])
+
+
+def upload_image(access_token: str, image_bytes: bytes, content_type: str = "image/png") -> str:
+    """Uploads `image_bytes` to GroupMe's Image Service and returns the
+    resulting i.groupme.com-hosted URL - the only kind of URL GroupMe's
+    bot message attachments accept. Per GroupMe's own API docs, this
+    endpoint needs a real user's OAuth access token (config.
+    groupme_access_token(), from dev.groupme.com) - a bot's bot_id can
+    POST a message but can't call the Image Service at all, which is
+    why sending an image is a two-step process (upload here first, then
+    send_message_with_image()) rather than one call. Raises requests.
+    HTTPError on failure, same convention as send_message()."""
+    resp = requests.post(
+        IMAGE_UPLOAD_URL,
+        headers={"X-Access-Token": access_token, "Content-Type": content_type},
+        data=image_bytes,
+        timeout=IMAGE_UPLOAD_TIMEOUT_SECONDS,
+    )
+    resp.raise_for_status()
+    return resp.json()["payload"]["url"]
+
+
+def send_message_with_image(bot_id: str, text: str, image_url: str) -> None:
+    """Posts one message (<=1000 chars of text) with a single image
+    attachment. `image_url` MUST be a real i.groupme.com URL from
+    upload_image() - per GroupMe's API docs, an arbitrary external image
+    URL is not fetched/rendered the same way. Raises requests.HTTPError
+    on failure, same convention as send_message()."""
+    resp = requests.post(
+        POST_URL,
+        json={"bot_id": bot_id, "text": text, "attachments": [{"type": "image", "url": image_url}]},
+        timeout=TIMEOUT_SECONDS,
+    )
+    resp.raise_for_status()

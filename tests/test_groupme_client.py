@@ -6,8 +6,14 @@ from fantasy_football import groupme_client
 
 
 class _FakeResponse:
+    def __init__(self, json_body=None):
+        self._json_body = json_body
+
     def raise_for_status(self):
         pass
+
+    def json(self):
+        return self._json_body
 
 
 def test_send_message_posts_expected_payload(monkeypatch):
@@ -88,3 +94,52 @@ def test_send_long_message_hard_cuts_a_single_oversized_paragraph(monkeypatch):
 
     assert len(calls) == 3
     assert "".join(calls) == text
+
+
+def test_upload_image_posts_to_the_image_service_with_the_access_token(monkeypatch):
+    calls = []
+
+    def fake_post(url, headers, data, timeout):
+        calls.append((url, headers, data, timeout))
+        return _FakeResponse({"payload": {"url": "https://i.groupme.com/abc123.png"}})
+
+    monkeypatch.setattr(groupme_client.requests, "post", fake_post)
+    result = groupme_client.upload_image("my-access-token", b"fake-png-bytes")
+
+    assert result == "https://i.groupme.com/abc123.png"
+    assert len(calls) == 1
+    url, headers, data, _ = calls[0]
+    assert url == groupme_client.IMAGE_UPLOAD_URL
+    assert headers["X-Access-Token"] == "my-access-token"
+    assert headers["Content-Type"] == "image/png"
+    assert data == b"fake-png-bytes"
+
+
+def test_upload_image_respects_a_custom_content_type(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        groupme_client.requests, "post",
+        lambda url, headers, data, timeout: calls.append(headers) or _FakeResponse({"payload": {"url": "x"}}),
+    )
+    groupme_client.upload_image("tok", b"...", content_type="image/jpeg")
+    assert calls[0]["Content-Type"] == "image/jpeg"
+
+
+def test_send_message_with_image_posts_bot_id_text_and_attachment(monkeypatch):
+    calls = []
+
+    def fake_post(url, json, timeout):
+        calls.append((url, json, timeout))
+        return _FakeResponse()
+
+    monkeypatch.setattr(groupme_client.requests, "post", fake_post)
+    groupme_client.send_message_with_image("bot123", "check this out", "https://i.groupme.com/xyz.png")
+
+    assert len(calls) == 1
+    url, payload, _ = calls[0]
+    assert url == groupme_client.POST_URL
+    assert payload == {
+        "bot_id": "bot123",
+        "text": "check this out",
+        "attachments": [{"type": "image", "url": "https://i.groupme.com/xyz.png"}],
+    }

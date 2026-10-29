@@ -174,6 +174,20 @@ def groupme_personal_bot_id() -> str | None:
     return bot_id or None
 
 
+def groupme_access_token() -> str | None:
+    """A GroupMe personal OAuth access token (from dev.groupme.com, "Access
+    Token" at the top of the page after logging in) - needed ONLY to
+    upload an image to GroupMe's Image Service before attaching it to a
+    bot message (see groupme_client.upload_image()/send_message_with_
+    image()). A bot's own bot_id can POST messages but can't hit the
+    Image Service - that endpoint only accepts a real user's access
+    token. Optional: everything else in groupme_client.py (plain text
+    posts) works without this; image attachments are just unavailable
+    until it's set."""
+    token = os.getenv("GROUPME_ACCESS_TOKEN", "").strip()
+    return token or None
+
+
 def github_token() -> str | None:
     """A GitHub Personal Access Token with `repo` write access - used ONLY
     by the Lineup Optimizer's "upload weekly rankings PDF" feature
