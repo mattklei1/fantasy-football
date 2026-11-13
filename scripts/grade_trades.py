@@ -51,6 +51,24 @@ RECENT_DAYS = 5  # ESPN's recent-activity feed has no season-start cutoff of
 # the user asked about trades from "the last few days," so trades older
 # than this are found but not graded.
 
+# A trade ESPN has ACCEPTED but not yet PROCESSED never shows up in
+# ingest_recent_activity's TRADE_SENT/TRADE_RECEIVED feed - that feed is
+# populated once the roster move actually lands, not at acceptance (user,
+# 2026-11-13, supplying this from the real "Trade Accepted" notification:
+# "Here it is. Accepted but not processed"). Supplied by hand below
+# (team names + real player names, resolved against this run's live
+# players/teams tables) rather than guessed at from any ESPN endpoint -
+# no live signal for a merely-accepted trade was found to be reliable.
+PENDING_TRADES = [
+    {
+        "date": "2026-11-12T20:11:00",
+        "legs": [
+            ("Snacks and Waddles Nursery", ["Luther Burden III", "Puka Nacua"]),
+            ("Robbying Moore TDs", ["Tank Dell", "Jared Goff", "Carnell Tate"]),
+        ],
+    },
+]
+
 
 def _group_trades(conn: sqlite3.Connection, season: int) -> dict[str, list[tuple]]:
     """activity_date -> list of (team_pk, action_type, player_id, player_name)
@@ -85,6 +103,34 @@ def _sides(legs: list[tuple]) -> dict:
         out_by_team.setdefault(pk, []).append(pid)
         names_by_id[pid] = name
     return out_by_team, names_by_id
+
+
+def _resolve_pending_trades(conn: sqlite3.Connection, season: int) -> dict[str, list[tuple]]:
+    """Resolves PENDING_TRADES (team names + player names) against this
+    run's real live teams/players tables, into the same activity_date ->
+    legs shape _group_trades() produces, so both sources merge into one
+    trades dict downstream. Raises if a name doesn't match anything real -
+    silently dropping a leg would silently under-grade a real trade."""
+    team_pk_by_name = {
+        name: pk for pk, name in conn.execute("SELECT id, team_name FROM teams WHERE season_id = ?", (season,))
+    }
+    resolved: dict[str, list[tuple]] = {}
+    for trade in PENDING_TRADES:
+        legs = []
+        for team_name, player_names in trade["legs"]:
+            team_pk = team_pk_by_name.get(team_name)
+            if team_pk is None:
+                raise ValueError(f"PENDING_TRADES: no real team named {team_name!r} in season {season}")
+            for player_name in player_names:
+                row = conn.execute(
+                    "SELECT player_id, player_name FROM players WHERE player_name = ?", (player_name,)
+                ).fetchone()
+                if row is None:
+                    raise ValueError(f"PENDING_TRADES: no real player named {player_name!r} found")
+                player_id, real_name = row
+                legs.append((team_pk, "TRADE_SENT", player_id, real_name))
+        resolved[trade["date"]] = legs
+    return resolved
 
 
 def _swap_team(df: pd.DataFrame, player_ids: list[int], new_team_pk: int) -> pd.DataFrame:
@@ -132,10 +178,14 @@ def main() -> int:
         compute_and_store_lineup_efficiency(conn, season)
 
         all_trades = _group_trades(conn, season)
+        pending = _resolve_pending_trades(conn, season)
+        for date, legs in pending.items():
+            print(f"[manual] resolved pending trade on {date} against live teams/players")
+        all_trades.update(pending)
         cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=RECENT_DAYS)
         trades = {d: legs for d, legs in all_trades.items() if datetime.datetime.fromisoformat(d) >= cutoff}
         print(
-            f"\nFound {len(all_trades)} total trade event(s) in the recent-activity window; "
+            f"\nFound {len(all_trades)} total trade event(s) (activity feed + manual); "
             f"{len(trades)} within the last {RECENT_DAYS} days.\n"
         )
         if not trades:
