@@ -291,6 +291,22 @@ def main() -> int:
             prior_after = shrinkage_after_all.reindex(team_state["team_pk"]).to_numpy()
             prior_before = shrinkage_before_all.reindex(team_state["team_pk"]).to_numpy()
 
+            print(
+                f"  [debug] shrinkage prior (pts): {team_a_name} "
+                f"{shrinkage_before_all.get(team_a_pk):.1f} -> {shrinkage_after_all.get(team_a_pk):.1f}; "
+                f"{team_b_name} {shrinkage_before_all.get(team_b_pk):.1f} -> {shrinkage_after_all.get(team_b_pk):.1f}"
+            )
+            names = dict(conn.execute("SELECT player_id, player_name FROM players").fetchall())
+            for pk, name in ((team_a_pk, team_a_name), (team_b_pk, team_b_name)):
+                detail = compute_player_values(after_rows[after_rows["team_pk"] == pk])
+                print(f"  [debug] {name} post-trade roster (week {current_week}):")
+                for r in detail.sort_values("is_starter", ascending=False).itertuples():
+                    print(
+                        f"    {names.get(r.player_id, r.player_id):<24} pos={r.position:<4} "
+                        f"starter={int(r.is_starter)} proj_pts={r.projected_points:.1f} "
+                        f"fp_pos_rank={r.fp_pos_rank} player_value={r.player_value:.2f}"
+                    )
+
             sim_after = simulate_season(
                 team_state, remaining_matchups, bool(median_scoring), reg_season_count,
                 playoff_team_count=playoff_team_count, shrinkage_prior=prior_after,
