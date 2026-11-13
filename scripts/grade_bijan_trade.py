@@ -90,19 +90,20 @@ def main() -> int:
 
         # Find the real week this trade's roster move actually landed in -
         # the first week Bijan Robinson's own weekly_rosters row shows him
-        # on Hammer Time (his real destination), rather than guessing from
-        # the acceptance date alone (ESPN's own processing delay - see
-        # grade_trades.py's _at_origin docstring - means acceptance date and
-        # effective roster week aren't always the same week).
+        # on Robbying Moore TDs (his real destination - Hammer Time is
+        # where he STARTED), rather than guessing from the acceptance date
+        # alone (ESPN's own processing delay - see grade_trades.py's
+        # _at_origin docstring - means acceptance date and effective
+        # roster week aren't always the same week).
         bijan_id = player_id_by_name["Bijan Robinson"]
         rows = conn.execute(
             "SELECT week, team_pk FROM weekly_rosters WHERE season_id = ? AND player_id = ? ORDER BY week",
             (season, bijan_id),
         ).fetchall()
-        trade_week = next((w for w, pk in rows if pk == team_b_pk), None)
+        trade_week = next((w for w, pk in rows if pk == team_a_pk), None)
         if trade_week is None:
-            raise ValueError("could not find a week where Bijan Robinson's roster shows him on Hammer Time")
-        print(f"Trade took effect in week {trade_week} (first week Bijan Robinson shows rostered to {TEAM_B_NAME})")
+            raise ValueError(f"could not find a week where Bijan Robinson's roster shows him on {TEAM_A_NAME}")
+        print(f"Trade took effect in week {trade_week} (first week Bijan Robinson shows rostered to {TEAM_A_NAME})")
         print(f"Full Bijan Robinson roster history: {rows}")
 
         meta = conn.execute(
