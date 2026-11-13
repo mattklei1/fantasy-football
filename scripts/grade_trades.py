@@ -16,6 +16,7 @@ Usage: python scripts/grade_trades.py
 """
 from __future__ import annotations
 
+import datetime
 import json
 import sqlite3
 import sys
@@ -32,6 +33,7 @@ from fantasy_football.espn_client import ESPNClient
 from fantasy_football.ingest import ingest_season
 from fantasy_football.metrics import loaders as metric_loaders
 from fantasy_football.metrics.lineup_optimizer import RosterPlayer, optimal_lineup
+from fantasy_football.metrics.pipeline import compute_and_store_lineup_efficiency, compute_and_store_season_metrics
 from fantasy_football.metrics.playoff_sim import simulate_season
 from fantasy_football.metrics.roster_strength import (
     compute_player_values,
@@ -42,6 +44,12 @@ from fantasy_football.metrics.roster_strength import (
 SIM_SEED = 42  # same seed for the with-trade and without-trade run - common
 # random numbers, so the only thing that can move championship_pct between
 # the two runs is the shrinkage_prior swap itself, not fresh simulation noise.
+
+RECENT_DAYS = 5  # ESPN's recent-activity feed has no season-start cutoff of
+# its own (ingest_recent_activity pulls a rolling window of up to 1000
+# records, which can reach back well over a month in an active league) -
+# the user asked about trades from "the last few days," so trades older
+# than this are found but not graded.
 
 
 def _group_trades(conn: sqlite3.Connection, season: int) -> dict[str, list[tuple]]:
@@ -85,6 +93,31 @@ def _swap_team(df: pd.DataFrame, player_ids: list[int], new_team_pk: int) -> pd.
     return out
 
 
+def _at_origin(df: pd.DataFrame, out_a: list[int], team_a_pk: int, out_b: list[int], team_b_pk: int) -> pd.DataFrame:
+    """Every traded player assigned to the team that SENT them away - the
+    real pre-trade roster, constructed explicitly rather than inferred
+    from the DB's current state. Deliberately NOT just "whatever the DB
+    currently shows" - ESPN trades go through an acceptance step
+    (visible immediately in the recent-activity feed, which is how this
+    script finds the trade at all) followed by a separate processing
+    delay before the roster move actually lands, so a just-accepted
+    trade can sit with both players still on their ORIGINAL team in
+    weekly_rosters for a day or more. Building both hypothetical states
+    explicitly (see _at_destination) makes this script correct either
+    way, with no need to check which side of that delay a given trade
+    happens to be on."""
+    out = _swap_team(df, out_a, team_a_pk)
+    return _swap_team(out, out_b, team_b_pk)
+
+
+def _at_destination(df: pd.DataFrame, out_a: list[int], team_b_pk: int, out_b: list[int], team_a_pk: int) -> pd.DataFrame:
+    """Every traded player assigned to the team that RECEIVED them - the
+    real post-trade roster once ESPN finishes processing it. See
+    _at_origin's docstring."""
+    out = _swap_team(df, out_a, team_b_pk)
+    return _swap_team(out, out_b, team_a_pk)
+
+
 def main() -> int:
     client = ESPNClient()
     season = client.credentials.current_season
@@ -95,11 +128,18 @@ def main() -> int:
         db.init_db(conn)
         print("Ingesting real league data (rosters, rankings, recent activity)...")
         ingest_season(conn, client, season, log=print)
+        compute_and_store_season_metrics(conn, season)
+        compute_and_store_lineup_efficiency(conn, season)
 
-        trades = _group_trades(conn, season)
-        print(f"\nFound {len(trades)} distinct real trade event(s) in the recent-activity window.\n")
+        all_trades = _group_trades(conn, season)
+        cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=RECENT_DAYS)
+        trades = {d: legs for d, legs in all_trades.items() if datetime.datetime.fromisoformat(d) >= cutoff}
+        print(
+            f"\nFound {len(all_trades)} total trade event(s) in the recent-activity window; "
+            f"{len(trades)} within the last {RECENT_DAYS} days.\n"
+        )
         if not trades:
-            print("No TRADE_SENT/TRADE_RECEIVED activity found - nothing to grade.")
+            print("No trades within the recent window - nothing to grade.")
             return 0
 
         team_names = dict(conn.execute("SELECT id, team_name FROM teams WHERE season_id = ?", (season,)).fetchall())
@@ -111,7 +151,7 @@ def main() -> int:
         current_week, reg_season_count, position_slot_counts_json, median_scoring, playoff_team_count = meta
         position_slot_counts = json.loads(position_slot_counts_json)
 
-        rosters_df = war_room_data.get_trade_rosters(season)  # current (post-trade) reality
+        rosters_df = war_room_data.get_trade_rosters(season)
         team_state, remaining_matchups = metric_loaders.load_playoff_sim_state(conn, season)
 
         raw_week_rows = pd.read_sql_query(
@@ -145,14 +185,16 @@ def main() -> int:
                 pts[int(team_pk)] = total
             return pd.Series(pts)
 
-        real_strength = compute_team_roster_strength(
-            compute_player_values(raw_week_rows), week=current_week, reg_season_count=reg_season_count
-        ).set_index("team_pk")["roster_strength"]
-        real_optimal_points = _optimal_points_all(raw_week_rows)
-        team_pks_sorted = sorted(real_optimal_points.index)
-        shrinkage_after_all = roster_strength_to_points(
-            real_strength.reindex(team_pks_sorted), real_optimal_points.reindex(team_pks_sorted)
-        )
+        team_pks_sorted = sorted(raw_week_rows["team_pk"].unique())
+
+        def _shrinkage_prior(rows: pd.DataFrame) -> pd.Series:
+            strength = compute_team_roster_strength(
+                compute_player_values(rows), week=current_week, reg_season_count=reg_season_count
+            ).set_index("team_pk")["roster_strength"]
+            optimal_points = _optimal_points_all(rows)
+            return roster_strength_to_points(
+                strength.reindex(team_pks_sorted), optimal_points.reindex(team_pks_sorted)
+            )
 
         for date, legs in trades.items():
             out_by_team, names_by_id = _sides(legs)
@@ -187,15 +229,14 @@ def main() -> int:
                 )
 
             # --- Championship-odds impact: counterfactual re-simulation ---
-            swapped_rows = _swap_team(raw_week_rows, out_a, team_a_pk)
-            swapped_rows = _swap_team(swapped_rows, out_b, team_b_pk)
-            pre_strength = compute_team_roster_strength(
-                compute_player_values(swapped_rows), week=current_week, reg_season_count=reg_season_count
-            ).set_index("team_pk")["roster_strength"]
-            pre_optimal_points = _optimal_points_all(swapped_rows)
-            shrinkage_before_all = roster_strength_to_points(
-                pre_strength.reindex(team_pks_sorted), pre_optimal_points.reindex(team_pks_sorted)
-            )
+            # Both states are built explicitly (origin vs destination), not
+            # inferred from the DB's current roster snapshot - see
+            # _at_origin's docstring for why that matters for a trade
+            # that's accepted but still mid-processing on ESPN's side.
+            before_rows = _at_origin(raw_week_rows, out_a, team_a_pk, out_b, team_b_pk)
+            after_rows = _at_destination(raw_week_rows, out_a, team_b_pk, out_b, team_a_pk)
+            shrinkage_before_all = _shrinkage_prior(before_rows)
+            shrinkage_after_all = _shrinkage_prior(after_rows)
 
             prior_after = shrinkage_after_all.reindex(team_state["team_pk"]).to_numpy()
             prior_before = shrinkage_before_all.reindex(team_state["team_pk"]).to_numpy()
