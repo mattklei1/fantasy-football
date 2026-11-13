@@ -1,0 +1,26 @@
+name: Grade Recent Trades
+
+# Manual-only, one-off analysis tool (scripts/grade_trades.py) - no
+# schedule trigger, never runs unless explicitly dispatched. Read-only:
+# does its own temp-DB ingest, never touches the deployed app's data or
+# posts anywhere.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  grade-trades:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Grade recent trades
+        env:
+          LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          SWID: ${{ secrets.SWID }}
+          CURRENT_SEASON: ${{ secrets.CURRENT_SEASON }}
+          FANTASYPROS_API_KEY: ${{ secrets.FANTASYPROS_API_KEY }}
+        run: python scripts/grade_trades.py
