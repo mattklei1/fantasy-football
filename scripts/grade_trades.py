@@ -177,22 +177,34 @@ def main() -> int:
         compute_and_store_season_metrics(conn, season)
         compute_and_store_lineup_efficiency(conn, season)
 
+        team_names = dict(conn.execute("SELECT id, team_name FROM teams WHERE season_id = ?", (season,)).fetchall())
+
         all_trades = _group_trades(conn, season)
         pending = _resolve_pending_trades(conn, season)
         for date, legs in pending.items():
             print(f"[manual] resolved pending trade on {date} against live teams/players")
         all_trades.update(pending)
+
+        print(f"\nFull trade history found ({len(all_trades)} event(s)):")
+        for d, legs in sorted(all_trades.items()):
+            out_by_team_all, names_by_id_all = _sides(legs)
+            parts = [
+                f"{team_names.get(pk, pk)} sent {[names_by_id_all[p] for p in pids]}"
+                for pk, pids in out_by_team_all.items()
+            ]
+            print(f"  {d}: " + " | ".join(parts))
+        print()
+
         cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=RECENT_DAYS)
         trades = {d: legs for d, legs in all_trades.items() if datetime.datetime.fromisoformat(d) >= cutoff}
         print(
-            f"\nFound {len(all_trades)} total trade event(s) (activity feed + manual); "
+            f"Found {len(all_trades)} total trade event(s) (activity feed + manual); "
             f"{len(trades)} within the last {RECENT_DAYS} days.\n"
         )
         if not trades:
             print("No trades within the recent window - nothing to grade.")
             return 0
 
-        team_names = dict(conn.execute("SELECT id, team_name FROM teams WHERE season_id = ?", (season,)).fetchall())
         meta = conn.execute(
             "SELECT current_week, reg_season_count, position_slot_counts, median_scoring, playoff_team_count "
             "FROM seasons WHERE season_id = ?",
