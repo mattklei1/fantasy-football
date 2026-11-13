@@ -167,32 +167,26 @@ def main() -> int:
                 strength.reindex(team_pks_sorted), optimal_points.reindex(team_pks_sorted)
             )
 
-        # Trade-value engine wants a value_score column (pure FantasyPros+
-        # ESPN rank blend, see war_room_data.blend_trade_value) - build it
-        # here directly on the week-trade_week roster rather than calling
-        # get_trade_rosters() (which is hardcoded to "latest ingested
-        # week"). fp_pos_rank is real-but-empty for this historical week
-        # (see note above); espn_pos_rank (player_rankings, also only ever
-        # populated for the CURRENT week) is unavailable the same way -
-        # value_score renormalizes onto whatever's left, same degrade-
-        # gracefully contract as compute_player_values.
-        from fantasy_football.metrics.roster_strength import rank_to_score
-        from fantasy_football.metrics.waiver_value import position_scarcity_multipliers
-
+        # war_room_data.evaluate_trade wants a value_score column. Its own
+        # blend_trade_value() is pure FantasyPros-ROS + ESPN-season-rank -
+        # BOTH unreconstructable for a past week (see module docstring) -
+        # so using it here would silently collapse every player to 0.0
+        # (confirmed: first run of this script did exactly that - both
+        # sides showed a 0.0 -> 0.0 "trade grade", not a real result).
+        # Falls back to compute_player_values()'s player_value instead -
+        # the SAME blend Roster Strength itself uses, which is primarily
+        # that week's real point-projection percentile (the one value
+        # signal this script can genuinely reconstruct for week
+        # trade_week) and only secondarily fp_rank_score when present.
+        # Trade-off to flag: this grades roster construction around THAT
+        # WEEK's expected production, not a rest-of-season outlook - a
+        # real difference from scripts/grade_trades.py's live trade
+        # grades, forced by what history is actually available.
         team_names_by_pk = {pk: name for name, pk in team_pk_by_name.items()}
-        value_df = raw_week_rows.copy()
+        value_df = compute_player_values(raw_week_rows)
         value_df["eligible_slots"] = value_df_eligible_slots
         value_df["team_name"] = value_df["team_pk"].map(team_names_by_pk)
-        value_df["fp_score"] = value_df["fp_pos_rank"].apply(rank_to_score)
-        value_df["espn_score"] = None  # not reconstructable for a past week - see module docstring
-        scarcity = position_scarcity_multipliers(position_slot_counts, week=trade_week)
-        value_df["value_score"] = (
-            value_df.apply(
-                lambda row: war_room_data.blend_trade_value(row["fp_score"], row["espn_score"], row["position"], scarcity)
-                * 100,
-                axis=1,
-            )
-        ).round(1)
+        value_df["value_score"] = (value_df["player_value"] * 100).round(1)
 
         pre_trade_value_df = value_df.copy()
         pre_trade_value_df.loc[pre_trade_value_df["player_id"].isin(out_a), ["team_pk", "team_name"]] = [
