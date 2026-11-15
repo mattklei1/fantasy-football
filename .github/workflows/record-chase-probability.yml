@@ -1,0 +1,23 @@
+name: Record Chase Probability
+
+# Manual-only, one-off tool (scripts/record_chase_probability.py) - no
+# schedule trigger, never runs unless explicitly dispatched. Read-only.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  record-chase-probability:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Compute record chase probability
+        env:
+          LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          SWID: ${{ secrets.SWID }}
+          CURRENT_SEASON: ${{ secrets.CURRENT_SEASON }}
+        run: python scripts/record_chase_probability.py
