@@ -20,7 +20,8 @@ from fantasy_football import db
 from fantasy_football.espn_client import ESPNClient
 from fantasy_football.ingest import ingest_season
 
-SEASONS = [2024, 2025, 2026]
+SEASONS = list(range(2015, 2027))  # this league's real full history (see fantasy_football/ama.py's
+# own schema note: "Every view already spans ALL seasons (2015-present)")
 
 
 def main() -> int:
