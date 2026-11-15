@@ -1,0 +1,23 @@
+name: Diagnose Live Score and Record Owners
+
+# Manual-only, one-off tool (scripts/diagnose_live_score_and_owners.py) -
+# no schedule trigger, never runs unless explicitly dispatched. Read-only.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Diagnose live score and record owners
+        env:
+          LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          SWID: ${{ secrets.SWID }}
+          CURRENT_SEASON: ${{ secrets.CURRENT_SEASON }}
+        run: python scripts/diagnose_live_score_and_owners.py
