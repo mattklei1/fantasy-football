@@ -1,0 +1,23 @@
+name: Check Rodgers Rudolph Ownership
+
+# Manual-only, one-off tool (scripts/check_rodgers_rudolph_ownership.py) -
+# no schedule trigger, never runs unless explicitly dispatched. Read-only.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Check Rodgers/Rudolph ownership
+        env:
+          LEAGUE_ID: ${{ secrets.LEAGUE_ID }}
+          ESPN_S2: ${{ secrets.ESPN_S2 }}
+          SWID: ${{ secrets.SWID }}
+          CURRENT_SEASON: ${{ secrets.CURRENT_SEASON }}
+        run: python scripts/check_rodgers_rudolph_ownership.py
